@@ -4,17 +4,15 @@ import type {
 } from "@tencent-connect/qqbot-nodejs";
 
 import { buildAiInput, buildReplyPolicy } from "../../ai/input-builder.js";
-import { chat } from "../../ai/client.js";
+import { logger, shortId, truncateLogText } from "../../shared/logger.js";
 import {
     buildChatInput,
     getRecentImages,
-    rememberBotReply,
     rememberIncomingMessage,
+    recordIncomingMessageRevision,
 } from "../conversation/recent-context.js";
 import {
     isConversationActive,
-    markConversationActive,
-    stopConversation,
 } from "../conversation/engagement.js";
 import {
     buildKnownMembersContext,
@@ -25,6 +23,7 @@ import {
 import { normalizeQqMessage } from "../message/normalize-message.js";
 import { decideMessageTrigger, isOnlyQQFace, wantsVision } from "../message/trigger.js";
 import { sendMinecraftStatus } from "../minecraft-status.js";
+import { coordinateAiReply } from "../reply/coordinator.js";
 
 const SEARCH_NOTICES = [
     "稍等，我查一下。",
@@ -41,6 +40,30 @@ function randomSearchNotice(): string {
     ];
 }
 
+function summarizeMessage(
+    input: string,
+    imageAttachments: any[],
+): string {
+    if (isOnlyQQFace(input)) {
+        return "[QQ表情]";
+    }
+    if (input) {
+        return truncateLogText(input, 160);
+    }
+    if (imageAttachments.length === 0) {
+        return "";
+    }
+
+    const firstImage = imageAttachments[0];
+    if (firstImage.width !== undefined && firstImage.height !== undefined) {
+        const dimensions = `${firstImage.width}x${firstImage.height}`;
+        return imageAttachments.length === 1
+            ? `[图片 ${dimensions}]`
+            : `[图片 ${dimensions} x${imageAttachments.length}]`;
+    }
+    return `[图片 x${imageAttachments.length}]`;
+}
+
 export function registerMessageHandler(bot: QQBot): void {
     bot.on("message", async (context, message: QQBotInboundMessage) => {
         const normalized = normalizeQqMessage(context, message);
@@ -49,7 +72,9 @@ export function registerMessageHandler(bot: QQBot): void {
             return;
         }
 
-        // Remember the member before any content filters, as before.
+        recordIncomingMessageRevision(normalized);
+
+        // Keep learning members before the existing content filters.
         rememberKnownMember(normalized);
 
         const input = normalized.content;
@@ -58,35 +83,49 @@ export function registerMessageHandler(bot: QQBot): void {
             return typeof contentType === "string" && contentType.startsWith("image/");
         });
         const hasImages = imageAttachments.length > 0;
+        const isGroupEvent =
+            normalized.kind === "group" ||
+            normalized.eventType === "GROUP_MESSAGE_CREATE" ||
+            normalized.eventType === "GROUP_AT_MESSAGE_CREATE";
+        const speaker = normalized.authorName
+            ? truncateLogText(normalized.authorName, 60)
+            : shortId(normalized.authorId);
+        const messageSummary = summarizeMessage(input, imageAttachments);
 
-        console.log(
-            "收到消息：",
-            input || (hasImages ? `[图片 x${imageAttachments.length}]` : ""),
-        );
+        if (messageSummary) {
+            logger.info(`[${isGroupEvent ? "GROUP" : "C2C"}] ${speaker}: ${messageSummary}`);
+        } else {
+            logger.debug("[QQ message] empty content");
+        }
+
+        logger.debug("[QQ normalized]", {
+            kind: normalized.kind,
+            eventType: normalized.eventType,
+            author: speaker,
+            content: input,
+            mentions: normalized.mentions.map((mention: any) => ({
+                isYou: mention?.is_you ?? mention?.isYou,
+                name: mention?.username ?? mention?.name,
+            })),
+            attachments: imageAttachments.map((attachment: any) => ({
+                contentType: attachment?.content_type ?? attachment?.contentType,
+                width: attachment?.width,
+                height: attachment?.height,
+            })),
+        });
 
         if (!input && !hasImages) {
             return;
         }
 
         if (isOnlyQQFace(input)) {
-            console.log("[Filter] QQ 表情/表情包，忽略");
+            logger.info("[Filter] qq-face");
             return;
         }
 
-        console.log(
-            "[Message]",
-            "kind =",
-            normalized.kind,
-            "event =",
-            normalized.eventType,
-        );
-
-        const activeConversation =
-            normalized.kind === "group" ||
-            normalized.eventType === "GROUP_MESSAGE_CREATE" ||
-            normalized.eventType === "GROUP_AT_MESSAGE_CREATE"
-                ? isConversationActive(normalized)
-                : false;
+        const activeConversation = isGroupEvent
+            ? isConversationActive(normalized)
+            : false;
         const trigger = decideMessageTrigger(normalized, activeConversation);
         const userInput = input.startsWith("/ai ") ? input.slice(4).trim() : input;
 
@@ -99,16 +138,24 @@ export function registerMessageHandler(bot: QQBot): void {
         rememberIncomingMessage(normalized, input);
 
         if (!input && hasImages) {
-            console.log("[Trigger] 图片消息，仅记录上下文");
+            const firstImage = imageAttachments[0];
+            logger.info(
+                firstImage.width !== undefined && firstImage.height !== undefined
+                    ? `[Image] cached ${firstImage.width}x${firstImage.height}`
+                    : "[Image] cached",
+            );
+            logger.info("[Trigger] passive");
             return;
         }
 
         if (input === "/mc") {
+            logger.info("[Trigger] command /mc");
             await sendMinecraftStatus(bot, normalized.replyTarget);
             return;
         }
 
         if (input === "/members") {
+            logger.info("[Trigger] command /members");
             const members = getKnownMembers(normalized);
             const text =
                 members.length > 0
@@ -121,6 +168,7 @@ export function registerMessageHandler(bot: QQBot): void {
         }
 
         if (input.startsWith("/at ")) {
+            logger.info("[Trigger] command /at");
             const name = input.slice(4).trim();
             const rendered = renderMentions(
                 normalized,
@@ -131,7 +179,7 @@ export function registerMessageHandler(bot: QQBot): void {
         }
 
         if (!trigger.shouldReply) {
-            console.log("[Trigger] 普通群消息，仅记录上下文");
+            logger.info("[Trigger] passive");
             return;
         }
 
@@ -139,16 +187,15 @@ export function registerMessageHandler(bot: QQBot): void {
             return;
         }
 
-        console.log(
-            "[Trigger]",
-            trigger.isAtBot
-                ? "@小尘：强制回复"
-                : trigger.mentionedByName
-                  ? "名字唤醒：AI 判断"
-                  : trigger.activeConversation
-                    ? "活跃对话：AI 判断"
-                    : "私聊",
-        );
+        const triggerLabel = trigger.isAtBot
+            ? "mention / hard"
+            : trigger.mentionedByName
+              ? "name / soft"
+              : trigger.activeConversation
+                ? "active / soft"
+                : "private";
+        logger.info(`[Trigger] ${triggerLabel}`);
+        logger.debug("[Trigger decision]", trigger);
 
         const replyPolicy = buildReplyPolicy(trigger.allowNoReply);
         const knownMembersContext = trigger.isGroup
@@ -166,37 +213,17 @@ export function registerMessageHandler(bot: QQBot): void {
         );
         const imageUrls = useVision ? recentImageUrls : [];
 
-        console.log("[AI] 当前消息：", userInput);
-        console.log("[AI] 携带上下文：", chatInput !== userInput);
-        console.log("[AI] 可选择沉默：", trigger.allowNoReply);
-        console.log("[AI] 识图：", useVision, `图片数=${imageUrls.length}`);
-
-        try {
-            const reply = await chat(aiInput, {
-                imageUrls,
-                onWebSearchStart: async () => {
-                    await bot.sendText(normalized.replyTarget, randomSearchNotice());
-                },
-            });
-
-            if (reply.trim() === "<NO_REPLY>") {
-                console.log("[AI] 判断无需回复，退出活跃对话");
-                if (trigger.isGroup) {
-                    stopConversation(normalized);
-                }
-                return;
-            }
-
-            const rendered = renderMentions(normalized, reply);
-            await bot.sendMarkdown(normalized.replyTarget, rendered.sendText);
-            rememberBotReply(normalized, rendered.contextText);
-
-            if (trigger.isGroup) {
-                markConversationActive(normalized);
-            }
-        } catch (error) {
-            console.error("AI 请求失败：", error);
-            await bot.sendText(normalized.replyTarget, "刚才脑子短路了一下。");
-        }
+        logger.debug("[AI reply policy]", replyPolicy);
+        await coordinateAiReply({
+            bot,
+            message: normalized,
+            aiInput,
+            imageUrls,
+            isGroup: trigger.isGroup,
+            allowNoReply: trigger.allowNoReply,
+            onWebSearchStart: async () => {
+                await bot.sendText(normalized.replyTarget, randomSearchNotice());
+            },
+        });
     });
 }

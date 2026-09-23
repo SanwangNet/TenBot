@@ -79,14 +79,14 @@ export function rememberKnownMember(
         return;
     }
 
+    const role = author.member_role ?? author.memberRole;
+    const isNewMember = !members.has(memberOpenid);
     members.set(
         memberOpenid,
         {
             memberOpenid,
             username,
-            role:
-                author.member_role ??
-                author.memberRole,
+            role,
             lastSeenAt:
                 Date.now(),
         },
@@ -115,9 +115,11 @@ export function rememberKnownMember(
         }
     }
 
-    console.log(
-        `[Members] ${username} (${memberOpenid})`,
-    );
+    if (isNewMember) {
+        logger.info(`[Members] learned ${truncateLogText(username, 60)} (${roleName(role)})`);
+    } else {
+        logger.debug(`[Members] updated ${truncateLogText(username, 60)} (${roleName(role)})`);
+    }
 }
 
 export function getKnownMembers(
@@ -187,10 +189,10 @@ export function buildKnownMembersContext(
         "",
         "<mention_capability>",
         "上面是你目前认识的群友。",
-        "如果确实需要直接点名或提醒其中某个人，你可以使用：<mention>昵称</mention>",
-        "例如：<mention>尘柒喵</mention> 你刚才不是这么说的（",
-        "只有真正需要 @ 对方时才使用 mention，不要每次提到名字都 @。",
-        "不要 mention 不在已知群友列表里的人。",
+        "如果确实需要真正 @ 某个已知群友，请在 qq_reply 的 mentions 中填写列表里的准确昵称。",
+        "例如需要 @ 尘柒喵时，mentions 填 [\"尘柒喵\"]。",
+        "只有真正需要 @ 对方时才填写 mentions，不要每次提到名字都 @。",
+        "不要填写不在已知群友列表里的人。",
         "</mention_capability>",
     ].join("\n");
 }
@@ -205,14 +207,8 @@ function findMemberByName(
     const members =
         getKnownMembers(message);
 
-    return (
-        members.find(
-            (member) =>
-                member.username ===
-                username,
-        ) ??
-        null
-    );
+    const matches = members.filter((member) => member.username === username);
+    return matches.length === 1 ? matches[0] : null;
 }
 
 /*
@@ -284,3 +280,29 @@ export function renderMentions(
 }
 
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
+import { logger, truncateLogText } from "../../shared/logger.js";
+
+/** Structured qq_reply mentions; the legacy inline parser remains a fallback. */
+export function renderStructuredMentions(
+    message: NormalizedQqMessage,
+    content: string,
+    mentions: string[],
+): { sendText: string; contextText: string } {
+    // A model-supplied QQ protocol tag is never trusted as an actual @ target.
+    const safeContent = content.replace(/<qqbot-at-user\b[^>]*\/?>/gi, "");
+    const renderedContent = renderMentions(message, safeContent);
+    const uniqueNames = [...new Set(mentions.map((name) => name.trim()).filter(Boolean))]
+        .filter((name) => !safeContent.includes(`<mention>${name}</mention>`));
+    const sendPrefixes = uniqueNames.map((name) => {
+        const member = findMemberByName(message, name);
+        return member
+            ? `<qqbot-at-user id="${member.memberOpenid}" />`
+            : `@${name.replace(/[<>]/g, "")}`;
+    });
+    const contextPrefixes = uniqueNames.map((name) => `@${name}`);
+
+    return {
+        sendText: [...sendPrefixes, renderedContent.sendText].filter(Boolean).join(" "),
+        contextText: [...contextPrefixes, renderedContent.contextText].filter(Boolean).join(" "),
+    };
+}

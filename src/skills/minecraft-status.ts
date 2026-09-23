@@ -1,5 +1,7 @@
 import mc from "minecraftstatuspinger";
 
+import { logger } from "../shared/logger.js";
+
 const SERVER_HOST = "39.107.105.23";
 const SERVER_PORT = 25565;
 
@@ -27,6 +29,7 @@ export interface MinecraftStatusResult {
 }
 
 export async function runMinecraftStatus(): Promise<MinecraftStatusResult> {
+    logger.info("[MC] query");
     try {
         const result = await mc.lookup({
             host: SERVER_HOST,
@@ -46,6 +49,12 @@ export async function runMinecraftStatus(): Promise<MinecraftStatusResult> {
             };
         } | null;
 
+        logger.info(
+            status?.players?.online !== undefined && status.players.max !== undefined
+                ? `[MC] online players=${status.players.online}/${status.players.max}`
+                : "[MC] online",
+        );
+
         return {
             online: true,
             host: SERVER_HOST,
@@ -59,6 +68,7 @@ export async function runMinecraftStatus(): Promise<MinecraftStatusResult> {
             version: status?.version?.name,
         };
     } catch (error) {
+        logger.error("[MC] error", error);
         return {
             online: false,
             host: SERVER_HOST,

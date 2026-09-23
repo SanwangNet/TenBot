@@ -2,6 +2,7 @@ const ACTIVE_TIMEOUT_MS =
     5 * 60 * 1000;
 
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
+import { logger } from "../../shared/logger.js";
 
 interface EngagementState {
     expiresAt: number;
@@ -37,9 +38,7 @@ export function markConversationActive(
             ACTIVE_TIMEOUT_MS,
     });
 
-    console.log(
-        `[Engagement] ${key} 进入活跃对话`,
-    );
+    logger.info("[Engagement] active");
 }
 
 export function isConversationActive(
@@ -65,9 +64,7 @@ export function isConversationActive(
     ) {
         activeGroups.delete(key);
 
-        console.log(
-            `[Engagement] ${key} 超时退出`,
-        );
+        logger.info("[Engagement] timeout");
 
         return false;
     }
@@ -87,7 +84,5 @@ export function stopConversation(
 
     activeGroups.delete(key);
 
-    console.log(
-        `[Engagement] ${key} AI 判断对话已结束`,
-    );
+    logger.info("[Engagement] exit");
 }

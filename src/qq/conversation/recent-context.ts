@@ -1,4 +1,4 @@
-const MAX_MESSAGES = 10;
+const MAX_MESSAGES = 20;
 const CONTEXT_TTL_MS =
     30 * 60 * 1000;
 
@@ -12,6 +12,7 @@ const MAX_IMAGE_AGE_MS =
     2 * 60 * 1000;
 
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
+import { logger, shortId } from "../../shared/logger.js";
 
 interface HistoryImage {
     url: string;
@@ -30,6 +31,8 @@ interface HistoryMessage {
 interface ConversationMemory {
     messages: HistoryMessage[];
     updatedAt: number;
+    /** User-message sequence survives context trimming and TTL refresh. */
+    messageRevision: number;
 }
 
 const memories =
@@ -93,6 +96,7 @@ function getMemory(
         ConversationMemory = {
             messages: [],
             updatedAt: now,
+            messageRevision: existing?.messageRevision ?? 0,
         };
 
     memories.set(
@@ -101,6 +105,17 @@ function getMemory(
     );
 
     return fresh;
+}
+
+/** Called once for every real inbound user message, including filtered faces. */
+export function recordIncomingMessageRevision(message: NormalizedQqMessage): number {
+    const memory = getMemory(message);
+    memory.messageRevision += 1;
+    return memory.messageRevision;
+}
+
+export function getMessageRevision(message: NormalizedQqMessage): number {
+    return getMemory(message).messageRevision;
 }
 
 function getSpeakerName(
@@ -228,12 +243,10 @@ function appendMessage(
     memory.updatedAt =
         Date.now();
 
-    console.log(
-        `[Context] ${getConversationKey(
-            message,
-        )} ${
-            memory.messages.length
-        }/${MAX_MESSAGES}`,
+    const scope = message.groupId ? "group" : "c2c";
+    const conversationId = message.groupId ?? message.authorId;
+    logger.info(
+        `[Context] ${scope}=${shortId(conversationId)} ${memory.messages.length}/${MAX_MESSAGES}`,
     );
 }
 
