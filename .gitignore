@@ -18,3 +18,7 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Runtime member cache
+/data/known-members.json
+/data/known-members.json.tmp

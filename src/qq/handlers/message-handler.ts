@@ -75,7 +75,7 @@ export function registerMessageHandler(bot: QQBot): void {
         // Keep learning members before the existing content filters.
         rememberKnownMember(normalized);
 
-        const input = normalized.content;
+        const input = normalized.displayContent;
         const imageAttachments = normalized.attachments.filter((attachment: any) => {
             const contentType = attachment?.content_type ?? attachment?.contentType;
             return typeof contentType === "string" && contentType.startsWith("image/");
@@ -101,9 +101,9 @@ export function registerMessageHandler(bot: QQBot): void {
             eventType: normalized.eventType,
             author: speaker,
             content: input,
-            mentions: normalized.mentions.map((mention: any) => ({
-                isYou: mention?.is_you ?? mention?.isYou,
-                name: mention?.username ?? mention?.name,
+            mentions: normalized.mentions.map((mention) => ({
+                isYou: mention.isSelf,
+                name: mention.username,
             })),
             attachments: imageAttachments.map((attachment: any) => ({
                 contentType: attachment?.content_type ?? attachment?.contentType,

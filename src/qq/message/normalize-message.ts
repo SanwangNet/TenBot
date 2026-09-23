@@ -1,66 +1,103 @@
 import type { QQBotInboundMessage } from "@tencent-connect/qqbot-nodejs";
+import { getKnownMemberNameById } from "../conversation/known-members.js";
+
+export interface NormalizedMention {
+    memberOpenid?: string;
+    ids: string[];
+    username?: string;
+    role?: string;
+    isBot: boolean;
+    isSelf: boolean;
+}
 
 export interface NormalizedQqMessage {
-    /** Original SDK object, retained for SDK send helpers and unmodelled fields. */
     source: QQBotInboundMessage;
     id?: string;
     kind: QQBotInboundMessage["kind"];
     eventType: string;
     content: string;
+    displayContent: string;
     groupId?: string;
     author: any;
     authorId?: string;
     authorName?: string;
     authorIsBot: boolean;
-    mentions: any[];
+    mentions: NormalizedMention[];
     attachments: any[];
     replyTarget: QQBotInboundMessage["replyTarget"];
     timestamp?: string;
     raw: any;
 }
 
-/** Collapse the SDK's convenience and raw fields at the QQ boundary. */
+function stringField(value: unknown): string | undefined {
+    return typeof value === "string" && value ? value : undefined;
+}
+
+function normalizeMentions(rawMentions: unknown): NormalizedMention[] {
+    if (!Array.isArray(rawMentions)) return [];
+    return rawMentions.filter((value) => value && typeof value === "object").map((raw) => {
+        const ids = [
+            stringField(raw.member_openid ?? raw.memberOpenid),
+            stringField(raw.user_openid ?? raw.userOpenid),
+            stringField(raw.id),
+        ].filter((value): value is string => Boolean(value));
+        return {
+            memberOpenid: stringField(raw.member_openid ?? raw.memberOpenid ?? raw.id),
+            ids: [...new Set(ids)],
+            username: stringField(raw.username ?? raw.nickname ?? raw.name),
+            role: stringField(raw.member_role ?? raw.memberRole),
+            isBot: raw.bot === true,
+            isSelf: raw.is_you === true || raw.isYou === true,
+        };
+    });
+}
+
+/** Only readable names enter AI input or recent context. Unknown IDs never do. */
+export function resolveDisplayContent(
+    content: string,
+    mentions: NormalizedMention[],
+    groupId?: string,
+): string {
+    return content.replace(/<@([^<>\s]+)>/g, (_token, rawId: string) => {
+        const id = rawId.startsWith("!") ? rawId.slice(1) : rawId;
+        const current = mentions.find((mention) => mention.ids.includes(id));
+        const name = current?.username ?? getKnownMemberNameById(groupId, id);
+        return "@" + (name || "未知成员");
+    });
+}
+
 export function normalizeQqMessage(
     context: unknown,
     message: QQBotInboundMessage,
 ): NormalizedQqMessage {
-    const contextEventType =
-        (context as { eventType?: string } | null)?.eventType;
+    const contextEventType = (context as { eventType?: string } | null)?.eventType;
     const raw = message.raw as any;
     const author = (message as any).author ?? raw?.author ?? null;
-    const mentions = Array.isArray(message.mentions)
-        ? message.mentions
-        : Array.isArray(raw?.mentions)
-          ? raw.mentions
-          : [];
+    const mentions = normalizeMentions(
+        Array.isArray(message.mentions) ? message.mentions : raw?.mentions,
+    );
     const attachments = Array.isArray(message.attachments)
         ? message.attachments
-        : Array.isArray(raw?.attachments)
-          ? raw.attachments
-          : [];
-
+        : Array.isArray(raw?.attachments) ? raw.attachments : [];
+    const groupId = message.kind === "group"
+        ? message.groupOpenid ?? (message as any).groupId ??
+          raw?.group_openid ?? raw?.group_id ?? message.replyTarget?.targetId
+        : undefined;
+    const content = message.content?.trim?.() ?? "";
     return {
         source: message,
         id: message.messageId,
         kind: message.kind,
         eventType: message.rawEventType ?? contextEventType ?? "",
-        content: message.content?.trim?.() ?? "",
-        groupId:
-            (message as any).replyTarget?.targetId ??
-            message.groupOpenid ??
-            (message as any).groupId ??
-            raw?.group_openid ??
-            raw?.group_id,
+        content,
+        displayContent: resolveDisplayContent(content, mentions, groupId),
+        groupId,
         author,
-        authorId: author?.id ?? raw?.author?.id,
-        authorName:
-            author?.username ??
-            raw?.author?.username ??
-            author?.nickname ??
-            raw?.author?.nickname,
-        authorIsBot:
-            (message as any).author?.bot === true ||
-            raw?.author?.bot === true,
+        authorId: author?.id ?? author?.member_openid ?? author?.user_openid ?? message.senderId,
+        authorName: author?.username ?? raw?.author?.username ??
+            author?.nickname ?? raw?.author?.nickname ?? message.senderName,
+        authorIsBot: message.senderIsBot === true ||
+            author?.bot === true || raw?.author?.bot === true,
         mentions,
         attachments,
         replyTarget: message.replyTarget,

@@ -60,7 +60,7 @@ function getMessageTimestamp(
     return Date.now();
 }
 
-function getConversationKey(
+export function getConversationKey(
     message: NormalizedQqMessage,
 ): string {
     if (message.groupId) {
@@ -71,6 +71,15 @@ function getConversationKey(
         message.authorId ??
         "unknown"
     }`;
+}
+
+/** Remove only the recalled user message; revision remains monotonic. */
+export function removeMessageFromContext(conversationKey: string, messageId: string): boolean {
+    const memory = memories.get(conversationKey);
+    if (!memory) return false;
+    const before = memory.messages.length;
+    memory.messages = memory.messages.filter((item) => item.id !== messageId);
+    return memory.messages.length !== before;
 }
 
 function getMemory(

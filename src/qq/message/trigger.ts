@@ -21,11 +21,7 @@ export function decideMessageTrigger(
 
     const isAtBot =
         message.eventType === "GROUP_AT_MESSAGE_CREATE" ||
-        message.mentions.some(
-            (mention: any) =>
-                mention?.is_you === true ||
-                mention?.isYou === true,
-        );
+        message.mentions.some((mention) => mention.isSelf);
 
     const mentionedByName = message.content.includes("小尘");
     const hardTrigger = isAtBot;
