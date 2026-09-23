@@ -4,6 +4,7 @@ import type {
 } from "@tencent-connect/qqbot-nodejs";
 
 import { buildAiInput, buildReplyPolicy } from "../../ai/input-builder.js";
+import { routeCommand } from "../../commands/router.js";
 import { logger, shortId, truncateLogText } from "../../shared/logger.js";
 import {
     buildChatInput,
@@ -16,13 +17,10 @@ import {
 } from "../conversation/engagement.js";
 import {
     buildKnownMembersContext,
-    getKnownMembers,
     rememberKnownMember,
-    renderMentions,
 } from "../conversation/known-members.js";
 import { normalizeQqMessage } from "../message/normalize-message.js";
 import { decideMessageTrigger, isOnlyQQFace, wantsVision } from "../message/trigger.js";
-import { sendMinecraftStatus } from "../minecraft-status.js";
 import { coordinateAiReply } from "../reply/coordinator.js";
 
 const SEARCH_NOTICES = [
@@ -114,6 +112,10 @@ export function registerMessageHandler(bot: QQBot): void {
             })),
         });
 
+        if (await routeCommand(bot, normalized)) {
+            return;
+        }
+
         if (!input && !hasImages) {
             return;
         }
@@ -127,7 +129,7 @@ export function registerMessageHandler(bot: QQBot): void {
             ? isConversationActive(normalized)
             : false;
         const trigger = decideMessageTrigger(normalized, activeConversation);
-        const userInput = input.startsWith("/ai ") ? input.slice(4).trim() : input;
+        const userInput = input;
 
         // Build history before appending this message so it is not duplicated.
         const chatInput =
@@ -145,36 +147,6 @@ export function registerMessageHandler(bot: QQBot): void {
                     : "[Image] cached",
             );
             logger.info("[Trigger] passive");
-            return;
-        }
-
-        if (input === "/mc") {
-            logger.info("[Trigger] command /mc");
-            await sendMinecraftStatus(bot, normalized.replyTarget);
-            return;
-        }
-
-        if (input === "/members") {
-            logger.info("[Trigger] command /members");
-            const members = getKnownMembers(normalized);
-            const text =
-                members.length > 0
-                    ? members
-                          .map((member) => `${member.username} (${member.role ?? "member"})`)
-                          .join("\n")
-                    : "目前还不认识任何群友。";
-            await bot.sendText(normalized.replyTarget, text);
-            return;
-        }
-
-        if (input.startsWith("/at ")) {
-            logger.info("[Trigger] command /at");
-            const name = input.slice(4).trim();
-            const rendered = renderMentions(
-                normalized,
-                `<mention>${name}</mention> 测试一下`,
-            );
-            await bot.sendMarkdown(normalized.replyTarget, rendered.sendText);
             return;
         }
 

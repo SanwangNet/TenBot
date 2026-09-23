@@ -5,16 +5,20 @@ import { SYSTEM_PROMPT } from "./prompt.js";
 import { qqReplyTool, parseQqReplyArguments, type AiResult } from "./reply-result.js";
 import { logger, truncateLogText } from "../shared/logger.js";
 
-const apiKey = process.env.CODEX_API_KEY;
-const baseURL = process.env.CODEX_BASE_URL;
-
-if (!apiKey || !baseURL) {
-    throw new Error("缺少 CODEX_API_KEY 或 CODEX_BASE_URL");
-}
-
 export const AI_MODEL = "gpt-6-sol";
 
-const client = new OpenAI({ apiKey, baseURL });
+let client: OpenAI | undefined;
+
+function getClient(): OpenAI {
+    if (client) return client;
+    const apiKey = process.env.CODEX_API_KEY;
+    const baseURL = process.env.CODEX_BASE_URL;
+    if (!apiKey || !baseURL) {
+        throw new Error("缺少 CODEX_API_KEY 或 CODEX_BASE_URL");
+    }
+    client = new OpenAI({ apiKey, baseURL });
+    return client;
+}
 
 interface ChatOptions {
     signal: AbortSignal;
@@ -47,7 +51,7 @@ export async function chat(
               }]
             : input;
 
-    const stream = await client.responses.create({
+    const stream = await getClient().responses.create({
         model: AI_MODEL,
         instructions: SYSTEM_PROMPT,
         input: requestInput,

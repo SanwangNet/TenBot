@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx src/main.ts",
-    "test": "tsx --test tests/reply-pipeline.test.ts"
+    "test": "tsx --test tests/reply-pipeline.test.ts tests/commands.test.ts"
   },
   "keywords": [],
   "author": "",
