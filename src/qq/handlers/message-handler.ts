@@ -5,75 +5,51 @@ import type {
 
 import { buildAiInput, buildReplyPolicy } from "../../ai/input-builder.js";
 import { routeCommand } from "../../commands/router.js";
+import { buildAutoMemeContext } from "../../skills/meme/skill.js";
 import { logger, shortId, truncateLogText } from "../../shared/logger.js";
 import {
-    buildChatInput,
+    buildReplyCycleContext,
     getRecentImages,
     rememberIncomingMessage,
     recordIncomingMessageRevision,
 } from "../conversation/recent-context.js";
-import {
-    isConversationActive,
-} from "../conversation/engagement.js";
-import {
-    buildKnownMembersContext,
-    rememberKnownMember,
-} from "../conversation/known-members.js";
+import { isConversationActive } from "../conversation/engagement.js";
+import { buildKnownMembersContext, rememberKnownMember } from "../conversation/known-members.js";
 import { normalizeQqMessage } from "../message/normalize-message.js";
 import { decideMessageTrigger, isOnlyQQFace, wantsVision } from "../message/trigger.js";
 import { coordinateAiReply } from "../reply/coordinator.js";
 
 const SEARCH_NOTICES = [
-    "稍等，我查一下。",
-    "我搜一下最新的。",
-    "这个得查一下，我看看。",
-    "我去看一眼现在的情况。",
-    "等我翻一下最新资料。",
-    "稍等，我确认一下。",
+    "\u7a0d\u7b49\uff0c\u6211\u67e5\u4e00\u4e0b\u3002",
+    "\u6211\u641c\u4e00\u4e0b\u6700\u65b0\u7684\u3002",
+    "\u8fd9\u4e2a\u5f97\u67e5\u4e00\u4e0b\uff0c\u6211\u770b\u770b\u3002",
+    "\u6211\u53bb\u770b\u4e00\u773c\u73b0\u5728\u7684\u60c5\u51b5\u3002",
+    "\u7b49\u6211\u7ffb\u4e00\u4e0b\u6700\u65b0\u8d44\u6599\u3002",
+    "\u7a0d\u7b49\uff0c\u6211\u786e\u8ba4\u4e00\u4e0b\u3002",
 ];
-
 function randomSearchNotice(): string {
-    return SEARCH_NOTICES[
-        Math.floor(Math.random() * SEARCH_NOTICES.length)
-    ];
+    return SEARCH_NOTICES[Math.floor(Math.random() * SEARCH_NOTICES.length)];
 }
-
-function summarizeMessage(
-    input: string,
-    imageAttachments: any[],
-): string {
-    if (isOnlyQQFace(input)) {
-        return "[QQ表情]";
+function summarizeMessage(input: string, imageAttachments: any[]): string {
+    if (isOnlyQQFace(input)) return "[QQ\u8868\u60c5]";
+    if (input) return truncateLogText(input, 160);
+    if (!imageAttachments.length) return "";
+    const first = imageAttachments[0];
+    if (first.width !== undefined && first.height !== undefined) {
+        const dimensions = first.width + "x" + first.height;
+        return imageAttachments.length === 1 ? "[\u56fe\u7247 " + dimensions + "]" : "[\u56fe\u7247 " + dimensions + " x" + imageAttachments.length + "]";
     }
-    if (input) {
-        return truncateLogText(input, 160);
-    }
-    if (imageAttachments.length === 0) {
-        return "";
-    }
-
-    const firstImage = imageAttachments[0];
-    if (firstImage.width !== undefined && firstImage.height !== undefined) {
-        const dimensions = `${firstImage.width}x${firstImage.height}`;
-        return imageAttachments.length === 1
-            ? `[图片 ${dimensions}]`
-            : `[图片 ${dimensions} x${imageAttachments.length}]`;
-    }
-    return `[图片 x${imageAttachments.length}]`;
+    return "[\u56fe\u7247 x" + imageAttachments.length + "]";
 }
 
 export function registerMessageHandler(bot: QQBot): void {
     bot.on("message", async (context, message: QQBotInboundMessage) => {
         const normalized = await normalizeQqMessage(context, message);
+        if (normalized.authorIsBot) return;
 
-        if (normalized.authorIsBot) {
-            return;
-        }
-
-        recordIncomingMessageRevision(normalized);
-
-        // Keep learning members before the existing content filters.
+        // Learn members and route native commands before they can affect an AI cycle.
         await rememberKnownMember(normalized);
+        if (await routeCommand(bot, normalized)) return;
 
         const input = normalized.displayContent;
         const imageAttachments = normalized.attachments.filter((attachment: any) => {
@@ -81,30 +57,27 @@ export function registerMessageHandler(bot: QQBot): void {
             return typeof contentType === "string" && contentType.startsWith("image/");
         });
         const hasImages = imageAttachments.length > 0;
-        const isGroupEvent =
-            normalized.kind === "group" ||
+        if (!input && !hasImages) return;
+        if (isOnlyQQFace(input)) {
+            logger.info("[Filter] qq-face");
+            return;
+        }
+
+        const isGroupEvent = normalized.kind === "group" ||
             normalized.eventType === "GROUP_MESSAGE_CREATE" ||
             normalized.eventType === "GROUP_AT_MESSAGE_CREATE";
         const speaker = normalized.authorName
             ? truncateLogText(normalized.authorName, 60)
             : shortId(normalized.authorId);
         const messageSummary = summarizeMessage(input, imageAttachments);
-
-        if (messageSummary) {
-            logger.info(`[${isGroupEvent ? "GROUP" : "C2C"}] ${speaker}: ${messageSummary}`);
-        } else {
-            logger.debug("[QQ message] empty content");
-        }
-
+        if (messageSummary) logger.info("[" + (isGroupEvent ? "GROUP" : "C2C") + "] " + speaker + ": " + messageSummary);
+        else logger.debug("[QQ message] empty content");
         logger.debug("[QQ normalized]", {
             kind: normalized.kind,
             eventType: normalized.eventType,
             author: speaker,
             content: input,
-            mentions: normalized.mentions.map((mention) => ({
-                isYou: mention.isSelf,
-                name: mention.username,
-            })),
+            mentions: normalized.mentions.map((mention) => ({ isYou: mention.isSelf, name: mention.username })),
             attachments: imageAttachments.map((attachment: any) => ({
                 contentType: attachment?.content_type ?? attachment?.contentType,
                 width: attachment?.width,
@@ -112,89 +85,71 @@ export function registerMessageHandler(bot: QQBot): void {
             })),
         });
 
-        if (await routeCommand(bot, normalized)) {
-            return;
-        }
-
-        if (!input && !hasImages) {
-            return;
-        }
-
-        if (isOnlyQQFace(input)) {
-            logger.info("[Filter] qq-face");
-            return;
-        }
-
-        const activeConversation = isGroupEvent
-            ? isConversationActive(normalized)
-            : false;
+        const activeConversation = isGroupEvent ? isConversationActive(normalized) : false;
         const trigger = decideMessageTrigger(normalized, activeConversation);
-        const userInput = input;
+        const triggerPriority = !trigger.isGroup ? 3
+            : trigger.isAtBot ? 3
+              : trigger.mentionedByName ? 2
+                : trigger.activeConversation ? 1 : 0;
 
-        // Build history before appending this message so it is not duplicated.
-        const chatInput =
-            trigger.shouldReply && userInput
-                ? buildChatInput(normalized, userInput)
-                : userInput;
-
+        // Filtered QQ faces and local commands never increment revision or interrupt generation.
+        const revision = recordIncomingMessageRevision(normalized);
         rememberIncomingMessage(normalized, input);
+        logger.debug("[Cycle] inbound revision=" + revision);
 
         if (!input && hasImages) {
             const firstImage = imageAttachments[0];
-            logger.info(
-                firstImage.width !== undefined && firstImage.height !== undefined
-                    ? `[Image] cached ${firstImage.width}x${firstImage.height}`
-                    : "[Image] cached",
-            );
+            logger.info(firstImage.width !== undefined && firstImage.height !== undefined
+                ? "[Image] cached " + firstImage.width + "x" + firstImage.height
+                : "[Image] cached");
+        }
+
+        if (trigger.shouldReply && input) {
+            const label = trigger.isAtBot ? "mention / hard"
+                : trigger.mentionedByName ? "name / soft"
+                  : trigger.activeConversation ? "active / soft" : "private";
+            logger.info("[Trigger] " + label);
+            logger.debug("[Trigger decision]", trigger);
+        } else {
             logger.info("[Trigger] passive");
-            return;
         }
 
-        if (!trigger.shouldReply) {
-            logger.info("[Trigger] passive");
-            return;
-        }
-
-        if (!userInput) {
-            return;
-        }
-
-        const triggerLabel = trigger.isAtBot
-            ? "mention / hard"
-            : trigger.mentionedByName
-              ? "name / soft"
-              : trigger.activeConversation
-                ? "active / soft"
-                : "private";
-        logger.info(`[Trigger] ${triggerLabel}`);
-        logger.debug("[Trigger decision]", trigger);
-
-        const replyPolicy = buildReplyPolicy(trigger.allowNoReply);
-        const knownMembersContext = trigger.isGroup
-            ? await buildKnownMembersContext(normalized)
-            : "";
-        const aiInput = buildAiInput(chatInput, knownMembersContext, replyPolicy);
-
-        // The current message is already cached; this can also select its image.
-        const recentImageUrls = getRecentImages(normalized, 1);
-        const useVision = wantsVision(
-            userInput,
-            trigger.isAtBot,
-            trigger.mentionedByName,
-            recentImageUrls.length > 0,
-        );
-        const imageUrls = useVision ? recentImageUrls : [];
-
-        logger.debug("[AI reply policy]", replyPolicy);
+        const latestMessage = normalized;
         await coordinateAiReply({
             bot,
             message: normalized,
-            aiInput,
-            imageUrls,
+            aiInput: "",
+            imageUrls: [],
             isGroup: trigger.isGroup,
             allowNoReply: trigger.allowNoReply,
+            triggerPriority,
+            isAtBot: trigger.isAtBot,
+            mentionedByName: trigger.mentionedByName,
+            shouldStartCycle: trigger.shouldReply && Boolean(input),
             onWebSearchStart: async () => {
-                await bot.sendText(normalized.replyTarget, randomSearchNotice());
+                await bot.sendText(latestMessage.replyTarget, randomSearchNotice());
+            },
+            buildAttempt: async (attemptMessage, context) => {
+                const chatInput = buildReplyCycleContext(attemptMessage);
+                const knownMembersContext = trigger.isGroup
+                    ? await buildKnownMembersContext(attemptMessage)
+                    : "";
+                const memeContext = buildAutoMemeContext(attemptMessage.displayContent);
+                if (memeContext) {
+                    const first = memeContext.match(/name: ([^\n]+)/)?.[1] ?? "matched entry";
+                    logger.info("[Meme] auto hit \"" + truncateLogText(attemptMessage.displayContent, 48) +
+                        "\" -> " + truncateLogText(first, 64));
+                }
+                const replyPolicy = buildReplyPolicy(context.allowNoReply);
+                const aiInput = buildAiInput(chatInput, knownMembersContext, replyPolicy, memeContext);
+                const recentImageUrls = getRecentImages(attemptMessage, 1);
+                const useVision = wantsVision(
+                    attemptMessage.displayContent,
+                    context.isAtBot,
+                    context.mentionedByName,
+                    recentImageUrls.length > 0,
+                );
+                return { aiInput, imageUrls: useVision ? recentImageUrls : [] };
             },
         });
     });

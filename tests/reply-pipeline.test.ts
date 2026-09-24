@@ -26,7 +26,7 @@ configureMemberRepository(new MemoryMemberRepository());
 // Loading the coordinator constructs the SDK client, but these tests inject an AI stub.
 process.env.CODEX_API_KEY = "offline-test";
 process.env.CODEX_BASE_URL = "https://example.invalid";
-const { AI_TIMEOUT_REPLY, AI_UPSTREAM_ERROR_REPLY, MULTI_MESSAGE_DELAY_MS, coordinateAiReply, shouldQuoteTrigger,
+const { AI_TIMEOUT_REPLY, AI_WEB_SEARCH_TIMEOUT_REPLY, AI_UPSTREAM_ERROR_REPLY, MULTI_MESSAGE_DELAY_MS, coordinateAiReply, shouldQuoteTrigger,
     handleRecalledMessage, cancelPendingRequestByMessageId } = await import(
     "../src/qq/reply/coordinator.js"
 );
@@ -205,7 +205,9 @@ test("two messages quote only the first after newer group activity", async () =>
     const pending = coordinateAiReply(request(bot, trigger), {
         executeAi: async () => ai, multiMessageDelayMs: 0,
     });
-    recordIncomingMessageRevision(message(trigger.groupId));
+    const newer = message(trigger.groupId);
+    recordIncomingMessageRevision(newer);
+    coordinateAiReply(request(bot, newer), { executeAi: async () => ai });
     resolveAi(reply(["第一条", "第二条"], "none"));
     await pending;
     assert.deepEqual(calls.map((call) => call.method), ["send", "markdown"]);
@@ -337,7 +339,9 @@ test("a newer group message quotes the original trigger even with quote none", a
     let resolveAi!: (value: AiResult) => void;
     const ai = new Promise<AiResult>((resolve) => { resolveAi = resolve; });
     const pending = coordinateAiReply(request(bot, trigger), { executeAi: async () => ai });
-    recordIncomingMessageRevision(message(trigger.groupId));
+    const newer = message(trigger.groupId);
+    recordIncomingMessageRevision(newer);
+    coordinateAiReply(request(bot, newer), { executeAi: async () => ai });
     resolveAi(reply("pong", "none"));
     await pending;
     assert.deepEqual(calls.map((call) => call.method), ["send"]);
@@ -356,17 +360,18 @@ test("timeout records local notice, leaves engagement inactive, and discards lat
     const pending = coordinateAiReply(request(bot, trigger), {
         executeAi: async (_input, options) => {
             signal = options.signal;
-            return ai;
+            return new Promise<AiResult>((resolve, reject) => {
+                options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+                ai.then(resolve, reject);
+            });
         },
         timeoutMs: 10,
     });
-    recordIncomingMessageRevision(message(trigger.groupId));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     await pending;
     assert.equal(signal.aborted, true);
-    assert.deepEqual(calls.map((call) => call.method), ["send"]);
-    const payload = calls[0].args[0] as { markdown: { content: string }; messageReference: { message_id: string } };
-    assert.equal(payload.markdown.content, AI_TIMEOUT_REPLY);
-    assert.equal(payload.messageReference.message_id, trigger.id);
+    assert.deepEqual(calls.map((call) => call.method), ["text"]);
+    assert.equal(calls[0].args[1], AI_TIMEOUT_REPLY);
     assert.match(buildChatInput(trigger, "next"), new RegExp(AI_TIMEOUT_REPLY));
     assert.equal(isConversationActive(trigger), false);
 
@@ -381,7 +386,8 @@ test("NO_REPLY sends nothing, exits engagement, and clears the deadline", async 
     const trigger = message();
     recordIncomingMessageRevision(trigger);
     const { bot, calls } = fakeBot();
-    await coordinateAiReply(request(bot, trigger), { executeAi: async () => ({ kind: "no_reply" }) });
+    await coordinateAiReply({ ...request(bot, trigger), allowNoReply: true, triggerPriority: 1 },
+        { executeAi: async () => ({ kind: "no_reply" }) });
     assert.equal(calls.length, 0);
     assert.equal(isConversationActive(trigger), false);
     t.mock.timers.tick(30_001);
@@ -390,6 +396,8 @@ test("NO_REPLY sends nothing, exits engagement, and clears the deadline", async 
 });
 
 test("hard deadline aborts an unfinished request at exactly 30 seconds", async (t) => {
+    let now = 1_000;
+    t.mock.method(Date, "now", () => now);
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const trigger = message();
     recordIncomingMessageRevision(trigger);
@@ -398,13 +406,17 @@ test("hard deadline aborts an unfinished request at exactly 30 seconds", async (
     const pending = coordinateAiReply(request(bot, trigger), {
         executeAi: async (_input, options) => {
             signal = options.signal;
-            return new Promise<AiResult>(() => {});
+            return new Promise<AiResult>((_resolve, reject) => {
+                options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
         },
     });
     await Promise.resolve();
+    now += 29_999;
     t.mock.timers.tick(29_999);
     assert.equal(signal.aborted, false);
     assert.equal(calls.length, 0);
+    now += 1;
     t.mock.timers.tick(1);
     await pending;
     assert.equal(signal.aborted, true);
@@ -473,7 +485,9 @@ test("upstream fallback quotes the trigger after a newer group message", async (
     let rejectAi!: (error: unknown) => void;
     const ai = new Promise<AiResult>((_resolve, reject) => { rejectAi = reject; });
     const pending = coordinateAiReply(request(bot, trigger), { executeAi: async () => ai });
-    recordIncomingMessageRevision(message(trigger.groupId));
+    const newer = message(trigger.groupId);
+    recordIncomingMessageRevision(newer);
+    coordinateAiReply(request(bot, newer), { executeAi: async () => ai });
     rejectAi({ status: 520, retryable: true });
     await pending;
     assert.deepEqual(calls.map((call) => call.method), ["send"]);
@@ -494,15 +508,18 @@ test("web search notice is followed by timeout fallback", async (t) => {
         executeAi: async (_input, options) => {
             signal = options.signal;
             await options.onWebSearchStart?.();
-            return new Promise<AiResult>(() => {});
+            return new Promise<AiResult>((_resolve, reject) => {
+                options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
         },
+        webSearchTimeoutMs: 30_000,
     });
     await Promise.resolve();
     await Promise.resolve();
     t.mock.timers.tick(30_000);
     await pending;
     assert.equal(signal.aborted, true);
-    assert.deepEqual(calls.map((call) => call.args[1]), ["稍等，我查一下。", AI_TIMEOUT_REPLY]);
+    assert.deepEqual(calls.map((call) => call.args[1]), ["稍等，我查一下。", AI_WEB_SEARCH_TIMEOUT_REPLY]);
     t.mock.timers.reset();
 });
 
@@ -525,7 +542,9 @@ test("recall just before the deadline wins without a fallback", async (t) => {
     const pending = coordinateAiReply(request(bot, trigger), {
         executeAi: async (_input, options) => {
             signal = options.signal;
-            return new Promise<AiResult>(() => {});
+            return new Promise<AiResult>((_resolve, reject) => {
+                options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
         },
     });
     await Promise.resolve();
@@ -571,7 +590,7 @@ test("recall during asynchronous mention rendering prevents QQ send", async () =
 
 test("two different triggers remain independent", async () => {
     const firstTrigger = message();
-    const secondTrigger = message(firstTrigger.groupId);
+    const secondTrigger = message();
     recordIncomingMessageRevision(firstTrigger);
     const { bot, calls } = fakeBot();
     let resolveFirst!: (value: AiResult) => void;
@@ -658,11 +677,11 @@ test("recall cancels the matching request, removes context, and beats timeout", 
     handleRecalledMessage(getConversationKey(trigger), trigger.id!);
     handleRecalledMessage(getConversationKey(trigger), trigger.id!);
     assert.equal(cancelPendingRequestByMessageId(trigger.id!), 0);
+    resolveAi(reply("too late"));
     await pending;
     assert.equal(signal.aborted, true);
     assert.equal(calls.length, 0);
     assert.doesNotMatch(buildChatInput(trigger, "next"), /小尘 ping/);
-    resolveAi(reply("too late"));
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(calls.length, 0);
 });
@@ -671,17 +690,18 @@ test("one recalled trigger cancels every matching pending request", async () => 
     const trigger = message();
     recordIncomingMessageRevision(trigger);
     const { bot, calls } = fakeBot();
-    const never = new Promise<AiResult>(() => {});
     const first = coordinateAiReply(request(bot, trigger), {
-        executeAi: async () => never,
+        executeAi: async (_input, options) => new Promise<AiResult>((_resolve, reject) => {
+            options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        }),
         timeoutMs: 100,
     });
     const second = coordinateAiReply(request(bot, trigger), {
-        executeAi: async () => never,
+        executeAi: async () => { throw new Error("same conversation must not start a second request"); },
         timeoutMs: 100,
     });
     await Promise.resolve();
-    assert.equal(cancelPendingRequestByMessageId(trigger.id!), 2);
+    assert.equal(cancelPendingRequestByMessageId(trigger.id!), 1);
     await Promise.all([first, second]);
     assert.equal(calls.length, 0);
 });

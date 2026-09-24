@@ -113,7 +113,7 @@ export async function chat(
             }
             logger.debug("[AI stream event]", event.type);
 
-            if (event.type === "response.web_search_call.searching" && !searchNoticeSent) {
+            if (["response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed"].includes(event.type) && !searchNoticeSent) {
                 searchNoticeSent = true;
                 logger.info("[AI] web search");
                 await options.onWebSearchStart?.();

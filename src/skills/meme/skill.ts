@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { logger } from "../../shared/logger.js";
-import { searchMemes } from "./search.js";
+import { normalizeMemeTerm, searchMemes } from "./search.js";
 import { validateMemeFile } from "./validation.js";
 
 const entries = validateMemeFile(JSON.parse(readFileSync(new URL("./data/memes.json", import.meta.url), "utf8")));
@@ -17,6 +17,57 @@ export const memeLookupTool = {
         additionalProperties: false,
     },
 };
+
+
+const autoIndex = new Map<string, { entry: (typeof entries)[number]; exact: boolean }>();
+for (const entry of entries) {
+    for (const term of [entry.name, ...entry.aliases]) {
+        const key = normalizeAutoTerm(term);
+        if (key && isSafeAutoTerm(key)) autoIndex.set(key, { entry, exact: true });
+    }
+}
+
+function normalizeAutoTerm(value: string): string {
+    return normalizeMemeTerm(value).replace(/^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu, "");
+}
+
+function isSafeAutoTerm(value: string): boolean {
+    const han = value.match(/\p{Script=Han}/gu)?.length ?? 0;
+    const latinOrDigits = value.match(/[a-z0-9]/gi)?.length ?? 0;
+    return han >= 2 || latinOrDigits >= 4 || value.length >= 4;
+}
+
+export function matchMemesInMessage(text: string, limit = 3): (typeof entries)[number][] {
+    const normalized = normalizeAutoTerm(text);
+    if (!normalized) return [];
+    const exact = autoIndex.get(normalized);
+    const matches: Array<{ entry: (typeof entries)[number]; score: number; length: number }> = [];
+    if (exact) matches.push({ entry: exact.entry, score: 2, length: normalized.length });
+    for (const [term, indexed] of autoIndex) {
+        if (term === normalized || !normalized.includes(term)) continue;
+        matches.push({ entry: indexed.entry, score: 1, length: term.length });
+    }
+    const seen = new Set<string>();
+    return matches
+        .sort((a, b) => b.score - a.score || b.length - a.length)
+        .filter(({ entry }) => !seen.has(entry.id) && Boolean(seen.add(entry.id)))
+        .slice(0, Math.min(3, Math.max(0, limit)))
+        .map(({ entry }) => entry);
+}
+
+export function buildAutoMemeContext(text: string): string {
+    const matches = matchMemesInMessage(text);
+    if (!matches.length) return "";
+    const asksOrigin = /\u51fa\u5904|\u6765\u6e90|\u600e\u4e48\u6765|\u600e\u4e48\u706b|\u8d77\u6e90|\u8c01\u5148/iu.test(text);
+    return matches.map((entry) => [
+        "name: " + entry.name,
+        "aliases: " + entry.aliases.join("、"),
+        "summary: " + entry.summary,
+        "meaning: " + entry.meaning,
+        "usage: " + entry.usage,
+        ...(asksOrigin ? ["origin: " + entry.origin, "sources: " + entry.sources.map((source) => source.url).join(" ")] : []),
+    ].join("\n")).join("\n\n");
+}
 
 export function lookupMeme(argumentsJson: string): string {
     let query: unknown;

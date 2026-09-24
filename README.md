@@ -7,8 +7,9 @@
 - `/xxx` 命令由本地路由执行，未知命令由本地回复。
 - Minecraft 服务器状态查询、状态卡和刷新按钮共用同一查询能力。
 - 群聊和私聊中的 AI 回复支持最近 20 条群聊上下文、已见群成员、按需识图与网页搜索。
-- AI 请求有 30 秒硬截止；超时或可重试的上游故障由本地发送固定提示，迟到结果不会再发送。
-- 结构化 `qq_reply` 支持 Markdown 和已知成员 @；生成期间群里有新消息时，回复会引用原触发消息。
+- 普通 Reply Cycle 最长 30 秒；实际触发 Web Search 后最长 120 秒，超时会 abort 生成。
+- 每个 conversation 同时只运行一个 AI Attempt；生成中最多被新消息打断 3 次，每次都基于最新上下文重试，剩余消息进入下一 Cycle。
+- 结构化 `qq_reply` 支持 Markdown 和已知成员 @；生成完成后进入 QQ 发送阶段，新消息不会中止已完成的回复。
 - 自然聊天时，AI 可通过结构化 `qq_reply` 一次发送最多三条连续 QQ 消息；Node 不按标点自动拆分。
 - AI 可按需调用只读 `meme_lookup`，查询项目内维护的网络梗摘要。
 - 群聊可按 @、名字或活跃会话触发；模型可以选择 `<NO_REPLY>`。
@@ -43,6 +44,10 @@ flowchart TD
 
 ## AI 聊天
 
+### Conversation Reply Cycle
+
+每个 conversation 同时最多一个生成中的 AI Attempt。生成中的新消息会 abort 当前 Attempt 并重建最新上下文，每个 Cycle 最多三次中断；达到上限后新消息缓存到下一 Cycle。正常硬截止从 Cycle 开始计 30 秒；当 Responses 流实际发出 Web Search 事件时，该 Cycle 的截止时间升至同一起点后 120 秒。
+
 群聊中，真正 @ 小尘是强触发；提到“小尘”或处于活跃会话时是软触发。普通非活跃群消息只记录上下文。软触发时模型可以输出 `<NO_REPLY>`。图片仅在满足识图触发条件时发送给模型；网页搜索由模型按需选择。
 
 联网搜索结果会将 Responses API 提供的引用转换为普通 Markdown 来源链接；来源元数据缺失时会隐藏内部引用标记。
@@ -55,7 +60,7 @@ flowchart TD
 
 ### Meme Skill
 
-`src/skills/meme/data/memes.json` 是可提交 Git 的静态网络梗知识文件。Bot 启动时只读取它；聊天中的 `meme_lookup` 最多返回三个相关条目，不会新增或修改知识。查不到时，模型仍可按需使用现有 `web_search` 现场回答，但搜索结果不会写入 Meme Skill。当前知识文件为空，需手动维护后才有本地命中。
+`src/skills/meme/data/memes.json` 是可提交 Git 的静态网络梗知识文件。Runtime 启动时校验文件并建立只读内存索引；消息中明确命中 name/aliases 时自动注入最多 3 条简短 Meme Context，优先用本地知识理解同一个梗。`meme_lookup` 仍是本地自动匹配未命中或模型不确定时的 fallback；只有本地资料不足、用户要求核实或询问最新传播时才考虑 Web Search。Bot 不会写回知识文件。查不到时，模型仍可按需使用现有 `web_search` 现场回答，但搜索结果不会写入 Meme Skill。当前知识文件为空，需手动维护后才有本地命中。
 
 维护入口独立于 Bot：
 

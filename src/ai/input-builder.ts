@@ -23,12 +23,15 @@ export function buildAiInput(
     chatInput: string,
     knownMembersContext: string,
     replyPolicy: string,
+    memeContext = "",
 ): string {
     return [
         chatInput,
         knownMembersContext
             ? `\n${knownMembersContext}`
             : "",
+        memeContext ? "<meme_context>\n" + memeContext + "\n</meme_context>\n" +
+            "\u672c\u5730 Meme Context \u5df2\u8db3\u4ee5\u89e3\u91ca\u8be5\u6897\u65f6\uff0c\u4f18\u5148\u4f7f\u7528\u5b83\uff0c\u4e0d\u8981\u4e3a\u540c\u4e00\u6897\u8c03\u7528 meme_lookup \u6216 web_search\uff1b\u672c\u5730\u8d44\u6599\u4e0d\u8db3\u3001\u7528\u6237\u8981\u6c42\u6838\u5b9e\u6216\u8be2\u95ee\u6700\u65b0\u4f20\u64ad\u60c5\u51b5\u65f6\u518d\u67e5\u8be2\u3002" : "",
         replyPolicy,
     ]
         .filter(Boolean)
