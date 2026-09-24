@@ -8,15 +8,22 @@ export function getTriggerMessageId(message: NormalizedQqMessage): string | unde
     return message.id ?? message.replyTarget.msgId;
 }
 
+export async function prepareAiReply(message: NormalizedQqMessage, action: QqReplyAction) {
+    return renderStructuredMentions(message, action.content, action.mentions);
+}
+
 /** Keep Tencent payload fields in one place. */
 export async function sendAiReply(
     bot: QQBot,
     message: NormalizedQqMessage,
-    action: QqReplyAction,
+    rendered: Awaited<ReturnType<typeof prepareAiReply>>,
     quoteTrigger: boolean,
-): Promise<string> {
-    const rendered = await renderStructuredMentions(message, action.content, action.mentions);
+    beforeSend: () => boolean,
+): Promise<boolean> {
     const triggerMessageId = getTriggerMessageId(message);
+
+    // This check and the QQ call have no await between them.
+    if (!beforeSend()) return false;
 
     if (quoteTrigger && triggerMessageId) {
         await bot.send({
@@ -29,7 +36,7 @@ export async function sendAiReply(
         await bot.sendMarkdown(message.replyTarget, rendered.sendText);
     }
 
-    return rendered.contextText;
+    return true;
 }
 
 export async function sendTimeoutReply(

@@ -3,6 +3,7 @@ import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 
 import { AI_MODEL, chat } from "../../ai/client.js";
 import type { AiResult, QuotePreference } from "../../ai/reply-result.js";
+import { classifyUpstreamFailure } from "../../ai/upstream-error.js";
 import { logger, shortId } from "../../shared/logger.js";
 import {
     getConversationKey,
@@ -12,10 +13,11 @@ import {
 } from "../conversation/recent-context.js";
 import { markConversationActive, stopConversation } from "../conversation/engagement.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
-import { getTriggerMessageId, sendAiReply, sendTimeoutReply } from "./sender.js";
+import { getTriggerMessageId, prepareAiReply, sendAiReply, sendTimeoutReply } from "./sender.js";
 
 export const AI_REQUEST_TIMEOUT_MS = 30_000;
 export const AI_TIMEOUT_REPLY = "后端卡住了，等会再叫我一下";
+export const AI_UPSTREAM_ERROR_REPLY = "后端暂时炸了，等会再叫我一下";
 const AI_ERROR_REPLY = "刚才脑子短路了一下。";
 
 type PendingRequestStatus = "running" | "completed" | "timed_out" | "cancelled" | "failed";
@@ -85,16 +87,27 @@ function releasePending(pending: PendingRequest): void {
     }
 }
 
+/** A terminal state is chosen once, before any asynchronous final-send work. */
+function transition(pending: PendingRequest, status: Exclude<PendingRequestStatus, "running">): boolean {
+    if (pending.status !== "running") return false;
+    pending.status = status;
+    if (pending.timer) {
+        clearTimeout(pending.timer);
+        pending.timer = undefined;
+    }
+    return true;
+}
+
 /** Cancels all still-running requests triggered by this QQ message. Idempotent. */
 export function cancelPendingRequestByMessageId(messageId: string): number {
     if (!messageId) return 0;
     let cancelled = 0;
     for (const requestId of [...(pendingByTrigger.get(messageId) ?? [])]) {
         const pending = pendingRequests.get(requestId);
-        if (!pending || pending.status !== "running") continue;
-        pending.status = "cancelled";
+        if (!pending || !transition(pending, "cancelled")) continue;
         releasePending(pending);
         pending.controller.abort();
+        logger.info("[AI] aborted request=" + shortId(requestId));
         pending.rejectCancellation(new AiCancelledError());
         cancelled += 1;
         logger.info("[AI] cancelled by recall request=" + shortId(requestId));
@@ -130,7 +143,7 @@ function quoteDecision(request: ReplyRequest, pending: PendingRequest, preferenc
         preference, request.isGroup, newerMessages, Boolean(pending.triggerMessageId),
     );
     if (quote && newerMessages > 0) {
-        logger.info("[Reply] quoted trigger because " + newerMessages + " newer messages arrived");
+        logger.info("[Reply] quote trigger newerMessages=" + newerMessages);
     } else if (quote) {
         logger.info("[Reply] quoted trigger by qq_reply");
     } else if (request.isGroup && newerMessages > 0 && !pending.triggerMessageId) {
@@ -144,6 +157,22 @@ async function sendFailureNotice(request: ReplyRequest): Promise<void> {
         await request.bot.sendText(request.message.replyTarget, AI_ERROR_REPLY);
     } catch (error) {
         logger.error("[QQ] send error", error);
+    }
+}
+
+async function sendLocalFallback(
+    request: ReplyRequest,
+    pending: PendingRequest,
+    content: string,
+    label: "timeout" | "upstream",
+): Promise<void> {
+    const quote = quoteDecision(request, pending, "auto");
+    try {
+        await sendTimeoutReply(request.bot, request.message, content, quote);
+        rememberBotReply(request.message, content);
+        logger.info("[Reply] " + label + " fallback sent");
+    } catch (error) {
+        logger.error("[QQ] " + label + " fallback send error", error);
     }
 }
 
@@ -178,7 +207,7 @@ export async function coordinateAiReply(
     );
     logger.debug("[AI request]", {
         requestId,
-        conversation: pending.conversationKey,
+        scope: request.isGroup ? "group" : "private",
         triggerTimestamp: pending.triggerTimestamp,
         revisionAtStart: pending.revisionAtStart,
         startedAt: pending.startedAt,
@@ -188,13 +217,14 @@ export async function coordinateAiReply(
     const deadline = new Promise<never>((_resolve, reject) => {
         rejectDeadline = reject;
     });
-    pending.timer = setTimeout(() => {
-        if (pending.status !== "running") return;
-        pending.status = "timed_out";
-        logger.error("[AI] timeout " + (timeoutMs / 1000).toFixed(1) + "s request=" + logId);
+    const timeoutPending = () => {
+        if (!transition(pending, "timed_out")) return;
+        logger.error("[AI] timeout request=" + logId + " " + (timeoutMs / 1000).toFixed(1) + "s");
         pending.controller.abort();
+        logger.info("[AI] aborted request=" + logId);
         rejectDeadline(new AiTimeoutError());
-    }, timeoutMs);
+    };
+    pending.timer = setTimeout(timeoutPending, timeoutMs);
 
     const aiWork = Promise.resolve().then(() => {
         if (pending.status !== "running") throw new AiCancelledError();
@@ -205,33 +235,36 @@ export async function coordinateAiReply(
                 if (pending.status === "running") await request.onWebSearchStart();
             },
         });
-    }).then(
-        (result) => {
-            if (pending.status !== "running") {
-                logger.info("[AI] late result discarded request=" + logId);
-                throw new LateResultError();
-            }
-            return result;
-        },
-        (error: unknown) => {
-            if (pending.status === "timed_out" || pending.status === "cancelled") {
-                logger.info("[AI] aborted request=" + logId);
-            }
-            throw error;
-        },
-    );
+    }).then(async (result) => {
+        if (pending.status !== "running") {
+            logger.info("[AI] late result discarded request=" + logId);
+            throw new LateResultError();
+        }
+        const rendered = result.kind === "reply"
+            ? await prepareAiReply(request.message, result.action)
+            : undefined;
+        if (pending.status !== "running") {
+            logger.info("[AI] late result discarded request=" + logId);
+            throw new LateResultError();
+        }
+        return { result, rendered };
+    });
 
     type Outcome =
-        | { kind: "result"; result: AiResult }
+        | { kind: "result"; value: Awaited<typeof aiWork> }
         | { kind: "timeout" }
         | { kind: "cancelled" }
         | { kind: "error"; error: unknown };
     let outcome: Outcome;
     try {
         try {
-            const result = await Promise.race([aiWork, deadline, cancellation]);
+            const value = await Promise.race([aiWork, deadline, cancellation]);
+            // A busy event loop may resolve work before the overdue timer callback runs.
+            if (pending.status === "running" && Date.now() - pending.startedAt >= timeoutMs) {
+                timeoutPending();
+            }
             outcome = pending.status === "running"
-                ? { kind: "result", result }
+                ? { kind: "result", value }
                 : pending.status === "cancelled"
                   ? { kind: "cancelled" }
                   : { kind: "timeout" };
@@ -241,7 +274,7 @@ export async function coordinateAiReply(
             } else if (pending.status === "timed_out" || error instanceof AiTimeoutError) {
                 outcome = { kind: "timeout" };
             } else {
-                pending.status = "failed";
+                transition(pending, "failed");
                 outcome = { kind: "error", error };
             }
         } finally {
@@ -254,37 +287,52 @@ export async function coordinateAiReply(
         if (outcome.kind === "cancelled") return;
         if (outcome.kind === "timeout") {
             if (pending.status !== "timed_out") return;
-            const quote = quoteDecision(request, pending, "auto");
-            try {
-                await sendTimeoutReply(request.bot, request.message, AI_TIMEOUT_REPLY, quote);
-                rememberBotReply(request.message, AI_TIMEOUT_REPLY);
-                logger.info("[Reply] sent timeout notice");
-            } catch (error) {
-                logger.error("[QQ] timeout notice send error", error);
-            }
+            await sendLocalFallback(request, pending, AI_TIMEOUT_REPLY, "timeout");
             return;
         }
         if (outcome.kind === "error") {
             if (outcome.error instanceof LateResultError) return;
+            const upstream = classifyUpstreamFailure(outcome.error);
+            if (upstream) {
+                logger.info("[AI] upstream error status=" + (upstream.status ?? "unknown") + " retryable=yes");
+                await sendLocalFallback(request, pending, AI_UPSTREAM_ERROR_REPLY, "upstream");
+                return;
+            }
             logger.error("[AI] error", outcome.error);
             await sendFailureNotice(request);
             return;
         }
         if (pending.status !== "running") return;
-        const result = outcome.result;
+        const { result, rendered } = outcome.value;
         if (result.kind === "no_reply") {
-            pending.status = "completed";
+            if (!transition(pending, "completed")) return;
             logger.info("[AI] no reply");
             if (request.isGroup) stopConversation(request.message);
             return;
         }
+        if (!rendered) return;
         const quote = quoteDecision(request, pending, result.action.quote);
-        // Keep the request cancellable through the final synchronous send decision.
         if (pending.status !== "running") return;
-        pending.status = "completed";
         try {
-            const contextText = await sendAiReply(request.bot, request.message, result.action, quote);
-            rememberBotReply(request.message, contextText);
+            let expiredAtSend = false;
+            const sent = await sendAiReply(request.bot, request.message, rendered, quote,
+                () => {
+                    if (Date.now() - pending.startedAt >= timeoutMs) {
+                        expiredAtSend = true;
+                        timeoutPending();
+                        return false;
+                    }
+                    return transition(pending, "completed");
+                });
+            if (!sent) {
+                if (expiredAtSend) {
+                    await sendLocalFallback(request, pending, AI_TIMEOUT_REPLY, "timeout");
+                } else {
+                    logger.info("[AI] late result discarded request=" + logId);
+                }
+                return;
+            }
+            rememberBotReply(request.message, rendered.contextText);
             logger.info("[Reply] sent");
             if (request.isGroup) markConversationActive(request.message);
         } catch (error) {

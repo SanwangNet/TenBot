@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { qqReplyTool, parseQqReplyArguments, type AiResult } from "./reply-result.js";
 import { logger, truncateLogText } from "../shared/logger.js";
+import { AiResponseFailure } from "./upstream-error.js";
 
 export const AI_MODEL = "gpt-6-sol";
 
@@ -31,9 +32,9 @@ export async function chat(
     input: string,
     options: ChatOptions,
 ): Promise<AiResult> {
-    logger.debug("[AI input]", input);
+    logger.debug("[AI input length]", input.length);
     if (options.imageUrls?.length) {
-        logger.debug("[AI image URLs]", options.imageUrls);
+        logger.debug("[AI image count]", options.imageUrls.length);
     }
 
     const startedAt = Date.now();
@@ -80,62 +81,70 @@ export async function chat(
     const functionNames = new Map<string, string>();
     const qqReplyCalls = new Map<number, string>();
 
-    for await (const event of stream) {
-        if (options.signal.aborted) {
-            throw new Error("AI request aborted");
-        }
-        logger.debug("[AI stream event]", event.type);
-
-        if (event.type === "response.web_search_call.searching" && !searchNoticeSent) {
-            searchNoticeSent = true;
-            logger.info("[AI] web search");
-            await options.onWebSearchStart?.();
-        }
-
-        if (event.type === "response.output_text.delta") {
-            output += event.delta;
-        }
-
-        if (event.type === "response.output_item.added" &&
-            event.item.type === "function_call" && event.item.id) {
-            functionNames.set(event.item.id, event.item.name);
-        }
-
-        if (event.type === "response.function_call_arguments.done" &&
-            functionNames.get(event.item_id) === "qq_reply") {
-            qqReplyCalls.set(event.output_index, event.arguments);
-        }
-
-        if (event.type === "response.output_item.done" &&
-            event.item.type === "function_call" && event.item.name === "qq_reply") {
-            qqReplyCalls.set(event.output_index, event.item.arguments);
-        }
-
-        if (event.type === "response.completed") {
-            completed = true;
-            const finalText: string[] = [];
-            for (const [index, item] of event.response.output.entries()) {
-                if (item.type === "function_call" && item.name === "qq_reply") {
-                    qqReplyCalls.set(index, item.arguments);
-                }
-                if (item.type === "message") {
-                    finalText.push(...item.content
-                        .filter((part) => part.type === "output_text")
-                        .map((part) => part.text));
-                }
+    const abortStream = () => stream.controller.abort();
+    options.signal.addEventListener("abort", abortStream, { once: true });
+    if (options.signal.aborted) abortStream();
+    try {
+        for await (const event of stream) {
+            if (options.signal.aborted) {
+                throw new Error("AI request aborted");
             }
-            if (!output) {
-                output = finalText.join("");
-            }
-            break;
-        }
+            logger.debug("[AI stream event]", event.type);
 
-        if (event.type === "response.failed") {
-            throw new Error(`模型请求失败：${JSON.stringify(event.response.error)}`);
+            if (event.type === "response.web_search_call.searching" && !searchNoticeSent) {
+                searchNoticeSent = true;
+                logger.info("[AI] web search");
+                await options.onWebSearchStart?.();
+            }
+
+            if (event.type === "response.output_text.delta") {
+                output += event.delta;
+            }
+
+            if (event.type === "response.output_item.added" &&
+                event.item.type === "function_call" && event.item.id) {
+                functionNames.set(event.item.id, event.item.name);
+            }
+
+            if (event.type === "response.function_call_arguments.done" &&
+                functionNames.get(event.item_id) === "qq_reply") {
+                qqReplyCalls.set(event.output_index, event.arguments);
+            }
+
+            if (event.type === "response.output_item.done" &&
+                event.item.type === "function_call" && event.item.name === "qq_reply") {
+                qqReplyCalls.set(event.output_index, event.item.arguments);
+            }
+
+            if (event.type === "response.completed") {
+                completed = true;
+                const finalText: string[] = [];
+                for (const [index, item] of event.response.output.entries()) {
+                    if (item.type === "function_call" && item.name === "qq_reply") {
+                        qqReplyCalls.set(index, item.arguments);
+                    }
+                    if (item.type === "message") {
+                        finalText.push(...item.content
+                            .filter((part) => part.type === "output_text")
+                            .map((part) => part.text));
+                    }
+                }
+                if (!output) {
+                    output = finalText.join("");
+                }
+                break;
+            }
+
+            if (event.type === "response.failed") {
+                throw new AiResponseFailure(event.response.error);
+            }
+            if (event.type === "response.incomplete") {
+                throw new Error("模型响应未完成");
+            }
         }
-        if (event.type === "response.incomplete") {
-            throw new Error("模型响应未完成");
-        }
+    } finally {
+        options.signal.removeEventListener("abort", abortStream);
+        if (options.signal.aborted) abortStream();
     }
 
     if (options.signal.aborted) {
