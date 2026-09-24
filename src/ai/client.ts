@@ -1,9 +1,15 @@
 import "dotenv/config";
 import OpenAI from "openai";
 
+import {
+    collectMarkerSources,
+    normalizeUrlCitation,
+    renderCitations,
+    type CitedText,
+} from "./citations.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { qqReplyTool, parseQqReplyArguments, type AiResult } from "./reply-result.js";
-import { logger, truncateLogText } from "../shared/logger.js";
+import { logger } from "../shared/logger.js";
 import { AiResponseFailure } from "./upstream-error.js";
 
 export const AI_MODEL = "gpt-6-sol";
@@ -75,7 +81,18 @@ export async function chat(
         `[AI] stream ${(streamElapsed / 1000).toFixed(1)}s${streamElapsed > 10_000 ? " (slow)" : ""}`,
     );
 
-    let output = "";
+    type StreamTextPart = CitedText & { outputIndex: number; contentIndex: number };
+    const textParts = new Map<string, StreamTextPart>();
+    let unindexedOutput = "";
+    const getTextPart = (outputIndex: number, contentIndex: number): StreamTextPart => {
+        const key = `${outputIndex}:${contentIndex}`;
+        let part = textParts.get(key);
+        if (!part) {
+            part = { outputIndex, contentIndex, text: "", citations: [] };
+            textParts.set(key, part);
+        }
+        return part;
+    };
     let searchNoticeSent = false;
     let completed = false;
     const functionNames = new Map<string, string>();
@@ -98,7 +115,29 @@ export async function chat(
             }
 
             if (event.type === "response.output_text.delta") {
-                output += event.delta;
+                if (Number.isSafeInteger(event.output_index) && Number.isSafeInteger(event.content_index)) {
+                    getTextPart(event.output_index, event.content_index).text += event.delta;
+                } else {
+                    unindexedOutput += event.delta;
+                }
+            }
+
+            if (event.type === "response.output_text.done") {
+                if (Number.isSafeInteger(event.output_index) && Number.isSafeInteger(event.content_index)) {
+                    getTextPart(event.output_index, event.content_index).text = event.text;
+                } else {
+                    unindexedOutput = event.text;
+                }
+            }
+
+            if (event.type === "response.output_text.annotation.added") {
+                logger.debug("[AI citation annotation]", event.annotation?.type);
+                const citation = normalizeUrlCitation(event.annotation);
+                if (citation && Number.isSafeInteger(event.output_index) &&
+                    Number.isSafeInteger(event.content_index)) {
+                    const part = getTextPart(event.output_index, event.content_index);
+                    part.citations = [...part.citations, citation];
+                }
             }
 
             if (event.type === "response.output_item.added" &&
@@ -118,19 +157,21 @@ export async function chat(
 
             if (event.type === "response.completed") {
                 completed = true;
-                const finalText: string[] = [];
                 for (const [index, item] of event.response.output.entries()) {
                     if (item.type === "function_call" && item.name === "qq_reply") {
                         qqReplyCalls.set(index, item.arguments);
                     }
                     if (item.type === "message") {
-                        finalText.push(...item.content
-                            .filter((part) => part.type === "output_text")
-                            .map((part) => part.text));
+                        for (const [contentIndex, content] of item.content.entries()) {
+                            if (content.type !== "output_text") continue;
+                            const part = getTextPart(index, contentIndex);
+                            part.text = content.text;
+                            for (const annotation of content.annotations ?? []) {
+                                const citation = normalizeUrlCitation(annotation);
+                                if (citation) part.citations = [...part.citations, citation];
+                            }
+                        }
                     }
-                }
-                if (!output) {
-                    output = finalText.join("");
                 }
                 break;
             }
@@ -154,6 +195,20 @@ export async function chat(
         throw new Error("模型响应流意外结束");
     }
 
+    if (unindexedOutput && ![...textParts.values()].some((part) => part.text)) {
+        getTextPart(0, 0).text = unindexedOutput;
+    }
+    const parts = [...textParts.values()]
+        .sort((a, b) => a.outputIndex - b.outputIndex || a.contentIndex - b.contentIndex);
+    const markerSources = collectMarkerSources(parts);
+    const renderedParts = parts.map((part) =>
+        renderCitations(part.text, part.citations, markerSources));
+    const output = renderedParts.map((part) => part.content).join("");
+    const reportCitations = (renderedCount: number, metadataUnavailable: boolean): void => {
+        if (renderedCount) logger.info("[AI] citations " + renderedCount);
+        if (metadataUnavailable) logger.debug("[AI] citation metadata unavailable");
+    };
+
     const elapsed = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
     if (output.trim() === "<NO_REPLY>") {
         logger.info(`[AI] done ${elapsed}: <NO_REPLY>`);
@@ -170,7 +225,12 @@ export async function chat(
             logger.info(`[AI] done ${elapsed}: <NO_REPLY>`);
             return { kind: "no_reply" };
         }
-        logger.info(`[AI] done ${elapsed}: ${truncateLogText(action.content)}`);
+        const matchingPart = parts.find((part) => part.text === action.content);
+        const rendered = renderCitations(action.content, matchingPart?.citations ?? [], markerSources);
+        if (!rendered.content.trim()) continue;
+        action.content = rendered.content;
+        reportCitations(rendered.renderedCount, rendered.metadataUnavailable);
+        logger.info(`[AI] done ${elapsed}: content length ${action.content.length}`);
         return { kind: "reply", source: "qq_reply", action };
     }
 
@@ -178,7 +238,11 @@ export async function chat(
         throw new Error("模型没有返回文本或有效 qq_reply");
     }
 
-    logger.info(`[AI] done ${elapsed}: ${truncateLogText(output)}`);
+    reportCitations(
+        renderedParts.reduce((count, part) => count + part.renderedCount, 0),
+        renderedParts.some((part) => part.metadataUnavailable),
+    );
+    logger.info(`[AI] done ${elapsed}: content length ${output.trim().length}`);
     return {
         kind: "reply",
         source: "text",
