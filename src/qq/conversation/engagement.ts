@@ -6,7 +6,10 @@ import { logger } from "../../shared/logger.js";
 
 interface EngagementState {
     expiresAt: number;
+    generation: number;
 }
+
+let nextGeneration = 0;
 
 const activeGroups =
     new Map<
@@ -36,6 +39,7 @@ export function markConversationActive(
         expiresAt:
             Date.now() +
             ACTIVE_TIMEOUT_MS,
+        generation: ++nextGeneration,
     });
 
     logger.info("[Engagement] active");
@@ -74,6 +78,7 @@ export function isConversationActive(
 
 export function stopConversation(
     message: NormalizedQqMessage,
+    expectedGeneration?: number,
 ): void {
     const key =
         getGroupKey(message);
@@ -82,7 +87,13 @@ export function stopConversation(
         return;
     }
 
+    if (expectedGeneration !== undefined && activeGroups.get(key)?.generation !== expectedGeneration) return;
     activeGroups.delete(key);
 
     logger.info("[Engagement] exit");
+}
+
+export function getConversationGeneration(message: NormalizedQqMessage): number | undefined {
+    const key = getGroupKey(message);
+    return key && isConversationActive(message) ? activeGroups.get(key)?.generation : undefined;
 }

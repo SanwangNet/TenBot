@@ -4,8 +4,10 @@ import { test } from "node:test";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 import type { AiResult } from "../src/ai/reply-result.js";
 import { buildReplyCycleContext, recordIncomingMessageRevision, rememberIncomingMessage } from "../src/qq/conversation/recent-context.js";
+import { getConversationGeneration, isConversationActive, markConversationActive } from "../src/qq/conversation/engagement.js";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
-import { coordinateAiReply, AI_TIMEOUT_REPLY, AI_WEB_SEARCH_TIMEOUT_REPLY } from "../src/qq/reply/coordinator.js";
+import { decideMessageTrigger } from "../src/qq/message/trigger.js";
+import { coordinateAiReply, AI_TIMEOUT_REPLY, AI_WEB_SEARCH_TIMEOUT_REPLY, type AttemptBuildContext } from "../src/qq/reply/coordinator.js";
 
 type RecordedAttempt = { input: string; signal: AbortSignal; resolve: (result: AiResult) => void };
 function message(groupId = randomUUID(), content = "A"): NormalizedQqMessage {
@@ -36,8 +38,9 @@ function requestFor(bot: QQBot, value: NormalizedQqMessage, priority: 0 | 1 | 2 
         bot, message: value, aiInput: value.displayContent, imageUrls: [], isGroup: true, allowNoReply,
         triggerPriority: priority, isAtBot: priority === 3, mentionedByName: priority === 2,
         onWebSearchStart: async () => { await bot.sendText(value.replyTarget, "search notice"); },
-        buildAttempt: async (current: NormalizedQqMessage, context: { allowNoReply: boolean }) => ({
-            aiInput: buildReplyCycleContext(current) + "\nallowNoReply=" + context.allowNoReply,
+        buildAttempt: async (current: NormalizedQqMessage, context: AttemptBuildContext) => ({
+            aiInput: buildReplyCycleContext(current) + "\nallowNoReply=" + context.allowNoReply +
+                "\norigin=" + context.originTriggerKind + " effective=" + context.effectiveTriggerKind,
             imageUrls: [],
         }),
     };
@@ -60,6 +63,189 @@ function controlledAttempts(records: RecordedAttempt[]) {
 }
 const reply = (content: string): AiResult => ({
     kind: "reply", action: { messages: [content], mentions: [], quote: "auto" },
+});
+
+test("hard mention, name, active and Meme text keep distinct trigger semantics", () => {
+    const hard = { ...message(randomUUID(), "@小尘 你怎么看"), eventType: "GROUP_AT_MESSAGE_CREATE" } as NormalizedQqMessage;
+    const name = message(randomUUID(), "我感觉小尘刚才那句话挺怪的");
+    const passive = message(randomUUID(), "kskbl？");
+    assert.deepEqual([decideMessageTrigger(hard, false).triggerKind, decideMessageTrigger(hard, false).allowNoReply],
+        ["hard-mention", false]);
+    assert.deepEqual([decideMessageTrigger(name, false).triggerKind, decideMessageTrigger(name, false).allowNoReply],
+        ["name-soft", true]);
+    assert.deepEqual([decideMessageTrigger(passive, true).triggerKind, decideMessageTrigger(passive, true).allowNoReply],
+        ["active-soft", true]);
+    assert.equal(decideMessageTrigger(passive, false).shouldReply, false);
+});
+
+test("name-soft NO_REPLY stays optional and does not create or clear engagement", async () => {
+    const value = message(randomUUID(), "小尘，干他");
+    commit(value);
+    const { bot, calls } = fakeBot();
+    const attempts: string[] = [];
+    const request = requestFor(bot, value, 2);
+    request.buildAttempt = async (_message, context) => {
+        attempts.push(`${context.originTriggerKind}/${context.effectiveTriggerKind}/${context.allowNoReply}`);
+        return { aiInput: value.displayContent, imageUrls: [] };
+    };
+    await coordinateAiReply(request, { executeAi: async () => ({ kind: "no_reply" }) });
+    assert.deepEqual(attempts, ["name-soft/name-soft/true"]);
+    assert.equal(calls.length, 0);
+    assert.equal(isConversationActive(value), false);
+    markConversationActive(value);
+    const generation = getConversationGeneration(value);
+    await coordinateAiReply(request, { executeAi: async () => ({ kind: "no_reply" }) });
+    assert.equal(isConversationActive(value), true);
+    assert.equal(getConversationGeneration(value), generation);
+});
+
+test("name-soft reply activates conversation", async () => {
+    const value = message(randomUUID(), "小尘，干他");
+    commit(value);
+    const { bot, calls } = fakeBot();
+    await coordinateAiReply(requestFor(bot, value, 2), { executeAi: async () => reply("收到") });
+    assert.equal(calls.length, 1);
+    assert.equal(isConversationActive(value), true);
+});
+
+test("passive interruption preserves name-soft origin and optional reply", async () => {
+    const group = randomUUID();
+    const name = message(group, "小尘，干他");
+    const passive = message(group, "他竟然能够串联两个群吗？");
+    commit(name);
+    const { bot, calls } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const first = coordinateAiReply(requestFor(bot, name, 2), { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+    commit(passive);
+    coordinateAiReply(requestFor(bot, passive, 0));
+    await waitFor(() => attempts.length === 2);
+    assert.equal(attempts[0].signal.aborted, true);
+    assert.match(attempts[1].input, /小尘，干他/);
+    assert.match(attempts[1].input, /他竟然能够串联两个群吗/);
+    assert.match(attempts[1].input, /allowNoReply=true\norigin=name-soft effective=name-soft/);
+    attempts[1].resolve({ kind: "no_reply" });
+    await first;
+    assert.equal(calls.length, 0);
+    assert.equal(isConversationActive(name), false);
+});
+
+test("active-soft upgrades to name-soft and never downgrades on passive interruption", async () => {
+    const group = randomUUID();
+    const active = message(group, "普通后续");
+    const name = message(group, "小尘你看看");
+    const passive = message(group, "补充一句");
+    markConversationActive(active);
+    commit(active);
+    const { bot } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const first = coordinateAiReply(requestFor(bot, active, 1), { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+    commit(name);
+    coordinateAiReply(requestFor(bot, name, 2));
+    await waitFor(() => attempts.length === 2);
+    commit(passive);
+    coordinateAiReply(requestFor(bot, passive, 0));
+    await waitFor(() => attempts.length === 3);
+    assert.match(attempts[2].input, /allowNoReply=true\norigin=active-soft effective=name-soft/);
+    attempts[2].resolve({ kind: "no_reply" });
+    await first;
+    assert.equal(isConversationActive(active), true);
+});
+
+test("name-soft upgrades to hard mention and passive interruption cannot relax it", async () => {
+    const group = randomUUID();
+    const name = message(group, "小尘你看看");
+    const hard = message(group, "@小尘 你倒是说句话");
+    const passive = message(group, "又补充了一句");
+    commit(name);
+    const { bot, calls } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const first = coordinateAiReply(requestFor(bot, name, 2), { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+    commit(hard);
+    coordinateAiReply(requestFor(bot, hard, 3));
+    await waitFor(() => attempts.length === 2);
+    commit(passive);
+    coordinateAiReply(requestFor(bot, passive, 0));
+    await waitFor(() => attempts.length === 3);
+    assert.match(attempts[2].input, /allowNoReply=false\norigin=name-soft effective=hard-mention/);
+    attempts[0].resolve({ kind: "no_reply" });
+    assert.equal(attempts[2].signal.aborted, false);
+    attempts[2].resolve({ kind: "no_reply" });
+    await first;
+    assert.ok(calls.some((call) => call.content));
+});
+
+test("active-soft NO_REPLY does not clear a newer engagement generation", async () => {
+    const value = message(randomUUID(), "普通后续");
+    markConversationActive(value);
+    commit(value);
+    const { bot } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const pending = coordinateAiReply(requestFor(bot, value, 1), { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+    markConversationActive(value);
+    attempts[0].resolve({ kind: "no_reply" });
+    await pending;
+    assert.equal(isConversationActive(value), true);
+});
+
+test("active-soft NO_REPLY ends only its own active engagement", async () => {
+    const value = message(randomUUID(), "普通后续");
+    markConversationActive(value);
+    commit(value);
+    const { bot, calls } = fakeBot();
+    await coordinateAiReply(requestFor(bot, value, 1), { executeAi: async () => ({ kind: "no_reply" }) });
+    assert.equal(calls.length, 0);
+    assert.equal(isConversationActive(value), false);
+});
+
+test("name-soft NO_REPLY does not turn passive trailing messages into active-soft", async () => {
+    const group = randomUUID();
+    const values = ["小尘，干他", "B", "C", "D", "E"].map((content) => message(group, content));
+    commit(values[0]);
+    const { bot, calls } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const deps = { executeAi: controlledAttempts(attempts) };
+    const first = coordinateAiReply(requestFor(bot, values[0], 2), deps);
+    await waitFor(() => attempts.length === 1);
+    for (let index = 1; index <= 3; index++) {
+        commit(values[index]);
+        coordinateAiReply(requestFor(bot, values[index], 0));
+        await waitFor(() => attempts.length === index + 1);
+    }
+    commit(values[4]);
+    coordinateAiReply(requestFor(bot, values[4], 0));
+    attempts[3].resolve({ kind: "no_reply" });
+    await first;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(attempts.length, 4);
+    assert.equal(calls.length, 0);
+    assert.equal(isConversationActive(values[0]), false);
+});
+
+test("late NO_REPLY from an interrupted name attempt cannot suppress a hard mention", async () => {
+    const group = randomUUID();
+    const name = message(group, "小尘你看看");
+    const hard = message(group, "@小尘 你倒是说句话");
+    commit(name);
+    const { bot, calls } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const first = coordinateAiReply(requestFor(bot, name, 2), { executeAi: async (input, options) =>
+        await new Promise<AiResult>((resolve) => attempts.push({ input, signal: options.signal, resolve })) });
+    await waitFor(() => attempts.length === 1);
+    commit(hard);
+    coordinateAiReply(requestFor(bot, hard, 3));
+    assert.equal(attempts[0].signal.aborted, true);
+    attempts[0].resolve({ kind: "no_reply" });
+    await waitFor(() => attempts.length === 2);
+    assert.match(attempts[1].input, /allowNoReply=false\norigin=name-soft effective=hard-mention/);
+    assert.equal(calls.length, 0);
+    attempts[1].resolve(reply("我在"));
+    await first;
+    assert.equal(calls.length, 1);
+    assert.equal(isConversationActive(name), true);
 });
 
 test("new message aborts generation and the replacement sees current context once", async () => {
@@ -207,9 +393,9 @@ test("web search extends one cycle to its original 120-second budget and uses th
     assert.deepEqual(calls.map((item) => item.content ?? (item.payload as any)?.markdown?.content).filter(Boolean), ["search notice", AI_WEB_SEARCH_TIMEOUT_REPLY]);
 });
 
-test("NO_REPLY consumes only its snapshot and trailing messages still get a new cycle", async () => {
+test("NO_REPLY consumes only its snapshot and a trailing name trigger gets a new cycle", async () => {
     const group = randomUUID();
-    const values = ["A", "B", "C", "D", "E", "F"].map((text) => message(group, text));
+    const values = ["A", "B", "C", "D", "小尘 E", "F"].map((text) => message(group, text));
     commit(values[0]);
     const { bot, calls } = fakeBot();
     const attempts: RecordedAttempt[] = [];
@@ -222,10 +408,11 @@ test("NO_REPLY consumes only its snapshot and trailing messages still get a new 
         await waitFor(() => attempts.length === index + 1);
     }
     commit(values[4]);
-    coordinateAiReply(requestFor(bot, values[4], 0), deps);
+    coordinateAiReply(requestFor(bot, values[4], 2), deps);
     attempts[3].resolve({ kind: "no_reply" });
     await waitFor(() => attempts.length === 5);
     assert.match(attempts[4].input, /E/);
+    assert.match(attempts[4].input, /origin=name-soft effective=name-soft/);
     commit(values[5]);
     const second = coordinateAiReply(requestFor(bot, values[5], 0), deps);
     await waitFor(() => attempts.length === 6);

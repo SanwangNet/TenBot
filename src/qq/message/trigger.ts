@@ -1,5 +1,7 @@
 import type { NormalizedQqMessage } from "./normalize-message.js";
 
+export type TriggerKind = "hard-mention" | "name-soft" | "active-soft";
+
 export interface MessageTriggerDecision {
     isGroup: boolean;
     isAtBot: boolean;
@@ -8,6 +10,7 @@ export interface MessageTriggerDecision {
     hardTrigger: boolean;
     shouldReply: boolean;
     allowNoReply: boolean;
+    triggerKind: TriggerKind | null;
 }
 
 export function decideMessageTrigger(
@@ -27,6 +30,10 @@ export function decideMessageTrigger(
     const hardTrigger = isAtBot;
     const softTrigger = mentionedByName || activeConversation;
     const shouldReply = !isGroup || hardTrigger || softTrigger;
+    const triggerKind: TriggerKind | null = !isGroup ? null
+        : isAtBot ? "hard-mention"
+          : mentionedByName ? "name-soft"
+            : activeConversation ? "active-soft" : null;
 
     return {
         isGroup,
@@ -36,6 +43,7 @@ export function decideMessageTrigger(
         hardTrigger,
         shouldReply,
         allowNoReply: isGroup && !hardTrigger,
+        triggerKind,
     };
 }
 

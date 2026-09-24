@@ -122,6 +122,7 @@ export function registerMessageHandler(bot: QQBot): void {
             imageUrls: [],
             isGroup: trigger.isGroup,
             allowNoReply: trigger.allowNoReply,
+            triggerKind: trigger.triggerKind ?? undefined,
             triggerPriority,
             isAtBot: trigger.isAtBot,
             mentionedByName: trigger.mentionedByName,

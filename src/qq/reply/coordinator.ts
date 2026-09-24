@@ -6,8 +6,9 @@ import { normalizeQQReplyAction, type QuotePreference } from "../../skills/qq-re
 import { classifyUpstreamFailure } from "../../ai/upstream-error.js";
 import { logger, shortId } from "../../shared/logger.js";
 import { getConversationKey, getMessageRevision, rememberBotReply, removeMessageFromContext } from "../conversation/recent-context.js";
-import { markConversationActive, stopConversation } from "../conversation/engagement.js";
+import { getConversationGeneration, isConversationActive, markConversationActive, stopConversation } from "../conversation/engagement.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
+import type { TriggerKind } from "../message/trigger.js";
 import { prepareAiReply } from "./renderer.js";
 import { getTriggerMessageId, sendAiReply, sendTimeoutReply } from "./sender.js";
 
@@ -25,6 +26,8 @@ export interface AttemptInput { aiInput: string; imageUrls: string[] }
 export interface AttemptBuildContext {
     allowNoReply: boolean;
     triggerPriority: TriggerPriority;
+    originTriggerKind?: TriggerKind;
+    effectiveTriggerKind?: TriggerKind;
     isAtBot: boolean;
     mentionedByName: boolean;
 }
@@ -35,6 +38,7 @@ export interface ReplyRequest {
     imageUrls: string[];
     isGroup: boolean;
     allowNoReply: boolean;
+    triggerKind?: TriggerKind;
     onWebSearchStart: () => void | Promise<void>;
     triggerPriority?: TriggerPriority;
     isAtBot?: boolean;
@@ -72,6 +76,9 @@ interface Cycle {
     consumedRevision: number;
     latestRequest: ReplyRequest;
     priority: TriggerPriority;
+    originTriggerKind?: TriggerKind;
+    effectiveTriggerKind?: TriggerKind;
+    engagementGeneration?: number;
     hasAtBot: boolean;
     hasName: boolean;
     trailingPriority: TriggerPriority;
@@ -156,11 +163,28 @@ function extendForWebSearch(cycle: Cycle): void {
     logger.info("[Cycle] deadline extended " + Math.round(ordinary / 1000) + "s -> " + Math.round(extended / 1000) + "s");
 }
 function priorityOf(request: ReplyRequest): TriggerPriority {
+    if (request.triggerKind) return request.triggerKind === "hard-mention" ? 3
+        : request.triggerKind === "name-soft" ? 2 : 1;
     return request.triggerPriority ?? (request.isGroup ? (request.allowNoReply ? 1 : 3) : 3);
 }
-function canNoReply(cycle: Cycle): boolean { return cycle.latestRequest.isGroup && cycle.priority < 3; }
+function kindOf(priority: TriggerPriority, isGroup: boolean): TriggerKind | undefined {
+    if (!isGroup || !priority) return undefined;
+    return priority === 3 ? "hard-mention" : priority === 2 ? "name-soft" : "active-soft";
+}
+function upgradeTrigger(cycle: Cycle, request: ReplyRequest, priority: TriggerPriority): void {
+    if (priority > cycle.priority) {
+        const previous = cycle.effectiveTriggerKind;
+        cycle.priority = priority;
+        cycle.effectiveTriggerKind = kindOf(priority, request.isGroup);
+        if (previous && cycle.effectiveTriggerKind) logger.info("[Cycle] trigger upgrade " + previous + " -> " + cycle.effectiveTriggerKind);
+    }
+    cycle.hasAtBot ||= request.isAtBot === true;
+    cycle.hasName ||= request.mentionedByName === true;
+}
+function canNoReply(cycle: Cycle): boolean { return cycle.latestRequest.isGroup && cycle.effectiveTriggerKind !== "hard-mention"; }
 function buildAttemptContext(cycle: Cycle): AttemptBuildContext {
     return { allowNoReply: canNoReply(cycle), triggerPriority: cycle.priority,
+        originTriggerKind: cycle.originTriggerKind, effectiveTriggerKind: cycle.effectiveTriggerKind,
         isAtBot: cycle.hasAtBot, mentionedByName: cycle.hasName };
 }
 function createCycle(request: ReplyRequest, deps: Dependencies, priority: TriggerPriority): Cycle {
@@ -176,7 +200,10 @@ function createCycle(request: ReplyRequest, deps: Dependencies, priority: Trigge
         interruptionCount: 0, cycleStartedAt: started,
         deadlineAt: started + (deps.timeoutMs ?? AI_REQUEST_TIMEOUT_MS),
         webSearchTriggered: false, consumedRevision: revision - 1,
-        latestRequest: request, priority, hasAtBot: request.isAtBot === true,
+        latestRequest: request, priority, originTriggerKind: kindOf(priority, request.isGroup),
+        effectiveTriggerKind: kindOf(priority, request.isGroup),
+        engagementGeneration: request.isGroup ? getConversationGeneration(request.message) : undefined,
+        hasAtBot: request.isAtBot === true,
         hasName: request.mentionedByName === true, trailingPriority: 0,
         trailingAtBot: false, trailingName: false, triggerIds: new Set(), seenMessageIds: new Set(),
         deps, timedOut: false, cancelled: false, finalizing: false, budgetLogged: false,
@@ -187,7 +214,8 @@ function createCycle(request: ReplyRequest, deps: Dependencies, priority: Trigge
     addTrigger(cycle, request.message, priority);
     cycles.set(cycle.key, cycle);
     logger.info("[Cycle] start id=" + shortId(cycle.cycleId) + " revision=" + revision +
-        " trigger=" + (priority === 3 ? "hard" : priority === 2 ? "name" : "soft"));
+        " trigger=" + (cycle.originTriggerKind ?? "private") +
+        " reply=" + (canNoReply(cycle) ? "optional" : "required"));
     return cycle;
 }
 function updateCycle(cycle: Cycle, request: ReplyRequest): void {
@@ -197,9 +225,7 @@ function updateCycle(cycle: Cycle, request: ReplyRequest): void {
     const revision = getMessageRevision(request.message);
     const priority = priorityOf(request);
     cycle.latestRequest = request;
-    cycle.priority = Math.max(cycle.priority, priority) as TriggerPriority;
-    cycle.hasAtBot ||= request.isAtBot === true;
-    cycle.hasName ||= request.mentionedByName === true;
+    upgradeTrigger(cycle, request, priority);
     addTrigger(cycle, request.message, priority);
     if (revision <= cycle.consumedRevision) return;
     cycle.trailingPriority = Math.max(cycle.trailingPriority, priority) as TriggerPriority;
@@ -339,11 +365,12 @@ function quoteDecision(request: ReplyRequest, cycle: Cycle, preference: QuotePre
     return quote;
 }
 async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt, result: AiResult): Promise<void> {
-    if (cycle.cancelled) return;
+    if (cycle.cancelled || cycle.currentAttempt !== attempt || attempt.status !== "completed") return;
     if (result.kind === "no_reply") {
         if (!canNoReply(cycle)) { await sendFailureNotice(request); return; }
         logger.info("[AI] no reply");
-        if (request.isGroup && cycles.get(cycle.key) === cycle) stopConversation(request.message);
+        if (cycle.effectiveTriggerKind === "active-soft" && cycle.engagementGeneration !== undefined &&
+            cycles.get(cycle.key) === cycle) stopConversation(request.message, cycle.engagementGeneration);
         return;
     }
     const action = normalizeQQReplyAction(result.action);
@@ -396,8 +423,10 @@ function finishCycle(cycle: Cycle): void {
         clearCycle(cycle);
         cycle.resolveDone();
         if (!trailing || cycle.cancelled) return;
+        if (!cycle.trailingPriority && request.isGroup && !isConversationActive(request.message)) return;
         const followup: ReplyRequest = { ...request, shouldStartCycle: true,
             triggerPriority: priority, isAtBot: atBot, mentionedByName: name,
+            triggerKind: kindOf(priority, request.isGroup),
             allowNoReply: request.isGroup && priority < 3 };
         const next = createCycle(followup, cycle.deps, priority);
         logger.info("[Cycle] next id=" + shortId(next.cycleId));
