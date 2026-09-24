@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import type { QQBot, QQBotInboundMessage } from "@tencent-connect/qqbot-nodejs";
 
-import { parseQqReplyArguments, type AiResult } from "../src/ai/reply-result.js";
+import { normalizeTextReply, parseQqReplyArguments, qqReplyTool, type AiResult } from "../src/ai/reply-result.js";
 import { AiResponseFailure, classifyUpstreamFailure } from "../src/ai/upstream-error.js";
 import { isConversationActive } from "../src/qq/conversation/engagement.js";
 import { MemoryMemberRepository } from "../src/members/memory-repository.js";
 import { configureMemberRepository, rememberKnownMember } from "../src/qq/conversation/known-members.js";
 import { renderStructuredMentions } from "../src/qq/reply/mentions.js";
+import { logger } from "../src/shared/logger.js";
 import {
     buildChatInput,
     getConversationKey,
@@ -24,7 +25,7 @@ configureMemberRepository(new MemoryMemberRepository());
 // Loading the coordinator constructs the SDK client, but these tests inject an AI stub.
 process.env.CODEX_API_KEY = "offline-test";
 process.env.CODEX_BASE_URL = "https://example.invalid";
-const { AI_TIMEOUT_REPLY, AI_UPSTREAM_ERROR_REPLY, coordinateAiReply, shouldQuoteTrigger,
+const { AI_TIMEOUT_REPLY, AI_UPSTREAM_ERROR_REPLY, MULTI_MESSAGE_DELAY_MS, coordinateAiReply, shouldQuoteTrigger,
     handleRecalledMessage, cancelPendingRequestByMessageId } = await import(
     "../src/qq/reply/coordinator.js"
 );
@@ -61,8 +62,10 @@ function fakeBot() {
     return { bot, calls };
 }
 
-function reply(content: string, quote: "auto" | "trigger" | "none" = "auto"): AiResult {
-    return { kind: "reply", source: "qq_reply", action: { content, mentions: [], quote } };
+function reply(content: string | string[], quote: "auto" | "trigger" | "none" = "auto"): AiResult {
+    return { kind: "reply", source: "qq_reply", action: {
+        messages: Array.isArray(content) ? content : [content], mentions: [], quote,
+    } };
 }
 
 function request(bot: QQBot, trigger: NormalizedQqMessage) {
@@ -92,11 +95,189 @@ test("revision is monotonic and quote none yields to newer group messages", () =
 
 test("qq_reply parser validates semantic fields", () => {
     assert.deepEqual(parseQqReplyArguments('{"content":"你好","mentions":[" 尘柒 "],"quote":"trigger"}'), {
-        content: "你好", mentions: ["尘柒"], quote: "trigger",
+        messages: ["你好"], mentions: ["尘柒"], quote: "trigger",
     });
     assert.equal(parseQqReplyArguments('{"content":"","mentions":[]}'), null);
     assert.equal(parseQqReplyArguments('{"content":"你好","mentions":[42]}'), null);
     assert.equal(parseQqReplyArguments("not json"), null);
+});
+
+test("plain output_text and code blocks always normalize to one message", () => {
+    assert.deepEqual(normalizeTextReply(" hello "), {
+        kind: "reply", source: "text", action: { messages: ["hello"], mentions: [], quote: "auto" },
+    });
+    const code = "```ts\nconsole.log('a。b');\n```";
+    assert.deepEqual(normalizeTextReply(code), {
+        kind: "reply", source: "text", action: { messages: [code], mentions: [], quote: "auto" },
+    });
+    assert.equal(normalizeTextReply("  "), null);
+});
+
+test("qq_reply schema and parser limit clean messages to three", () => {
+    assert.equal(MULTI_MESSAGE_DELAY_MS, 450);
+    const schema = qqReplyTool.parameters.properties.messages;
+    assert.equal(schema.minItems, 1);
+    assert.equal(schema.maxItems, 3);
+    assert.deepEqual(parseQqReplyArguments(JSON.stringify({
+        messages: [" 放心 ", "", " 毕竟我没身体 ", "第三句", "第四句"],
+        mentions: [], quote: "auto",
+    }))?.messages, ["放心", "毕竟我没身体", "第三句"]);
+    assert.equal(parseQqReplyArguments('{"messages":["",42]}'), null);
+    assert.equal(parseQqReplyArguments('{"messages":"hello"}'), null);
+});
+
+test("coordinator also caps injected replies and skips empty entries", async () => {
+    const trigger = message();
+    recordIncomingMessageRevision(trigger);
+    const { bot, calls } = fakeBot();
+    await coordinateAiReply(request(bot, trigger), {
+        executeAi: async () => reply([" 一 ", "", " 二 ", " 三 ", " 四 "]),
+        multiMessageDelayMs: 0,
+    });
+    assert.deepEqual(calls.map((call) => call.args[1]), ["一", "二", "三"]);
+});
+
+test("a reply with no valid messages uses one safe error notice", async () => {
+    const trigger = message();
+    recordIncomingMessageRevision(trigger);
+    const { bot, calls } = fakeBot();
+    await coordinateAiReply(request(bot, trigger), {
+        executeAi: async () => reply(["", "  "]),
+    });
+    assert.deepEqual(calls.map((call) => call.method), ["text"]);
+    assert.equal(calls[0].args[1], "刚才脑子短路了一下。");
+    assert.equal(isConversationActive(trigger), false);
+});
+
+test("one, two and three messages are sent in serial order", async () => {
+    for (const count of [1, 2, 3]) {
+        const trigger = message();
+        recordIncomingMessageRevision(trigger);
+        const calls: string[] = [];
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const bot = {
+            sendMarkdown: async (_target: unknown, content: string) => {
+                inFlight++;
+                maxInFlight = Math.max(maxInFlight, inFlight);
+                calls.push(content);
+                await new Promise((resolve) => setTimeout(resolve, 1));
+                inFlight--;
+            },
+        } as unknown as QQBot;
+        const messages = Array.from({ length: count }, (_, index) => `消息 ${index + 1}`);
+        await coordinateAiReply(request(bot, trigger), {
+            executeAi: async () => reply(messages), multiMessageDelayMs: 0,
+        });
+        assert.deepEqual(calls, messages);
+        assert.equal(maxInFlight, 1);
+    }
+});
+
+test("two messages quote only the first after newer group activity", async () => {
+    const trigger = message();
+    recordIncomingMessageRevision(trigger);
+    const { bot, calls } = fakeBot();
+    let resolveAi!: (value: AiResult) => void;
+    const ai = new Promise<AiResult>((resolve) => { resolveAi = resolve; });
+    const pending = coordinateAiReply(request(bot, trigger), {
+        executeAi: async () => ai, multiMessageDelayMs: 0,
+    });
+    recordIncomingMessageRevision(message(trigger.groupId));
+    resolveAi(reply(["第一条", "第二条"], "none"));
+    await pending;
+    assert.deepEqual(calls.map((call) => call.method), ["send", "markdown"]);
+    assert.deepEqual((calls[0].args[0] as { messageReference: unknown }).messageReference,
+        { message_id: trigger.id });
+    assert.equal(calls[1].args[1], "第二条");
+});
+
+test("shared mentions and inline mention tags create real @ only in the first message", async () => {
+    const trigger = message();
+    recordIncomingMessageRevision(trigger);
+    await rememberKnownMember({ ...trigger, author: { member_openid: "member-1", username: "芷" } });
+    const { bot, calls } = fakeBot();
+    await coordinateAiReply(request(bot, trigger), {
+        executeAi: async () => ({ kind: "reply", source: "qq_reply", action: {
+            messages: ["第一条", "<mention>芷</mention> 第二条"], mentions: ["芷"], quote: "auto",
+        } }),
+        multiMessageDelayMs: 0,
+    });
+    assert.equal(calls.length, 2);
+    assert.match(String(calls[0].args[1]), /<qqbot-at-user id="member-1" \/>/);
+    assert.equal(calls[1].args[1], "@芷 第二条");
+});
+
+test("partial send failure stops later messages and keeps only successful context", async (t) => {
+    const trigger = message();
+    recordIncomingMessageRevision(trigger);
+    const calls: string[] = [];
+    let activations = 0;
+    t.mock.method(logger, "info", (...values: unknown[]) => {
+        if (values[0] === "[Engagement] active") activations++;
+    });
+    const bot = {
+        sendMarkdown: async (_target: unknown, content: string) => {
+            calls.push(content);
+            if (calls.length === 2) throw new Error("QQ API failed");
+        },
+    } as unknown as QQBot;
+    await coordinateAiReply(request(bot, trigger), {
+        executeAi: async () => reply(["第一条", "第二条", "第三条"]), multiMessageDelayMs: 0,
+    });
+    assert.deepEqual(calls, ["第一条", "第二条"]);
+    const context = buildChatInput(trigger, "next");
+    assert.match(context, /小尘：第一条/);
+    assert.doesNotMatch(context, /小尘：第二条|小尘：第三条/);
+    assert.equal(activations, 1);
+    assert.equal(isConversationActive(trigger), true);
+});
+
+test("successful multi-message reply records separate context entries", async () => {
+    const trigger = message();
+    recordIncomingMessageRevision(trigger);
+    const { bot } = fakeBot();
+    await coordinateAiReply(request(bot, trigger), {
+        executeAi: async () => reply(["放心，还早呢", "毕竟我又没有身体"]),
+        multiMessageDelayMs: 0,
+    });
+    assert.match(buildChatInput(trigger, "next"), /小尘：放心，还早呢\n小尘：毕竟我又没有身体/);
+});
+
+test("cancelling after the first send stops subsequent messages during the delay", async () => {
+    const trigger = message();
+    recordIncomingMessageRevision(trigger);
+    const calls: string[] = [];
+    let firstSent!: () => void;
+    const first = new Promise<void>((resolve) => { firstSent = resolve; });
+    const bot = {
+        sendMarkdown: async (_target: unknown, content: string) => {
+            calls.push(content);
+            if (calls.length === 1) firstSent();
+        },
+    } as unknown as QQBot;
+    const pending = coordinateAiReply(request(bot, trigger), {
+        executeAi: async () => reply(["第一条", "第二条", "第三条"]),
+        multiMessageDelayMs: 1_000,
+    });
+    await first;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(cancelPendingRequestByMessageId(trigger.id!), 1);
+    await pending;
+    assert.deepEqual(calls, ["第一条"]);
+    assert.match(buildChatInput(trigger, "next"), /小尘：第一条/);
+});
+
+test("AI deadline ends at generation, before the inter-message delay", async () => {
+    const trigger = message();
+    recordIncomingMessageRevision(trigger);
+    const { bot, calls } = fakeBot();
+    await coordinateAiReply(request(bot, trigger), {
+        executeAi: async () => reply(["第一条", "第二条"]),
+        timeoutMs: 10,
+        multiMessageDelayMs: 20,
+    });
+    assert.deepEqual(calls.map((call) => call.args[1]), ["第一条", "第二条"]);
 });
 
 test("structured mentions resolve only a unique known nickname", async () => {
@@ -353,7 +534,7 @@ test("recall during asynchronous mention rendering prevents QQ send", async () =
     configureMemberRepository(new SlowRepository());
     try {
         const pending = coordinateAiReply(request(bot, trigger), {
-            executeAi: async () => ({ ...reply("你好"), action: { content: "你好", mentions: ["芷"], quote: "auto" } }),
+            executeAi: async () => ({ ...reply("你好"), action: { messages: ["你好"], mentions: ["芷"], quote: "auto" } }),
         });
         await started;
         assert.equal(cancelPendingRequestByMessageId(trigger.id!), 1);

@@ -8,7 +8,7 @@ import {
     type CitedText,
 } from "./citations.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
-import { qqReplyTool, parseQqReplyArguments, type AiResult } from "./reply-result.js";
+import { normalizeReplyMessages, normalizeTextReply, qqReplyTool, parseQqReplyArguments, type AiResult } from "./reply-result.js";
 import { logger } from "../shared/logger.js";
 import { AiResponseFailure } from "./upstream-error.js";
 
@@ -221,16 +221,21 @@ export async function chat(
             logger.debug("[AI] invalid qq_reply arguments discarded");
             continue;
         }
-        if (action.content.trim() === "<NO_REPLY>") {
+        if (action.messages.length === 1 && action.messages[0] === "<NO_REPLY>") {
             logger.info(`[AI] done ${elapsed}: <NO_REPLY>`);
             return { kind: "no_reply" };
         }
-        const matchingPart = parts.find((part) => part.text === action.content);
-        const rendered = renderCitations(action.content, matchingPart?.citations ?? [], markerSources);
-        if (!rendered.content.trim()) continue;
-        action.content = rendered.content;
-        reportCitations(rendered.renderedCount, rendered.metadataUnavailable);
-        logger.info(`[AI] done ${elapsed}: content length ${action.content.length}`);
+        const rendered = action.messages.map((message) => {
+            const matchingPart = parts.find((part) => part.text === message);
+            return renderCitations(message, matchingPart?.citations ?? [], markerSources);
+        });
+        action.messages = normalizeReplyMessages(rendered.map((item) => item.content));
+        if (!action.messages.length) continue;
+        reportCitations(
+            rendered.reduce((count, item) => count + item.renderedCount, 0),
+            rendered.some((item) => item.metadataUnavailable),
+        );
+        logger.info(`[AI] done ${elapsed}: messages=${action.messages.length}`);
         return { kind: "reply", source: "qq_reply", action };
     }
 
@@ -243,9 +248,5 @@ export async function chat(
         renderedParts.some((part) => part.metadataUnavailable),
     );
     logger.info(`[AI] done ${elapsed}: content length ${output.trim().length}`);
-    return {
-        kind: "reply",
-        source: "text",
-        action: { content: output.trim(), mentions: [], quote: "auto" },
-    };
+    return normalizeTextReply(output)!;
 }

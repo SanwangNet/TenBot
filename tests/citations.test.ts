@@ -158,3 +158,49 @@ test("a cited text span keeps the sentence and adds its link at that location", 
     }]);
     assert.equal(result.content, "事实 A。（[OpenAI](https://openai.com/a)）事实 B。");
 });
+
+test("offline Responses stream renders citations in output_text and multi-message qq_reply", async () => {
+    process.env.CODEX_API_KEY = "offline-test";
+    process.env.CODEX_BASE_URL = "https://example.invalid";
+    const { chat } = await import("../src/ai/client.js");
+    const text = `事实。${markerA}`;
+    const annotation = {
+        type: "url_citation", start_index: text.indexOf(markerA),
+        end_index: text.length, title: "OpenAI", url: "https://openai.com/a",
+    };
+    const part = (annotations: unknown[]) => ({ type: "output_text", text, annotations });
+    const complete = (output: unknown[]) => ({ type: "response.completed", response: { output } });
+    const streams = [
+        [
+            { type: "response.output_text.annotation.added", output_index: 0, content_index: 0,
+                annotation_index: 0, annotation },
+            complete([{ type: "message", content: [part([])] }]),
+        ],
+        [complete([
+            { type: "message", content: [part([annotation])] },
+            { type: "function_call", name: "qq_reply", arguments: JSON.stringify({
+                messages: [text, "补一句"], mentions: [], quote: "auto",
+            }) },
+        ])],
+    ];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+        const events = streams.shift();
+        if (!events) throw new Error("Unexpected offline AI call");
+        const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") +
+            "data: [DONE]\n\n";
+        return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    try {
+        const options = { signal: new AbortController().signal };
+        const plain = await chat("offline", options);
+        const tool = await chat("offline", options);
+        assert.equal(plain.kind, "reply");
+        assert.equal(tool.kind, "reply");
+        if (plain.kind !== "reply" || tool.kind !== "reply") return;
+        assert.deepEqual(plain.action.messages, ["事实。（[OpenAI](https://openai.com/a)）"]);
+        assert.deepEqual(tool.action.messages, ["事实。（[OpenAI](https://openai.com/a)）", "补一句"]);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
