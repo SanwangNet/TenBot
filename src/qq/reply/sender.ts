@@ -1,7 +1,7 @@
 import { MsgType, type QQBot } from "@tencent-connect/qqbot-nodejs";
 
 import type { QqReplyAction } from "../../ai/reply-result.js";
-import { renderStructuredMentions } from "../conversation/known-members.js";
+import { renderStructuredMentions } from "./mentions.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
 
 export function getTriggerMessageId(message: NormalizedQqMessage): string | undefined {
@@ -15,7 +15,7 @@ export async function sendAiReply(
     action: QqReplyAction,
     quoteTrigger: boolean,
 ): Promise<string> {
-    const rendered = renderStructuredMentions(message, action.content, action.mentions);
+    const rendered = await renderStructuredMentions(message, action.content, action.mentions);
     const triggerMessageId = getTriggerMessageId(message);
 
     if (quoteTrigger && triggerMessageId) {

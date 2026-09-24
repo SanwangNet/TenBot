@@ -1,8 +1,9 @@
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 
 import { logger } from "../shared/logger.js";
-import { getKnownMembers, renderMentions } from "../qq/conversation/known-members.js";
+import { getKnownMembers } from "../qq/conversation/known-members.js";
 import type { NormalizedQqMessage } from "../qq/message/normalize-message.js";
+import { renderMentions } from "../qq/reply/mentions.js";
 import { sendMinecraftStatus } from "../qq/minecraft-status.js";
 
 export interface CommandContext {
@@ -75,7 +76,7 @@ const commands: BotCommand[] = [
         name: "members",
         description: "查看目前认识的群成员",
         async execute({ bot, message }) {
-            const members = getKnownMembers(message);
+            const members = await getKnownMembers(message);
             const text = members.length > 0
                 ? members.map((member) => member.username + " (" + (member.role ?? "member") + ")").join("\n")
                 : "目前还不认识任何群友。";
@@ -90,7 +91,7 @@ const commands: BotCommand[] = [
                 await bot.sendText(message.replyTarget, "用法：/at 昵称");
                 return;
             }
-            const rendered = renderMentions(message, "<mention>" + args + "</mention> 测试一下");
+            const rendered = await renderMentions(message, "<mention>" + args + "</mention> 测试一下");
             await bot.sendMarkdown(message.replyTarget, rendered.sendText);
         },
     },

@@ -64,7 +64,7 @@ function summarizeMessage(
 
 export function registerMessageHandler(bot: QQBot): void {
     bot.on("message", async (context, message: QQBotInboundMessage) => {
-        const normalized = normalizeQqMessage(context, message);
+        const normalized = await normalizeQqMessage(context, message);
 
         if (normalized.authorIsBot) {
             return;
@@ -73,7 +73,7 @@ export function registerMessageHandler(bot: QQBot): void {
         recordIncomingMessageRevision(normalized);
 
         // Keep learning members before the existing content filters.
-        rememberKnownMember(normalized);
+        await rememberKnownMember(normalized);
 
         const input = normalized.displayContent;
         const imageAttachments = normalized.attachments.filter((attachment: any) => {
@@ -171,7 +171,7 @@ export function registerMessageHandler(bot: QQBot): void {
 
         const replyPolicy = buildReplyPolicy(trigger.allowNoReply);
         const knownMembersContext = trigger.isGroup
-            ? buildKnownMembersContext(normalized)
+            ? await buildKnownMembersContext(normalized)
             : "";
         const aiInput = buildAiInput(chatInput, knownMembersContext, replyPolicy);
 

@@ -22,3 +22,6 @@ Thumbs.db
 # Runtime member cache
 /data/known-members.json
 /data/known-members.json.tmp
+/data/*.db
+/data/*.db-shm
+/data/*.db-wal

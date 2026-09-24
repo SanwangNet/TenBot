@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { after, test } from "node:test";
-import { mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { test } from "node:test";
 import type { QQBot, QQBotInboundMessage } from "@tencent-connect/qqbot-nodejs";
 
 import { parseQqReplyArguments, type AiResult } from "../src/ai/reply-result.js";
 import { isConversationActive } from "../src/qq/conversation/engagement.js";
-import { flushKnownMembers, getKnownMembers, loadKnownMembers, rememberKnownMember, renderStructuredMentions } from "../src/qq/conversation/known-members.js";
+import { MemoryMemberRepository } from "../src/members/memory-repository.js";
+import { configureMemberRepository, rememberKnownMember } from "../src/qq/conversation/known-members.js";
+import { renderStructuredMentions } from "../src/qq/reply/mentions.js";
 import {
     buildChatInput,
     getConversationKey,
@@ -16,18 +15,9 @@ import {
     rememberIncomingMessage,
     recordIncomingMessageRevision,
 } from "../src/qq/conversation/recent-context.js";
-import { normalizeQqMessage, resolveDisplayContent, type NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
+import { normalizeQqMessage, type NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 
-const testDirectory = await mkdtemp(join(tmpdir(), "qq-bot-members-"));
-const memberFile = join(testDirectory, "known-members.json");
-await loadKnownMembers(memberFile);
-after(async () => {
-    await flushKnownMembers();
-    await rm(memberFile, { force: true });
-    await rm(memberFile + ".tmp", { force: true });
-    await rm(join(testDirectory, "corrupt.json"), { force: true });
-    await rmdir(testDirectory);
-});
+configureMemberRepository(new MemoryMemberRepository());
 
 // Loading the coordinator constructs the SDK client, but these tests inject an AI stub.
 process.env.CODEX_API_KEY = "offline-test";
@@ -106,17 +96,17 @@ test("qq_reply parser validates semantic fields", () => {
     assert.equal(parseQqReplyArguments("not json"), null);
 });
 
-test("structured mentions resolve only a unique known nickname", () => {
+test("structured mentions resolve only a unique known nickname", async () => {
     const trigger = message();
-    rememberKnownMember({ ...trigger, author: { member_openid: "openid-1", username: "尘柒" } });
-    const unique = renderStructuredMentions(trigger, "你好", ["尘柒"]);
+    await rememberKnownMember({ ...trigger, author: { member_openid: "openid-1", username: "尘柒" } });
+    const unique = await renderStructuredMentions(trigger, "你好", ["尘柒"]);
     assert.match(unique.sendText, /<qqbot-at-user id="openid-1" \/>/);
     assert.equal(unique.contextText, "@尘柒 你好");
 
-    rememberKnownMember({ ...trigger, author: { member_openid: "openid-2", username: "尘柒" } });
-    const duplicate = renderStructuredMentions(trigger, "你好", ["尘柒"]);
+    await rememberKnownMember({ ...trigger, author: { member_openid: "openid-2", username: "尘柒" } });
+    const duplicate = await renderStructuredMentions(trigger, "你好", ["尘柒"]);
     assert.equal(duplicate.sendText, "@尘柒 你好");
-    assert.equal(renderStructuredMentions(trigger, "你好", ["陌生人"]).sendText, "@陌生人 你好");
+    assert.equal((await renderStructuredMentions(trigger, "你好", ["陌生人"])).sendText, "@陌生人 你好");
 });
 
 test("fast reply uses ordinary Markdown send", async () => {
@@ -188,47 +178,7 @@ test("NO_REPLY sends nothing and exits group engagement", async () => {
     assert.equal(isConversationActive(trigger), false);
 });
 
-test("known members persist by group and ID, learn mentions, and update names", async () => {
-    const groupId = randomUUID();
-    const authorId = randomUUID();
-    const first = message(groupId, authorId);
-    first.author = { member_openid: authorId, username: "芷", member_role: "member" };
-    rememberKnownMember(first);
-
-    const mention = message(groupId);
-    mention.mentions = [
-        { memberOpenid: "member-mention-1", ids: ["member-mention-1"], username: "测试用户",
-            role: "member", isBot: false, isSelf: false },
-        { memberOpenid: "bot-1", ids: ["bot-1"], username: "小尘",
-            isBot: true, isSelf: true },
-    ];
-    rememberKnownMember(mention);
-    await flushKnownMembers();
-
-    const before = JSON.parse(await readFile(memberFile, "utf8")) as {
-        version: number;
-        groups: Record<string, Record<string, { username: string; firstSeenAt: number }>>;
-    };
-    assert.equal(before.version, 1);
-    assert.equal(before.groups[groupId][authorId].username, "芷");
-    assert.equal(before.groups[groupId]["member-mention-1"].username, "测试用户");
-    assert.equal(before.groups[groupId]["bot-1"], undefined);
-    const firstSeenAt = before.groups[groupId][authorId].firstSeenAt;
-
-    await loadKnownMembers(memberFile);
-    assert.ok(getKnownMembers(message(groupId)).some((member) => member.memberOpenid === "member-mention-1"));
-    assert.equal(resolveDisplayContent("<@member-mention-1> hi", [], groupId), "@\u6d4b\u8bd5\u7528\u6237 hi");
-
-    first.author = { member_openid: authorId, username: "芷芷", member_role: "admin" };
-    rememberKnownMember(first);
-    await flushKnownMembers();
-    const updated = JSON.parse(await readFile(memberFile, "utf8")) as typeof before;
-    assert.equal(updated.groups[groupId][authorId].username, "芷芷");
-    assert.equal(updated.groups[groupId][authorId].firstSeenAt, firstSeenAt);
-    assert.equal(Object.keys(updated.groups[groupId]).filter((id) => id === authorId).length, 1);
-});
-
-test("incoming QQ IDs become readable mentions in AI input and recent context", () => {
+test("incoming QQ IDs become readable mentions in AI input and recent context", async () => {
     const groupId = randomUUID();
     const mentionedId = "member-zhiv";
     const rawMentions = [{ member_openid: mentionedId, username: "芷", bot: false }];
@@ -249,16 +199,16 @@ test("incoming QQ IDs become readable mentions in AI input and recent context", 
             mentions: rawMentions,
         },
     } as unknown as QQBotInboundMessage;
-    const normalized = normalizeQqMessage({}, source);
+    const normalized = await normalizeQqMessage({}, source);
     assert.equal(normalized.displayContent, "@芷 这是谁");
-    rememberKnownMember(normalized);
+    await rememberKnownMember(normalized);
     rememberIncomingMessage(normalized, normalized.displayContent);
 
     const later = { ...source, content: "<@" + mentionedId + "> 好", mentions: [], messageId: randomUUID() };
-    assert.equal(normalizeQqMessage({}, later).displayContent, "@芷 好");
-    assert.equal(normalizeQqMessage({}, {
+    assert.equal((await normalizeQqMessage({}, later)).displayContent, "@芷 好");
+    assert.equal((await normalizeQqMessage({}, {
         ...later, content: "<@unknown-id> 好",
-    }).displayContent, "@未知成员 好");
+    })).displayContent, "@未知成员 好");
     const followUp = message(groupId);
     const aiInput = buildChatInput(followUp, "小尘，他是谁");
     assert.match(aiInput, /尘柒喵：@芷 这是谁/);
@@ -291,33 +241,6 @@ test("recall cancels the matching request, removes context, and beats timeout", 
     resolveAi(reply("too late"));
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(calls.length, 0);
-});
-
-test("damaged member file is preserved instead of overwritten", async () => {
-    const corruptPath = join(testDirectory, "corrupt.json");
-    await writeFile(corruptPath, "{", "utf8");
-    await loadKnownMembers(corruptPath);
-    rememberKnownMember(message());
-    await flushKnownMembers();
-    assert.equal(await readFile(corruptPath, "utf8"), "{");
-    await loadKnownMembers(memberFile);
-});
-
-test("member changes during a save are written in order", async () => {
-    const groupId = randomUUID();
-    const id = randomUUID();
-    const member = message(groupId, id);
-    member.author = { member_openid: id, username: "原名" };
-    rememberKnownMember(member);
-    const saving = flushKnownMembers();
-    member.author = { member_openid: id, username: "新名" };
-    rememberKnownMember(member);
-    await saving;
-    await flushKnownMembers();
-    const saved = JSON.parse(await readFile(memberFile, "utf8")) as {
-        groups: Record<string, Record<string, { username: string }>>;
-    };
-    assert.equal(saved.groups[groupId][id].username, "新名");
 });
 
 test("one recalled trigger cancels every matching pending request", async () => {

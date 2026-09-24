@@ -97,6 +97,6 @@ test("message handler routes /help before context or AI", async () => {
     await fake.onMessage({}, source);
     assert.equal(fake.sent.length, 1);
     assert.match(fake.sent[0].content, /可用命令/);
-    const normalized = normalizeQqMessage({}, source);
+    const normalized = await normalizeQqMessage({}, source);
     assert.doesNotMatch(buildChatInput(normalized, "下一句"), /\/help/);
 });

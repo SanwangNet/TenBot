@@ -1,147 +1,13 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import type { NormalizedQqMessage } from "../message/normalize-message.js";
+import { MemoryMemberRepository } from "../../members/memory-repository.js";
+import type { KnownMember, MemberRepository } from "../../members/repository.js";
 import { logger, truncateLogText } from "../../shared/logger.js";
+import type { NormalizedQqMessage } from "../message/normalize-message.js";
 
-interface Member {
-    memberOpenid: string;
-    username: string;
-    role?: string;
-    firstSeenAt: number;
-    lastSeenAt: number;
-}
+let repository: MemberRepository = new MemoryMemberRepository();
 
-const MAX_MEMBERS = 50;
-const groups = new Map<string, Map<string, Member>>();
-export const DEFAULT_KNOWN_MEMBERS_PATH = resolve(process.cwd(), "data", "known-members.json");
-let storagePath = DEFAULT_KNOWN_MEMBERS_PATH;
-let blocked = false;
-let dirty = false;
-let timer: ReturnType<typeof setTimeout> | undefined;
-let writing: Promise<void> | undefined;
-
-function record(value: unknown): value is Record<string, unknown> {
-    return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseFile(value: unknown): Map<string, Map<string, Member>> {
-    if (!record(value) || value.version !== 1 || !record(value.groups)) {
-        throw new Error("invalid known-members schema");
-    }
-    const loaded = new Map<string, Map<string, Member>>();
-    for (const [groupId, rawGroup] of Object.entries(value.groups)) {
-        if (!groupId || !record(rawGroup)) throw new Error("invalid group");
-        const members = new Map<string, Member>();
-        for (const [id, raw] of Object.entries(rawGroup)) {
-            if (!id || !record(raw) || typeof raw.username !== "string" || !raw.username ||
-                (raw.role !== undefined && typeof raw.role !== "string") ||
-                typeof raw.firstSeenAt !== "number" || !Number.isFinite(raw.firstSeenAt) ||
-                typeof raw.lastSeenAt !== "number" || !Number.isFinite(raw.lastSeenAt)) {
-                throw new Error("invalid member");
-            }
-            members.set(id, {
-                memberOpenid: id,
-                username: raw.username,
-                role: raw.role as string | undefined,
-                firstSeenAt: raw.firstSeenAt,
-                lastSeenAt: raw.lastSeenAt,
-            });
-        }
-        const newest = [...members.values()].sort((a, b) => b.lastSeenAt - a.lastSeenAt)
-            .slice(0, MAX_MEMBERS);
-        loaded.set(groupId, new Map(newest.map((member) => [member.memberOpenid, member])));
-    }
-    return loaded;
-}
-
-function snapshot(): string {
-    const saved: { version: 1; groups: Record<string, Record<string, Omit<Member, "memberOpenid">>> } =
-        { version: 1, groups: Object.create(null) as Record<string, Record<string, Omit<Member, "memberOpenid">>> };
-    for (const [groupId, members] of groups) {
-        const group = Object.create(null) as Record<string, Omit<Member, "memberOpenid">>;
-        for (const member of members.values()) {
-            group[member.memberOpenid] = {
-                username: member.username,
-                ...(member.role === undefined ? {} : { role: member.role }),
-                firstSeenAt: member.firstSeenAt,
-                lastSeenAt: member.lastSeenAt,
-            };
-        }
-        saved.groups[groupId] = group;
-    }
-    return JSON.stringify(saved, null, 2) + "\n";
-}
-
-/** A damaged file stays untouched; memory continues and writes are disabled for this run. */
-export async function loadKnownMembers(path = DEFAULT_KNOWN_MEMBERS_PATH): Promise<void> {
-    if (timer) clearTimeout(timer);
-    timer = undefined;
-    if (writing) await writing;
-    storagePath = path;
-    groups.clear();
-    dirty = false;
-    blocked = false;
-    try {
-        await mkdir(dirname(path), { recursive: true });
-        const loaded = parseFile(JSON.parse(await readFile(path, "utf8")) as unknown);
-        for (const [groupId, members] of loaded) groups.set(groupId, members);
-        logger.info("[Members] loaded");
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-        groups.clear();
-        blocked = true;
-        logger.error("[Members] persistence error: file preserved", error);
-    }
-}
-
-async function writeSnapshot(text: string): Promise<void> {
-    await mkdir(dirname(storagePath), { recursive: true });
-    const temp = storagePath + ".tmp";
-    await writeFile(temp, text, "utf8");
-    await rename(temp, storagePath);
-}
-
-/** One writer drains all changes, including changes arriving while the file is written. */
-export function flushKnownMembers(): Promise<void> {
-    if (timer) clearTimeout(timer);
-    timer = undefined;
-    if (writing) return writing;
-    if (!dirty || blocked) return Promise.resolve();
-    writing = (async () => {
-        while (dirty && !blocked) {
-            dirty = false;
-            try {
-                await writeSnapshot(snapshot());
-                logger.debug("[Members] saved");
-            } catch (error) {
-                dirty = true;
-                logger.error("[Members] persistence error", error);
-                return;
-            }
-        }
-    })().finally(() => { writing = undefined; });
-    return writing;
-}
-
-function scheduleSave(): void {
-    if (blocked) return;
-    dirty = true;
-    if (!timer) {
-        timer = setTimeout(() => {
-            timer = undefined;
-            void flushKnownMembers();
-        }, 200);
-    }
-}
-
-function memberMap(groupId: string | undefined, create = false): Map<string, Member> | undefined {
-    if (!groupId) return undefined;
-    let members = groups.get(groupId);
-    if (!members && create) {
-        members = new Map();
-        groups.set(groupId, members);
-    }
-    return members;
+/** The Node entry point injects SQLite; a future Worker entry point can inject D1. */
+export function configureMemberRepository(next: MemberRepository): void {
+    repository = next;
 }
 
 function roleName(role?: string): string {
@@ -150,64 +16,82 @@ function roleName(role?: string): string {
     return "成员";
 }
 
-function learn(groupId: string, id: string, username: string, role?: string): void {
-    const members = memberMap(groupId, true)!;
-    const now = Date.now();
-    const current = members.get(id);
-    if (!current) {
-        members.set(id, { memberOpenid: id, username, role, firstSeenAt: now, lastSeenAt: now });
-        logger.info("[Members] learned " + truncateLogText(username, 60) + " (" + roleName(role) + ")");
-        if (members.size > MAX_MEMBERS) {
-            const oldest = [...members.values()].sort((a, b) => a.lastSeenAt - b.lastSeenAt)[0];
-            members.delete(oldest.memberOpenid);
+async function learn(groupOpenid: string, memberOpenid: string, username: string, role?: string): Promise<void> {
+    try {
+        const previous = await repository.findByOpenid(groupOpenid, memberOpenid);
+        const now = Date.now();
+        await repository.upsertMember({
+            groupOpenid, memberOpenid, username, role,
+            firstSeenAt: previous?.firstSeenAt ?? now,
+            lastSeenAt: now,
+            updatedAt: now,
+        });
+        if (!previous) {
+            logger.info("[Members] learned " + truncateLogText(username, 60) + " (" + roleName(role) + ")");
+        } else {
+            if (previous.username !== username) {
+                logger.info("[Members] renamed " + truncateLogText(previous.username, 60) +
+                    " -> " + truncateLogText(username, 60));
+            }
+            if (role !== undefined && role !== previous.role) {
+                logger.info("[Members] role " + truncateLogText(username, 60) + " " +
+                    (previous.role ?? "member") + " -> " + role);
+            }
         }
-        scheduleSave();
-        return;
-    }
-    current.lastSeenAt = now;
-    if (current.username !== username) {
-        logger.info("[Members] renamed " + truncateLogText(current.username, 60) +
-            " -> " + truncateLogText(username, 60));
-        current.username = username;
-        scheduleSave();
-    }
-    if (role !== undefined && role !== current.role) {
-        logger.info("[Members] role " + truncateLogText(username, 60) + " " +
-            (current.role ?? "member") + " -> " + role);
-        current.role = role;
-        scheduleSave();
+    } catch (error) {
+        logger.error("[Members] persistence error", error);
     }
 }
 
-export function rememberKnownMember(message: NormalizedQqMessage): void {
+export async function rememberKnownMember(message: NormalizedQqMessage): Promise<void> {
     if (message.kind !== "group" || !message.groupId) return;
-    if (!message.authorIsBot && message.author) {
+    if (!message.authorIsBot && message.author && message.author.is_you !== true && message.author.isYou !== true) {
         const id = message.author.member_openid ?? message.author.memberOpenid ?? message.author.id;
         const name = message.author.username ?? message.author.nickname;
         const role = message.author.member_role ?? message.author.memberRole;
         if (typeof id === "string" && id && typeof name === "string" && name) {
-            learn(message.groupId, id, name, typeof role === "string" ? role : undefined);
+            await learn(message.groupId, id, name, typeof role === "string" ? role : undefined);
         }
     }
     for (const mention of message.mentions) {
         if (!mention.isBot && !mention.isSelf && mention.memberOpenid && mention.username) {
-            learn(message.groupId, mention.memberOpenid, mention.username, mention.role);
+            await learn(message.groupId, mention.memberOpenid, mention.username, mention.role);
         }
     }
 }
 
-export function getKnownMembers(message: NormalizedQqMessage): Member[] {
-    if (message.kind !== "group") return [];
-    return [...(memberMap(message.groupId)?.values() ?? [])]
-        .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+export async function getKnownMembers(message: NormalizedQqMessage): Promise<KnownMember[]> {
+    if (message.kind !== "group" || !message.groupId) return [];
+    try {
+        return await repository.listByGroup(message.groupId);
+    } catch (error) {
+        logger.error("[Members] list error", error);
+        return [];
+    }
 }
 
-export function getKnownMemberNameById(groupId: string | undefined, id: string): string | undefined {
-    return memberMap(groupId)?.get(id)?.username;
+export async function getKnownMemberNameById(groupOpenid: string | undefined, memberOpenid: string): Promise<string | undefined> {
+    if (!groupOpenid) return undefined;
+    try {
+        return (await repository.findByOpenid(groupOpenid, memberOpenid))?.username;
+    } catch (error) {
+        logger.error("[Members] lookup error", error);
+        return undefined;
+    }
 }
 
-export function buildKnownMembersContext(message: NormalizedQqMessage): string {
-    const members = getKnownMembers(message).slice(0, 20);
+export async function findMembersByName(groupOpenid: string | undefined, username: string): Promise<KnownMember[]> {
+    if (!groupOpenid) return [];
+    try {
+        return await repository.findByUsername(groupOpenid, username);
+    } catch (error) {
+        logger.error("[Members] lookup error", error);
+        return [];
+    }
+}
+
+export async function buildKnownMembersContext(message: NormalizedQqMessage): Promise<string> {
+    const members = (await getKnownMembers(message)).slice(0, 20);
     if (!members.length) return "";
     const counts = new Map<string, number>();
     const seen = new Map<string, number>();
@@ -229,44 +113,4 @@ export function buildKnownMembersContext(message: NormalizedQqMessage): string {
         "不要填写不在已知群友列表里的人。",
         "</mention_capability>",
     ].join("\n");
-}
-
-function findUnique(message: NormalizedQqMessage, username: string): Member | null {
-    const matches = getKnownMembers(message).filter((member) => member.username === username);
-    return matches.length === 1 ? matches[0] : null;
-}
-
-function mentionTag(member: Member | null, name: string): string {
-    return member && /^[A-Za-z0-9_-]+$/.test(member.memberOpenid)
-        ? '<qqbot-at-user id="' + member.memberOpenid + '" />'
-        : "@" + name.replace(/[<>]/g, "");
-}
-
-export function renderMentions(
-    message: NormalizedQqMessage,
-    text: string,
-): { sendText: string; contextText: string } {
-    const pattern = /<mention>([^<]{1,64})<\/mention>/g;
-    return {
-        sendText: text.replace(pattern, (_match, name: string) =>
-            mentionTag(findUnique(message, name.trim()), name.trim())),
-        contextText: text.replace(pattern, (_match, name: string) => "@" + name.trim()),
-    };
-}
-
-export function renderStructuredMentions(
-    message: NormalizedQqMessage,
-    content: string,
-    mentions: string[],
-): { sendText: string; contextText: string } {
-    const safeContent = content.replace(/<qqbot-at-user\b[^>]*\/?>/gi, "");
-    const rendered = renderMentions(message, safeContent);
-    const names = [...new Set(mentions.map((name) => name.trim()).filter(Boolean))]
-        .filter((name) => !safeContent.includes("<mention>" + name + "</mention>"));
-    return {
-        sendText: [...names.map((name) => mentionTag(findUnique(message, name), name)), rendered.sendText]
-            .filter(Boolean).join(" "),
-        contextText: [...names.map((name) => "@" + name), rendered.contextText]
-            .filter(Boolean).join(" "),
-    };
 }

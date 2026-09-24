@@ -54,12 +54,14 @@ src/
     bot.ts                QQ Bot 创建及事件注册
     handlers/             消息与按钮入口
     message/              入站归一化和触发判断
-    conversation/         最近上下文、活跃会话、已见成员
+    conversation/         最近上下文、活跃会话、成员业务规则
     reply/                AI 回复协调与 QQ 发送
     minecraft-status*.ts  Minecraft 状态回复
   skills/                 可复用的 Minecraft 查询能力
   ai/                     Responses API、输入和回复结果
   shared/                 日志
+  members/                MemberRepository、SQLite 与 D1 适配器
+migrations/               D1 成员表迁移 SQL
 ```
 
 Command 是用户明确调用的 QQ 入口；Skill 是命令、按钮等入口可共用的内部能力；LLM 处理普通自然语言聊天。
@@ -96,6 +98,10 @@ pnpm test
 
 ## 本地数据与限制
 
-成员持久化版本使用 `data/known-members.json` 保存已观察到的群成员；这是本地运行状态，不应提交 Git，也不应在文档或日志中公开成员标识。已见成员列表不等于 QQ 全群成员列表。
+已见群成员通过 `MemberRepository` 读写。当前 Node.js 运行使用内置 SQLite，数据库位于 `data/bot.db`；`/members`、昵称回填、AI 的 `known_group_members` 和 QQ @ 解析都经由成员服务查询。数据库无法打开时，本次运行会退回内存成员存储并记录错误。已见成员列表不等于 QQ 全群成员列表。
+
+`migrations/0001_group_members.sql` 建立 `group_members` 表。未来接入 Cloudflare Worker 时，可对 D1 执行该迁移，并把 D1 binding 注入 `D1MemberRepository`；仓库目前没有 Worker 入口或 D1 binding 配置，也没有部署到 Cloudflare。最近上下文、活跃会话和待处理 AI 请求仍是内存状态。
+
+旧版 `data/known-members.json` 不会自动导入 SQLite。本仓库当前没有该文件；旧数据可以保留作备份，让 Bot 在群消息中重新学习成员。不要把旧 JSON、SQLite 数据库或成员标识提交到 Git。
 
 当前安装的 QQ SDK 未发现普通群消息撤回的入站事件，因此无法由真实群撤回自动触发 AI 请求取消。QQ 平台可用的消息类型和交互能力受官方 API 权限限制。AI 聊天依赖外部 Responses API 兼容后端。

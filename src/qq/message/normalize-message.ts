@@ -53,23 +53,32 @@ function normalizeMentions(rawMentions: unknown): NormalizedMention[] {
 }
 
 /** Only readable names enter AI input or recent context. Unknown IDs never do. */
-export function resolveDisplayContent(
+export async function resolveDisplayContent(
     content: string,
     mentions: NormalizedMention[],
     groupId?: string,
-): string {
-    return content.replace(/<@([^<>\s]+)>/g, (_token, rawId: string) => {
+): Promise<string> {
+    const matches = [...content.matchAll(/<@([^<>\s]+)>/g)];
+    const names = await Promise.all(matches.map(async (match) => {
+        const rawId = match[1];
         const id = rawId.startsWith("!") ? rawId.slice(1) : rawId;
         const current = mentions.find((mention) => mention.ids.includes(id));
-        const name = current?.username ?? getKnownMemberNameById(groupId, id);
+        const name = current?.username ?? await getKnownMemberNameById(groupId, id);
         return "@" + (name || "未知成员");
-    });
+    }));
+    let cursor = 0;
+    let rendered = "";
+    for (const [index, match] of matches.entries()) {
+        rendered += content.slice(cursor, match.index) + names[index];
+        cursor = match.index! + match[0].length;
+    }
+    return rendered + content.slice(cursor);
 }
 
-export function normalizeQqMessage(
+export async function normalizeQqMessage(
     context: unknown,
     message: QQBotInboundMessage,
-): NormalizedQqMessage {
+): Promise<NormalizedQqMessage> {
     const contextEventType = (context as { eventType?: string } | null)?.eventType;
     const raw = message.raw as any;
     const author = (message as any).author ?? raw?.author ?? null;
@@ -90,7 +99,7 @@ export function normalizeQqMessage(
         kind: message.kind,
         eventType: message.rawEventType ?? contextEventType ?? "",
         content,
-        displayContent: resolveDisplayContent(content, mentions, groupId),
+        displayContent: await resolveDisplayContent(content, mentions, groupId),
         groupId,
         author,
         authorId: author?.id ?? author?.member_openid ?? author?.user_openid ?? message.senderId,
