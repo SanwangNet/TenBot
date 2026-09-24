@@ -178,6 +178,9 @@ importers:
       openai:
         specifier: ^7.21.0
         version: 7.21.0(ws@8.21.3)
+      pinyin-pro:
+        specifier: ^3.29.4
+        version: 3.29.4
     devDependencies:
       '@types/node':
         specifier: ^26.6.2
@@ -525,6 +528,9 @@ packages:
       zod:
         optional: true
 
+  pinyin-pro@3.29.4:
+    resolution: {integrity: sha512-SPXpDT2cHEy+d26V1RXYMlVzXN42hotFAak1fzyWPi4o2dKXb61UqD4pzxDJHwk6gbv8vQ6EfErd+hYX0Qhzug==}
+
   tsx@4.23.15:
     resolution: {integrity: sha512-Yiex1Ovn8z2xPpOWckIiysV1SSyRMY9BkLF++q0yKiDxCqRhosKfMg3janKkiLBwZ5c/YryloKwGZcrEmtwxKw==}
     engines: {node: '>=18.0.0'}
@@ -740,6 +746,8 @@ snapshots:
   openai@7.21.0(ws@8.21.3):
     optionalDependencies:
       ws: 8.21.3
+
+  pinyin-pro@3.29.4: {}
 
   tsx@4.23.15:
     dependencies:

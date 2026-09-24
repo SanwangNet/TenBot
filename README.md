@@ -48,6 +48,8 @@ flowchart TD
 
 每个 conversation 同时最多一个生成中的 AI Attempt。生成中的新消息会 abort 当前 Attempt 并重建最新上下文，每个 Cycle 最多三次中断；达到上限后新消息缓存到下一 Cycle。正常硬截止从 Cycle 开始计 30 秒；当 Responses 流实际发出 Web Search 事件时，该 Cycle 的截止时间升至同一起点后 120 秒。
 
+Meme Runtime 在启动时从名称和别名派生中文拼音、首字母检索键，支持中文、全拼、缩写、大小写及部分混合输入。检索区分强命中和弱候选；强命中优先给 AI `interactions` 常见接法，弱候选提示谨慎判断。派生键只留在内存，不写入 Meme 数据或提供给模型。
+
 群聊中，真正 @ 小尘是强触发；提到“小尘”或处于活跃会话时是软触发。普通非活跃群消息只记录上下文。软触发时模型可以输出 `<NO_REPLY>`。图片仅在满足识图触发条件时发送给模型；网页搜索由模型按需选择。
 
 联网搜索结果会将 Responses API 提供的引用转换为普通 Markdown 来源链接；来源元数据缺失时会隐藏内部引用标记。
@@ -60,7 +62,7 @@ flowchart TD
 
 ### Meme Skill
 
-`src/skills/meme/data/memes.json` 是可提交 Git 的静态网络梗知识文件。Runtime 启动时校验文件并建立只读内存索引；消息中明确命中 name/aliases 时自动注入最多 3 条简短 Meme Context，优先用本地知识理解同一个梗。`meme_lookup` 仍是本地自动匹配未命中或模型不确定时的 fallback；只有本地资料不足、用户要求核实或询问最新传播时才考虑 Web Search。Bot 不会写回知识文件。查不到时，模型仍可按需使用现有 `web_search` 现场回答，但搜索结果不会写入 Meme Skill。当前知识文件为空，需手动维护后才有本地命中。
+`src/skills/meme/data/memes.json` 是可提交 Git 的静态网络梗知识文件。每条保存 `id`、名称与别名、摘要、背景、含义、用法、示例，以及可选的 `interactions` 常见接法。Runtime 启动时校验文件并建立只读内存索引；自动匹配最多投影 3 条精简候选，明确询问含义或背景时才提供详细内容。`meme_lookup` 是模型不确定时的只读查询。来源核实由现有 `web_search` 临时完成，不写入知识文件；Bot 运行时也不会写回知识文件。
 
 维护入口独立于 Bot：
 

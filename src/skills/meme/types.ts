@@ -1,6 +1,6 @@
-export interface MemeSource {
-    name: string;
-    url: string;
+export interface MemeInteraction {
+    input: string;
+    responses: string[];
 }
 
 export interface MemeCandidate {
@@ -11,11 +11,9 @@ export interface MemeCandidate {
     meaning: string;
     usage: string;
     examples: string[];
-    sources: MemeSource[];
+    interactions?: MemeInteraction[];
 }
 
 export interface MemeEntry extends MemeCandidate {
     id: string;
-    firstSeenAt: string;
-    updatedAt: string;
 }

@@ -16,11 +16,12 @@ export interface PreparedMemeCandidates {
 }
 
 /** Validate and deduplicate before applying the candidate cap, so bad or repeated items don't use slots. */
-export function prepareMemeCandidates(rawCandidates: readonly unknown[], today: string): PreparedMemeCandidates {
-    const result = mergeMemeCandidates([], rawCandidates, today);
+export function prepareMemeCandidates(rawCandidates: readonly unknown[]): PreparedMemeCandidates {
+    const result = mergeMemeCandidates([], rawCandidates);
     return {
-        candidates: result.entries.map(({ name, aliases, summary, origin, meaning, usage, examples, sources }) =>
-            ({ name, aliases, summary, origin, meaning, usage, examples, sources })),
+        candidates: result.entries.map(({ name, aliases, summary, origin, meaning, usage, examples, interactions }) =>
+            ({ name, aliases, summary, origin, meaning, usage, examples,
+                ...(interactions === undefined ? {} : { interactions }) })),
         skipped: result.skipped,
     };
 }
@@ -34,15 +35,14 @@ export function mergeMemeCandidatesWithinLimit(
     existing: readonly MemeEntry[],
     rawCandidates: readonly unknown[],
     limit: number,
-    today: string,
 ): { received: number; prepared: PreparedMemeCandidates; accepted: MemeCandidate[]; merge: MergeResult } {
-    const prepared = prepareMemeCandidates(rawCandidates, today);
+    const prepared = prepareMemeCandidates(rawCandidates);
     const accepted = truncateMemeCandidates(prepared.candidates, limit);
     return {
         received: rawCandidates.length,
         prepared,
         accepted,
-        merge: mergeMemeCandidates(existing, accepted, today),
+        merge: mergeMemeCandidates(existing, accepted),
     };
 }
 
@@ -57,8 +57,7 @@ export async function writeMemeJson(
     return true;
 }
 
-export function mergeMemeCandidates(existing: readonly MemeEntry[], rawCandidates: readonly unknown[], today: string): MergeResult {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) throw new Error("Invalid update date");
+export function mergeMemeCandidates(existing: readonly MemeEntry[], rawCandidates: readonly unknown[]): MergeResult {
     const entries = [...existing];
     const result: MergeResult = { entries, added: [], updated: [], skipped: [] };
     for (const [index, raw] of rawCandidates.entries()) {
@@ -80,12 +79,12 @@ export function mergeMemeCandidates(existing: readonly MemeEntry[], rawCandidate
             const old = matches[0];
             const merged: MemeEntry = {
                 ...candidate,
+                ...(candidate.interactions === undefined && old.interactions !== undefined
+                    ? { interactions: old.interactions } : {}),
                 id: old.id,
                 aliases: [...new Set([...old.aliases, old.name, ...candidate.aliases])]
                     .filter((alias) => alias !== candidate.name)
                     .sort((a, b) => a.localeCompare(b, "zh-CN")),
-                firstSeenAt: old.firstSeenAt,
-                updatedAt: today,
             };
             const position = entries.indexOf(old);
             entries[position] = merged;
@@ -96,7 +95,7 @@ export function mergeMemeCandidates(existing: readonly MemeEntry[], rawCandidate
                 result.skipped.push(`${candidate.name}: id collision`);
                 continue;
             }
-            entries.push({ id, ...candidate, firstSeenAt: today, updatedAt: today });
+            entries.push({ id, ...candidate });
             result.added.push(candidate.name);
         }
     }

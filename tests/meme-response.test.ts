@@ -9,7 +9,6 @@ import {
 const meme = {
     name: "测试梗", aliases: [], summary: "测试摘要", origin: "测试出处",
     meaning: "测试含义", usage: "测试用法", examples: [],
-    sources: [{ name: "测试来源", url: "https://example.com/meme" }],
 };
 const research = { memes: [meme] };
 const fixture = {

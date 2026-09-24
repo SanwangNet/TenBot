@@ -31,20 +31,14 @@ export function parseMemeUpdateArgs(args: string[]): { limit: number; topic?: st
     return { limit, topic: topic || undefined, dryRun };
 }
 
-const sourceSchema = {
-    type: "object", additionalProperties: false,
-    properties: { name: { type: "string" }, url: { type: "string" } },
-    required: ["name", "url"],
-};
 const memeSchema = {
     type: "object", additionalProperties: false,
     properties: {
         name: { type: "string" }, aliases: { type: "array", items: { type: "string" } },
         summary: { type: "string" }, origin: { type: "string" }, meaning: { type: "string" },
         usage: { type: "string" }, examples: { type: "array", items: { type: "string" } },
-        sources: { type: "array", items: sourceSchema },
     },
-    required: ["name", "aliases", "summary", "origin", "meaning", "usage", "examples", "sources"],
+    required: ["name", "aliases", "summary", "origin", "meaning", "usage", "examples"],
 };
 
 export function researchCandidateLimit(limit: number, topic?: string): number {
@@ -65,7 +59,7 @@ export function buildMemeResearchInstructions(limit: number, topic?: string): st
     return [
         "你是网络梗资料整理员。必须使用 web_search 核查真实来源，然后用自己的话返回简短中文结构化摘要，不复制文章或评论长段落。",
         "关注近期在中国大陆社交平台、游戏、二次元及技术社区有明显传播的梗；海外梗仅在中文社区传播时收录。不要编造热度排名。",
-        "尽量交叉确认出处，优先原始内容；有争议就明确写不确定。解释含义、传播背景、常见用法、语气、反讽或误用风险，少量短例子。每条至少一个可访问的 HTTP(S) 来源链接。",
+        "尽量交叉确认出处，优先原始内容；有争议就明确写不确定。解释含义、传播背景、常见用法、语气、反讽或误用风险，少量短例子。不把研究链接写进知识文件。",
         "跳过未证实、过气且无近期使用价值、隐私泄露、针对普通个人的网暴、极端暴力鼓动及违法操作教程。",
         topic ? "仅研究用户指定的一个梗，勿返回其他梗。" : `最多返回 ${limit} 个值得认识的梗。`,
     ].join("\n");
@@ -104,9 +98,8 @@ async function main(): Promise<void> {
     const { memes: candidates } = parseMemeResearchResponse(rawResponse);
     console.log("[Meme] web research completed");
     console.log(`[Meme] received ${candidates.length} candidates`);
-    const today = new Date().toISOString().slice(0, 10);
     const candidateLimit = researchCandidateLimit(limit, topic);
-    const limited = mergeMemeCandidatesWithinLimit(existing, candidates, candidateLimit, today);
+    const limited = mergeMemeCandidatesWithinLimit(existing, candidates, candidateLimit);
     for (const reason of limited.prepared.skipped) console.log(`[Meme] skipped ${reason}`);
     if (limited.prepared.candidates.length > candidateLimit) {
         console.log(`[Meme] candidate limit exceeded: valid unique=${limited.prepared.candidates.length} limit=${candidateLimit}, keeping first ${candidateLimit}`);

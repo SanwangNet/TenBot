@@ -11,16 +11,13 @@ import { validateMemeCandidate, validateMemeEntry, validateMemeFile } from "../s
 const candidate: MemeCandidate = {
     name: "汗流浃背了吧老弟", aliases: ["汗流浃背"], summary: "示例摘要",
     origin: "示例出处", meaning: "示例含义", usage: "示例用法", examples: ["示例句"],
-    sources: [{ name: "示例", url: "https://example.com/meme" }],
 };
-const entry: MemeEntry = { id: "meme-123456789abc", ...candidate,
-    firstSeenAt: "2026-01-01", updatedAt: "2026-01-01" };
+const entry: MemeEntry = { id: "meme-123456789abc", ...candidate };
 const dataUrl = new URL("../src/skills/meme/data/memes.json", import.meta.url);
 const makeCandidate = (index: number): MemeCandidate => ({
     ...candidate,
     name: `测试网络梗 ${index}`,
     aliases: [`梗别名 ${index}`],
-    sources: [{ name: "示例", url: `https://example.com/meme-${index}` }],
 });
 
 test("exact name outranks alias", () => {
@@ -37,8 +34,31 @@ test("at most three results", () => {
     assert.equal(searchMemes(Array.from({ length: 6 }, (_, i) => ({ ...entry, id: `meme-${i}`, name: `测试梗${i}` })), "测试梗").length, 3);
 });
 test("candidate validation", () => assert.deepEqual(validateMemeCandidate(candidate), candidate));
-test("invalid URL rejected", () => {
-    assert.equal(validateMemeCandidate({ ...candidate, sources: [{ name: "bad", url: "file:///tmp/a" }] }), null);
+test("minimal MemeEntry validates without maintenance metadata or interactions", () => {
+    assert.deepEqual(validateMemeEntry(entry), entry);
+    assert.equal(validateMemeEntry(entry)?.interactions, undefined);
+});
+test("optional interactions validate, trim, and dedupe without changing old entries", () => {
+    assert.equal(validateMemeEntry(entry)?.interactions, undefined);
+    assert.deepEqual(validateMemeEntry({ ...entry, interactions: [] })?.interactions, []);
+    const interaction = { input: " kskbl？ ", responses: [" zdjd？ ", "zdjd？"] };
+    assert.deepEqual(validateMemeEntry({ ...entry, interactions: [interaction] })?.interactions,
+        [{ input: "kskbl？", responses: ["zdjd？"] }]);
+    for (const invalid of [
+        [{ input: " ", responses: ["zdjd？"] }],
+        [{ input: "kskbl？", responses: [] }],
+        [{ input: "kskbl？", responses: [" "] }],
+        [{ input: "x".repeat(161), responses: ["zdjd？"] }],
+        [{ input: "kskbl？", responses: ["x".repeat(161)] }],
+        [{ input: "kskbl？", responses: Array(6).fill("zdjd？") }],
+        Array(11).fill({ input: "kskbl？", responses: ["zdjd？"] }),
+    ]) assert.equal(validateMemeEntry({ ...entry, interactions: invalid }), null);
+});
+test("current Meme knowledge validates without removed metadata", async () => {
+    const data = JSON.parse(await readFile(dataUrl, "utf8"));
+    assert.equal(validateMemeFile(data).length, data.length);
+    assert.equal(data.some((item: Record<string, unknown>) =>
+        "sources" in item || "firstSeenAt" in item || "updatedAt" in item), false);
 });
 test("empty alias cleaned", () => {
     assert.deepEqual(validateMemeCandidate({ ...candidate, aliases: ["", " ", "汗流浃背", "汗流浃背"] })?.aliases, ["汗流浃背"]);
@@ -46,25 +66,28 @@ test("empty alias cleaned", () => {
 test("oversize text rejected", () => assert.equal(validateMemeCandidate({ ...candidate, summary: "a".repeat(241) }), null));
 test("entry validation rejects malformed id", () => assert.equal(validateMemeEntry({ ...entry, id: "!" }), null));
 test("duplicate name merges and preserves id", () => {
-    const result = mergeMemeCandidates([entry], [{ ...candidate, summary: "新摘要" }], "2026-09-24");
+    const result = mergeMemeCandidates([entry], [{ ...candidate, summary: "新摘要" }]);
     assert.equal(result.entries.length, 1);
     assert.equal(result.entries[0].id, entry.id);
-    assert.equal(result.entries[0].firstSeenAt, entry.firstSeenAt);
-    assert.equal(result.entries[0].updatedAt, "2026-09-24");
     assert.equal(result.entries[0].summary, "新摘要");
 });
+test("updating a Meme without interactions preserves its existing behavior examples", () => {
+    const existing = { ...entry, interactions: [{ input: "kskbl？", responses: ["zdjd？"] }] };
+    const merged = mergeMemeCandidates([existing], [{ ...candidate, summary: "新摘要" }]);
+    assert.deepEqual(merged.entries[0].interactions, existing.interactions);
+});
 test("duplicate alias merges and retains old name", () => {
-    const result = mergeMemeCandidates([entry], [{ ...candidate, name: "新叫法", aliases: [entry.aliases[0]] }], "2026-09-24");
+    const result = mergeMemeCandidates([entry], [{ ...candidate, name: "新叫法", aliases: [entry.aliases[0]] }]);
     assert.equal(result.entries.length, 1);
     assert.ok(result.entries[0].aliases.includes(entry.name));
 });
 test("duplicate candidate in same batch merges", () => {
-    const result = mergeMemeCandidates([], [candidate, { ...candidate, aliases: ["新别名"] }], "2026-09-24");
+    const result = mergeMemeCandidates([], [candidate, { ...candidate, aliases: ["新别名"] }]);
     assert.equal(result.entries.length, 1);
     assert.ok(result.entries[0].aliases.includes("新别名"));
 });
 test("invalid candidate skipped", () => {
-    const result = mergeMemeCandidates([], [{ ...candidate, meaning: "" }], "2026-09-24");
+    const result = mergeMemeCandidates([], [{ ...candidate, meaning: "" }]);
     assert.equal(result.entries.length, 0);
     assert.equal(result.skipped.length, 1);
 });
@@ -83,35 +106,35 @@ test("CLI parses topic, limit, dry run", () => {
     assert.throws(() => parseMemeUpdateArgs(["--limit", "11"]));
 });
 test("default candidate limit retains exactly eight", () => {
-    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 8 }, (_, i) => makeCandidate(i)), 8, "2026-09-24");
+    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 8 }, (_, i) => makeCandidate(i)), 8);
     assert.equal(result.accepted.length, 8);
     assert.equal(result.merge.added.length, 8);
 });
 test("excess candidates are truncated instead of failing", () => {
-    const nine = mergeMemeCandidatesWithinLimit([], Array.from({ length: 9 }, (_, i) => makeCandidate(i)), 8, "2026-09-24");
-    const twenty = mergeMemeCandidatesWithinLimit([], Array.from({ length: 20 }, (_, i) => makeCandidate(i)), 8, "2026-09-24");
+    const nine = mergeMemeCandidatesWithinLimit([], Array.from({ length: 9 }, (_, i) => makeCandidate(i)), 8);
+    const twenty = mergeMemeCandidatesWithinLimit([], Array.from({ length: 20 }, (_, i) => makeCandidate(i)), 8);
     assert.equal(nine.accepted.length, 8);
     assert.equal(nine.merge.added.length, 8);
     assert.equal(twenty.accepted.length, 8);
 });
 test("fewer candidates than the limit are all retained", () => {
-    assert.equal(mergeMemeCandidatesWithinLimit([], [makeCandidate(1), makeCandidate(2)], 8, "2026-09-24").accepted.length, 2);
+    assert.equal(mergeMemeCandidatesWithinLimit([], [makeCandidate(1), makeCandidate(2)], 8).accepted.length, 2);
 });
 test("invalid entries are filtered before the final limit", () => {
-    const raw = [{ ...makeCandidate(99), sources: [] }, { ...makeCandidate(98), name: "" },
+    const raw = [{ ...makeCandidate(99), usage: "" }, { ...makeCandidate(98), name: "" },
         ...Array.from({ length: 8 }, (_, i) => makeCandidate(i))];
-    const result = mergeMemeCandidatesWithinLimit([], raw, 8, "2026-09-24");
+    const result = mergeMemeCandidatesWithinLimit([], raw, 8);
     assert.equal(result.accepted.length, 8);
     assert.equal(result.prepared.skipped.length, 2);
 });
 test("duplicate candidates are removed before consuming limit slots", () => {
     const unique = Array.from({ length: 8 }, (_, i) => makeCandidate(i));
-    const result = mergeMemeCandidatesWithinLimit([], [...unique, { ...unique[0], summary: "重复" }], 8, "2026-09-24");
+    const result = mergeMemeCandidatesWithinLimit([], [...unique, { ...unique[0], summary: "重复" }], 8);
     assert.equal(result.accepted.length, 8);
     assert.equal(result.merge.entries.length, 8);
 });
 test("limit five caps seven valid unique candidates and still merges", () => {
-    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 7 }, (_, i) => makeCandidate(i)), 5, "2026-09-24");
+    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 7 }, (_, i) => makeCandidate(i)), 5);
     assert.equal(result.accepted.length, 5);
     assert.equal(result.merge.added.length, 5);
     assert.equal(researchCandidateLimit(5), 5);
@@ -124,7 +147,7 @@ test("research prompt and strict schema use the dynamic candidate limit", () => 
     assert.equal(researchCandidateLimit(8, "指定梗"), 1);
 });
 test("dry run truncates excess and never invokes the writer", async () => {
-    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 9 }, (_, i) => makeCandidate(i)), 8, "2026-09-24");
+    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 9 }, (_, i) => makeCandidate(i)), 8);
     let writes = 0;
     const wrote = await writeMemeJson(serializeMemes(result.merge.entries), true, "[]\n", async () => { writes++; });
     assert.equal(result.accepted.length, 8);
@@ -132,7 +155,7 @@ test("dry run truncates excess and never invokes the writer", async () => {
     assert.equal(writes, 0);
 });
 test("regular update truncates excess and writes merged entries", async () => {
-    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 9 }, (_, i) => makeCandidate(i)), 8, "2026-09-24");
+    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 9 }, (_, i) => makeCandidate(i)), 8);
     let written = "";
     const wrote = await writeMemeJson(serializeMemes(result.merge.entries), false, "[]\n", async (content) => { written = content; });
     assert.equal(result.merge.added.length, 8);
@@ -146,6 +169,12 @@ test("runtime lookup is read-only and misses safely", async () => {
     assert.equal(lookupMeme('{"query":"不存在的梗"}'), "没有找到本地 Meme 知识。");
     assert.equal(lookupMeme("bad json"), "无效的梗查询。");
     assert.equal(await readFile(dataUrl, "utf8"), before);
+});
+test("meme_lookup returns detailed knowledge without ids or removed metadata", () => {
+    const result = JSON.parse(lookupMeme('{"query":"kskbl"}')) as Record<string, unknown>[];
+    assert.ok(result.length > 0);
+    assert.deepEqual(Object.keys(result[0]),
+        ["confidence", "name", "aliases", "summary", "origin", "meaning", "usage", "examples"]);
 });
 test("runtime dependency graph excludes maintenance script", async () => {
     const client = await readFile(new URL("../src/ai/client.ts", import.meta.url), "utf8");
