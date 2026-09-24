@@ -22,12 +22,17 @@ export const AI_UPSTREAM_ERROR_REPLY = "\u540e\u7aef\u6682\u65f6\u70b8\u4e86\uff
 const AI_ERROR_REPLY = "\u521a\u624d\u8111\u5b50\u77ed\u8def\u4e86\u4e00\u4e0b\u3002";
 
 export type TriggerPriority = 0 | 1 | 2 | 3;
-export interface AttemptInput { aiInput: string; imageUrls: string[] }
+export interface ReplyCycleAnchor { revision: number; message: NormalizedQqMessage }
+interface TrailingUpdate { anchor: ReplyCycleAnchor; priority: TriggerPriority }
+export interface AttemptInput { aiInput: string; imageUrls: string[]; refs?: Map<string, string> }
 export interface AttemptBuildContext {
     allowNoReply: boolean;
     triggerPriority: TriggerPriority;
     originTriggerKind?: TriggerKind;
     effectiveTriggerKind?: TriggerKind;
+    originAnchor: ReplyCycleAnchor;
+    effectiveAnchor: ReplyCycleAnchor;
+    newerMessages: readonly ReplyCycleAnchor[];
     isAtBot: boolean;
     mentionedByName: boolean;
 }
@@ -39,6 +44,7 @@ export interface ReplyRequest {
     isGroup: boolean;
     allowNoReply: boolean;
     triggerKind?: TriggerKind;
+    messageRevision?: number;
     onWebSearchStart: () => void | Promise<void>;
     triggerPriority?: TriggerPriority;
     isAtBot?: boolean;
@@ -78,12 +84,17 @@ interface Cycle {
     priority: TriggerPriority;
     originTriggerKind?: TriggerKind;
     effectiveTriggerKind?: TriggerKind;
+    originAnchor: ReplyCycleAnchor;
+    effectiveAnchor: ReplyCycleAnchor;
+    updates: ReplyCycleAnchor[];
+    lastAttemptSnapshotRevision: number;
     engagementGeneration?: number;
     hasAtBot: boolean;
     hasName: boolean;
     trailingPriority: TriggerPriority;
     trailingAtBot: boolean;
     trailingName: boolean;
+    trailingUpdates: TrailingUpdate[];
     triggerIds: Set<string>;
     seenMessageIds: Set<string>;
     deps: Dependencies;
@@ -167,11 +178,21 @@ function priorityOf(request: ReplyRequest): TriggerPriority {
         : request.triggerKind === "name-soft" ? 2 : 1;
     return request.triggerPriority ?? (request.isGroup ? (request.allowNoReply ? 1 : 3) : 3);
 }
+function anchorOf(request: ReplyRequest): ReplyCycleAnchor {
+    return { revision: request.messageRevision ?? getMessageRevision(request.message), message: request.message };
+}
 function kindOf(priority: TriggerPriority, isGroup: boolean): TriggerKind | undefined {
     if (!isGroup || !priority) return undefined;
     return priority === 3 ? "hard-mention" : priority === 2 ? "name-soft" : "active-soft";
 }
-function upgradeTrigger(cycle: Cycle, request: ReplyRequest, priority: TriggerPriority): void {
+function upgradeTrigger(cycle: Cycle, request: ReplyRequest, priority: TriggerPriority, incoming: ReplyCycleAnchor): void {
+    const explicit = priority >= 2;
+    if (explicit && priority >= cycle.priority) {
+        const previous = cycle.effectiveAnchor.revision;
+        cycle.effectiveAnchor = incoming;
+        logger.info("[Cycle] anchor update revision=" + previous + " -> " + incoming.revision +
+            " trigger=" + kindOf(priority, request.isGroup));
+    }
     if (priority > cycle.priority) {
         const previous = cycle.effectiveTriggerKind;
         cycle.priority = priority;
@@ -182,57 +203,114 @@ function upgradeTrigger(cycle: Cycle, request: ReplyRequest, priority: TriggerPr
     cycle.hasName ||= request.mentionedByName === true;
 }
 function canNoReply(cycle: Cycle): boolean { return cycle.latestRequest.isGroup && cycle.effectiveTriggerKind !== "hard-mention"; }
-function buildAttemptContext(cycle: Cycle): AttemptBuildContext {
+function buildAttemptContext(cycle: Cycle, revision: number): AttemptBuildContext {
     return { allowNoReply: canNoReply(cycle), triggerPriority: cycle.priority,
         originTriggerKind: cycle.originTriggerKind, effectiveTriggerKind: cycle.effectiveTriggerKind,
+        originAnchor: cycle.originAnchor, effectiveAnchor: cycle.effectiveAnchor,
+        newerMessages: cycle.updates.filter((item) =>
+            item.revision > cycle.lastAttemptSnapshotRevision && item.revision <= revision),
         isAtBot: cycle.hasAtBot, mentionedByName: cycle.hasName };
 }
-function createCycle(request: ReplyRequest, deps: Dependencies, priority: TriggerPriority): Cycle {
+function semanticAnchorText(context: AttemptBuildContext, refs?: Map<string, string>): string {
+    const byId = new Map<string, string>();
+    for (const [ref, id] of refs ?? []) byId.set(id, ref);
+    const describe = ({ message }: ReplyCycleAnchor): string => {
+        const ref = message.id ? byId.get(message.id) : undefined;
+        return `${ref ? `[${ref}] ` : ""}${message.authorName ?? "群友"}：${message.displayContent}`;
+    };
+    const origin = context.originAnchor;
+    const effective = context.effectiveAnchor;
+    const newer = context.newerMessages.filter((item) => item.revision !== effective.revision);
+    return [
+        "<reply_cycle_context>",
+        "本轮最初因这条消息开始考虑参与：" + describe(origin),
+        ...(effective.revision !== origin.revision ? ["当前更明确的参与邀请：" + describe(effective)] : []),
+        ...(newer.length ? ["上次生成后新增的群聊内容：", ...newer.map(describe)] : []),
+        "新增内容用于重新判断上下文，不会自动取代本轮的参与起因。请结合整段对话决定如何自然参与。",
+        "</reply_cycle_context>",
+    ].join("\n");
+}
+export function buildReplyCycleMemeQuery(context: AttemptBuildContext): string {
+    const seen = new Set<number>();
+    return [context.effectiveAnchor, ...context.newerMessages]
+        .filter((item) => !seen.has(item.revision) && Boolean(seen.add(item.revision)))
+        .map((item) => item.message.displayContent.trim())
+        .filter(Boolean)
+        .join("\n");
+}
+function createCycle(request: ReplyRequest, deps: Dependencies, priority: TriggerPriority,
+    trailingUpdates: readonly TrailingUpdate[] = []): Cycle {
     let resolveTimeout!: () => void;
     const timeout = new Promise<void>((resolve) => { resolveTimeout = resolve; });
     let resolveDone!: () => void;
     const done = new Promise<void>((resolve) => { resolveDone = resolve; });
     const started = Date.now();
-    const revision = getMessageRevision(request.message);
+    const originAnchor = trailingUpdates[0]?.anchor ?? anchorOf(request);
+    const originPriority = trailingUpdates.length ? (trailingUpdates[0].priority || 1) : priority;
+    let effectiveAnchor = originAnchor;
+    let effectivePriority = originPriority;
+    for (const item of trailingUpdates.slice(1)) {
+        if (item.priority >= 2 && item.priority >= effectivePriority) {
+            effectiveAnchor = item.anchor;
+            effectivePriority = item.priority;
+        }
+    }
+    const revision = request.messageRevision ?? getMessageRevision(request.message);
     const cycle: Cycle = {
         cycleId: randomUUID(), key: getConversationKey(request.message),
         anchorMessageId: getTriggerMessageId(request.message), anchorRevision: revision,
         interruptionCount: 0, cycleStartedAt: started,
         deadlineAt: started + (deps.timeoutMs ?? AI_REQUEST_TIMEOUT_MS),
         webSearchTriggered: false, consumedRevision: revision - 1,
-        latestRequest: request, priority, originTriggerKind: kindOf(priority, request.isGroup),
+        latestRequest: request, priority, originTriggerKind: kindOf(originPriority, request.isGroup),
         effectiveTriggerKind: kindOf(priority, request.isGroup),
+        originAnchor, effectiveAnchor, updates: trailingUpdates.slice(1).map((item) => item.anchor),
+        lastAttemptSnapshotRevision: originAnchor.revision,
         engagementGeneration: request.isGroup ? getConversationGeneration(request.message) : undefined,
         hasAtBot: request.isAtBot === true,
         hasName: request.mentionedByName === true, trailingPriority: 0,
-        trailingAtBot: false, trailingName: false, triggerIds: new Set(), seenMessageIds: new Set(),
+        trailingAtBot: false, trailingName: false, trailingUpdates: [],
+        triggerIds: new Set(), seenMessageIds: new Set(),
         deps, timedOut: false, cancelled: false, finalizing: false, budgetLogged: false,
         timeout, resolveTimeout, done, resolveDone,
     };
     const anchorId = getTriggerMessageId(request.message);
     if (anchorId) cycle.seenMessageIds.add(anchorId);
     addTrigger(cycle, request.message, priority);
+    for (const item of trailingUpdates) {
+        const id = getTriggerMessageId(item.anchor.message);
+        if (id) cycle.seenMessageIds.add(id);
+        addTrigger(cycle, item.anchor.message, item.priority);
+    }
     cycles.set(cycle.key, cycle);
     logger.info("[Cycle] start id=" + shortId(cycle.cycleId) + " revision=" + revision +
         " trigger=" + (cycle.originTriggerKind ?? "private") +
-        " reply=" + (canNoReply(cycle) ? "optional" : "required"));
+        " reply=" + (canNoReply(cycle) ? "optional" : "required") + " anchor=" + originAnchor.revision);
     return cycle;
 }
 function updateCycle(cycle: Cycle, request: ReplyRequest): void {
     const messageId = getTriggerMessageId(request.message);
     if (messageId && cycle.seenMessageIds.has(messageId)) return;
     if (messageId) cycle.seenMessageIds.add(messageId);
-    const revision = getMessageRevision(request.message);
+    const incoming = anchorOf(request);
+    const revision = incoming.revision;
     const priority = priorityOf(request);
     cycle.latestRequest = request;
-    upgradeTrigger(cycle, request, priority);
     addTrigger(cycle, request.message, priority);
     if (revision <= cycle.consumedRevision) return;
     cycle.trailingPriority = Math.max(cycle.trailingPriority, priority) as TriggerPriority;
     cycle.trailingAtBot ||= request.isAtBot === true;
     cycle.trailingName ||= request.mentionedByName === true;
+    cycle.trailingUpdates.push({ anchor: incoming, priority });
 
     const attempt = cycle.currentAttempt;
+    const currentCanRestart = !cycle.finalizing && cycle.interruptionCount < MAX_GENERATION_INTERRUPTS &&
+        (!attempt || attempt.status === "interrupted" ||
+            attempt.status === "running");
+    if (currentCanRestart) {
+        cycle.updates.push(incoming);
+        upgradeTrigger(cycle, request, priority, incoming);
+    }
     if (cycle.finalizing || !attempt || attempt.status !== "running") return;
     if (cycle.interruptionCount >= MAX_GENERATION_INTERRUPTS) {
         if (!cycle.budgetLogged) {
@@ -256,12 +334,15 @@ function startAttempt(cycle: Cycle, revision: number): Attempt {
         controller: new AbortController(), status: "running", resolveStop: resolve, stop,
     };
     cycle.currentAttempt = attempt;
+    cycle.lastAttemptSnapshotRevision = revision;
     cycle.trailingPriority = 0;
     cycle.trailingAtBot = false;
     cycle.trailingName = false;
+    cycle.trailingUpdates = [];
     cycle.budgetLogged = false;
     logger.info("[AI] start request=" + shortId(attempt.requestId) + " model=" + AI_MODEL +
-        " attempt=" + (cycle.interruptionCount + 1) + " snapshot=" + revision);
+        " attempt=" + (cycle.interruptionCount + 1) + " snapshot=" + revision +
+        " anchor=" + cycle.effectiveAnchor.revision);
     return attempt;
 }
 function clearAttempt(cycle: Cycle, attempt: Attempt): void {
@@ -418,6 +499,7 @@ function finishCycle(cycle: Cycle): void {
         const priority = cycle.trailingPriority || 1;
         const atBot = cycle.trailingAtBot;
         const name = cycle.trailingName;
+        const trailingUpdates = cycle.trailingUpdates.filter((item) => item.anchor.revision > cycle.consumedRevision);
         logger.info("[Cycle] consumed=" + cycle.consumedRevision + " current=" + revision);
         if (trailing) logger.info("[Cycle] trailing messages=" + (revision - cycle.consumedRevision));
         clearCycle(cycle);
@@ -428,7 +510,7 @@ function finishCycle(cycle: Cycle): void {
             triggerPriority: priority, isAtBot: atBot, mentionedByName: name,
             triggerKind: kindOf(priority, request.isGroup),
             allowNoReply: request.isGroup && priority < 3 };
-        const next = createCycle(followup, cycle.deps, priority);
+        const next = createCycle(followup, cycle.deps, priority, trailingUpdates);
         logger.info("[Cycle] next id=" + shortId(next.cycleId));
         void executeCycle(next);
     });
@@ -443,21 +525,26 @@ async function executeCycle(cycle: Cycle): Promise<void> {
             for (;;) {
                 request = cycle.latestRequest;
                 revision = getMessageRevision(request.message);
+                const context = buildAttemptContext(cycle, revision);
                 input = request.buildAttempt
-                    ? await request.buildAttempt(request.message, buildAttemptContext(cycle))
+                    ? await request.buildAttempt(request.message, context)
                     : { aiInput: request.aiInput, imageUrls: request.imageUrls };
+                if (request.isGroup) input = { ...input,
+                    aiInput: input.aiInput + "\n" + semanticAnchorText(context, input.refs) };
                 if (cycle.cancelled || cycle.timedOut) return;
                 if (cycle.latestRequest === request && getMessageRevision(request.message) === revision) break;
             }
             cycle.trailingPriority = 0;
             cycle.trailingAtBot = false;
             cycle.trailingName = false;
+            cycle.trailingUpdates = [];
             const attempt = startAttempt(cycle, revision);
             const outcome = await runAttempt(cycle, request, input, attempt);
             if (outcome.kind === "interrupted" && !cycle.timedOut && !cycle.cancelled) {
                 clearAttempt(cycle, attempt);
                 logger.info("[AI] restart attempt=" + (cycle.interruptionCount + 1) +
-                    " interrupt=" + cycle.interruptionCount + "/3");
+                    " interrupt=" + cycle.interruptionCount + "/3 anchor=" + cycle.effectiveAnchor.revision +
+                    " snapshot=" + getMessageRevision(cycle.latestRequest.message));
                 continue;
             }
             if (outcome.kind === "cancelled" || cycle.cancelled) break;

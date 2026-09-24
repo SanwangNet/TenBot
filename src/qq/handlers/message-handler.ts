@@ -17,7 +17,7 @@ import { isConversationActive } from "../conversation/engagement.js";
 import { buildKnownMembersContext, rememberKnownMember } from "../conversation/known-members.js";
 import { normalizeQqMessage } from "../message/normalize-message.js";
 import { decideMessageTrigger, isOnlyQQFace, wantsVision } from "../message/trigger.js";
-import { coordinateAiReply } from "../reply/coordinator.js";
+import { buildReplyCycleMemeQuery, coordinateAiReply } from "../reply/coordinator.js";
 
 const SEARCH_NOTICES = [
     "\u7a0d\u7b49\uff0c\u6211\u67e5\u4e00\u4e0b\u3002",
@@ -123,6 +123,7 @@ export function registerMessageHandler(bot: QQBot): void {
             isGroup: trigger.isGroup,
             allowNoReply: trigger.allowNoReply,
             triggerKind: trigger.triggerKind ?? undefined,
+            messageRevision: revision,
             triggerPriority,
             isAtBot: trigger.isAtBot,
             mentionedByName: trigger.mentionedByName,
@@ -135,11 +136,11 @@ export function registerMessageHandler(bot: QQBot): void {
                 const knownMembersContext = trigger.isGroup
                     ? await buildKnownMembersContext(attemptMessage)
                     : "";
-                const memeContext = buildAutoMemeContext(attemptMessage.displayContent);
+                const memeContext = buildAutoMemeContext(buildReplyCycleMemeQuery(context));
                 if (memeContext) {
                     const first = memeContext.match(/name: ([^\n]+)/)?.[1] ?? "matched entry";
-                    logger.info("[Meme] auto hit \"" + truncateLogText(attemptMessage.displayContent, 48) +
-                        "\" -> " + truncateLogText(first, 64));
+                    logger.info("[Meme] auto hit anchor=" + context.effectiveAnchor.revision +
+                        " -> " + truncateLogText(first, 64));
                 }
                 const replyPolicy = buildReplyPolicy(context.allowNoReply);
                 const aiInput = buildAiInput(chatInput, knownMembersContext, replyPolicy, memeContext);

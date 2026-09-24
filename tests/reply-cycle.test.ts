@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 import type { AiResult } from "../src/ai/reply-result.js";
+import { buildAutoMemeContext } from "../src/skills/meme/skill.js";
 import { buildReplyCycleContext, recordIncomingMessageRevision, rememberIncomingMessage } from "../src/qq/conversation/recent-context.js";
 import { getConversationGeneration, isConversationActive, markConversationActive } from "../src/qq/conversation/engagement.js";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 import { decideMessageTrigger } from "../src/qq/message/trigger.js";
-import { coordinateAiReply, AI_TIMEOUT_REPLY, AI_WEB_SEARCH_TIMEOUT_REPLY, type AttemptBuildContext } from "../src/qq/reply/coordinator.js";
+import { buildReplyCycleMemeQuery, coordinateAiReply, AI_TIMEOUT_REPLY, AI_WEB_SEARCH_TIMEOUT_REPLY, type AttemptBuildContext } from "../src/qq/reply/coordinator.js";
 
 type RecordedAttempt = { input: string; signal: AbortSignal; resolve: (result: AiResult) => void };
 function message(groupId = randomUUID(), content = "A"): NormalizedQqMessage {
@@ -170,6 +171,7 @@ test("name-soft upgrades to hard mention and passive interruption cannot relax i
     coordinateAiReply(requestFor(bot, passive, 0));
     await waitFor(() => attempts.length === 3);
     assert.match(attempts[2].input, /allowNoReply=false\norigin=name-soft effective=hard-mention/);
+    assert.match(attempts[2].input, /当前更明确的参与邀请：user：@小尘 你倒是说句话/);
     attempts[0].resolve({ kind: "no_reply" });
     assert.equal(attempts[2].signal.aborted, false);
     attempts[2].resolve({ kind: "no_reply" });
@@ -241,11 +243,148 @@ test("late NO_REPLY from an interrupted name attempt cannot suppress a hard ment
     attempts[0].resolve({ kind: "no_reply" });
     await waitFor(() => attempts.length === 2);
     assert.match(attempts[1].input, /allowNoReply=false\norigin=name-soft effective=hard-mention/);
+    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：user：小尘你看看/);
+    assert.match(attempts[1].input, /当前更明确的参与邀请：user：@小尘 你倒是说句话/);
     assert.equal(calls.length, 0);
     attempts[1].resolve(reply("我在"));
     await first;
     assert.equal(calls.length, 1);
     assert.equal(isConversationActive(name), true);
+});
+
+test("active-soft restart identifies the original anchor and newer message with temporary refs", async () => {
+    const group = randomUUID();
+    const anchor = message(group, "zdjd？");
+    const interruption = message(group, "？啥真的假的");
+    markConversationActive(anchor);
+    commit(anchor);
+    const { bot, calls } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const buildAttempt = async (current: NormalizedQqMessage, context: AttemptBuildContext) => ({
+        aiInput: buildReplyCycleContext(current) + "\nallowNoReply=" + context.allowNoReply,
+        imageUrls: [], refs: new Map([["m1", anchor.id!], ["m2", interruption.id!]]),
+    });
+    const first = coordinateAiReply({ ...requestFor(bot, anchor, 1), buildAttempt },
+        { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+    commit(interruption);
+    coordinateAiReply({ ...requestFor(bot, interruption, 1), buildAttempt });
+    await waitFor(() => attempts.length === 2);
+    const input = attempts[1].input;
+    assert.match(input, /本轮最初因这条消息开始考虑参与：\[m1\] user：zdjd？/);
+    assert.match(input, /上次生成后新增的群聊内容：\n\[m2\] user：？啥真的假的/);
+    assert.match(input, /allowNoReply=true/);
+    assert.doesNotMatch(input, new RegExp(anchor.id!));
+    assert.doesNotMatch(input, new RegExp(interruption.id!));
+    attempts[1].resolve({ kind: "no_reply" });
+    await first;
+    assert.equal(calls.length, 0);
+});
+
+test("three ordinary interruptions keep the first semantic anchor", async () => {
+    const group = randomUUID();
+    const values = ["zdjd？", "B", "C", "D"].map((content) => message(group, content));
+    markConversationActive(values[0]);
+    commit(values[0]);
+    const { bot } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const first = coordinateAiReply(requestFor(bot, values[0], 1), { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+    for (let index = 1; index <= 3; index++) {
+        commit(values[index]);
+        coordinateAiReply(requestFor(bot, values[index], 1));
+        await waitFor(() => attempts.length === index + 1);
+        assert.match(attempts[index].input, /本轮最初因这条消息开始考虑参与：user：zdjd？/);
+        assert.match(attempts[index].input, new RegExp(`上次生成后新增的群聊内容：\\nuser：${values[index].displayContent}`));
+    }
+    attempts[3].resolve({ kind: "no_reply" });
+    await first;
+});
+
+test("name-soft upgrade replaces the effective anchor but keeps optional reply", async () => {
+    const group = randomUUID();
+    const original = message(group, "普通后续");
+    const name = message(group, "小尘你看看这个");
+    markConversationActive(original);
+    commit(original);
+    const { bot } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const first = coordinateAiReply(requestFor(bot, original, 1), { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+    commit(name);
+    coordinateAiReply(requestFor(bot, name, 2));
+    await waitFor(() => attempts.length === 2);
+    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：user：普通后续/);
+    assert.match(attempts[1].input, /当前更明确的参与邀请：user：小尘你看看这个/);
+    assert.match(attempts[1].input, /allowNoReply=true/);
+    attempts[1].resolve({ kind: "no_reply" });
+    await first;
+});
+
+test("same-level explicit name trigger replaces the effective anchor", async () => {
+    const group = randomUUID();
+    const firstName = message(group, "小尘你看看");
+    const secondName = message(group, "小尘，我说的是这个");
+    commit(firstName);
+    const { bot } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const first = coordinateAiReply(requestFor(bot, firstName, 2), { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+    commit(secondName);
+    coordinateAiReply(requestFor(bot, secondName, 2));
+    await waitFor(() => attempts.length === 2);
+    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：user：小尘你看看/);
+    assert.match(attempts[1].input, /当前更明确的参与邀请：user：小尘，我说的是这个/);
+    attempts[1].resolve({ kind: "no_reply" });
+    await first;
+});
+
+test("same-level hard mention replaces the effective anchor without changing the origin", async () => {
+    const group = randomUUID();
+    const firstHard = message(group, "@小尘 看这里");
+    const secondHard = message(group, "@小尘 我说后面这个");
+    commit(firstHard);
+    const { bot } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const first = coordinateAiReply(requestFor(bot, firstHard, 3), { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+    commit(secondHard);
+    coordinateAiReply(requestFor(bot, secondHard, 3));
+    await waitFor(() => attempts.length === 2);
+    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：user：@小尘 看这里/);
+    assert.match(attempts[1].input, /当前更明确的参与邀请：user：@小尘 我说后面这个/);
+    assert.match(attempts[1].input, /allowNoReply=false/);
+    attempts[1].resolve(reply("看到了"));
+    await first;
+});
+
+test("Meme retrieval on restart considers the anchor and only newer valid messages", async () => {
+    const group = randomUUID();
+    const anchor = message(group, "kskbl？");
+    const unrelated = message(group, "今天天气普通");
+    markConversationActive(anchor);
+    commit(anchor);
+    const { bot } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const queries: string[] = [];
+    const memeContexts: string[] = [];
+    const buildAttempt = async (current: NormalizedQqMessage, context: AttemptBuildContext) => {
+        const query = buildReplyCycleMemeQuery(context);
+        queries.push(query);
+        memeContexts.push(buildAutoMemeContext(query));
+        return { aiInput: buildReplyCycleContext(current), imageUrls: [] };
+    };
+    const first = coordinateAiReply({ ...requestFor(bot, anchor, 1), buildAttempt },
+        { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+    commit(unrelated);
+    coordinateAiReply({ ...requestFor(bot, unrelated, 1), buildAttempt });
+    await waitFor(() => attempts.length === 2);
+    assert.equal(queries[0], "kskbl？");
+    assert.equal(queries[1], "kskbl？\n今天天气普通");
+    assert.match(memeContexts[1], /name: kskbl\nconfidence: STRONG/);
+    attempts[1].resolve({ kind: "no_reply" });
+    await first;
 });
 
 test("new message aborts generation and the replacement sees current context once", async () => {
@@ -264,7 +403,9 @@ test("new message aborts generation and the replacement sees current context onc
     assert.equal(attempts[0].signal.aborted, true);
     assert.match(attempts[1].input, /A asks/);
     assert.match(attempts[1].input, /B adds context/);
-    assert.equal((attempts[1].input.match(/B adds context/g) ?? []).length, 1);
+    const recent = attempts[1].input.match(/<recent_context>([\s\S]*?)<\/recent_context>/)?.[1] ?? "";
+    assert.equal((recent.match(/B adds context/g) ?? []).length, 1);
+    assert.match(attempts[1].input, /上次生成后新增的群聊内容：\nuser：B adds context/);
     attempts[1].resolve(reply("updated"));
     await Promise.all([first, second]);
 });
@@ -294,11 +435,16 @@ test("three interruptions cap, trailing messages schedule a fresh cycle and rese
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(attempts.length, 4);
     assert.equal(attempts[3].signal.aborted, false);
+    for (const text of ["E", "F", "G"]) assert.doesNotMatch(attempts[3].input, new RegExp(`user：${text}`));
     attempts[3].resolve(reply("cycle one"));
     await waitFor(() => attempts.length === 5);
     assert.equal(attempts[4].signal.aborted, false);
     for (const text of ["E", "F", "G"]) assert.match(attempts[4].input, new RegExp(text));
     assert.match(attempts[4].input, /allowNoReply=true/);
+    const nextAnchor = attempts[4].input.match(/<reply_cycle_context>([\s\S]*?)<\/reply_cycle_context>/)?.[1] ?? "";
+    assert.match(nextAnchor, /本轮最初因这条消息开始考虑参与：user：E/);
+    assert.match(nextAnchor, /上次生成后新增的群聊内容：\nuser：F\nuser：G/);
+    assert.doesNotMatch(nextAnchor, /user：A/);
 
     commit(messages[7]);
     const secondCycle = coordinateAiReply(requestFor(bot, messages[7], 0), deps);
