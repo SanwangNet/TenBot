@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import OpenAI from "openai";
 import { mergeMemeCandidates, serializeMemes } from "./meme-update-core.js";
+import { MemeResponseError, parseMemeResearchResponse, responseDiagnostics } from "./meme-response.js";
 import { validateMemeFile } from "../src/skills/meme/validation.js";
 
 const dataUrl = new URL("../src/skills/meme/data/memes.json", import.meta.url);
@@ -54,7 +55,9 @@ async function main(): Promise<void> {
     const existing = validateMemeFile(JSON.parse(await readFile(dataUrl, "utf8")));
     console.log(`[Meme] researching ${topic ? JSON.stringify(topic) : "current Chinese memes"}...`);
     const client = new OpenAI({ apiKey, baseURL });
-    const response = await client.responses.create({
+    // The installed SDK assumes a parsed object before returning; asResponse lets us normalize
+    // third-party gateways that JSON-encode the whole Response as a string.
+    const httpResponse = await client.responses.create({
         model: MODEL,
         instructions: [
             "你是网络梗资料整理员。必须使用 web_search 核查真实来源，然后用自己的话返回简短中文结构化摘要，不复制文章或评论长段落。",
@@ -70,29 +73,47 @@ async function main(): Promise<void> {
             schema: { type: "object", additionalProperties: false,
                 properties: { memes: { type: "array", items: memeSchema } }, required: ["memes"] } } },
         store: false,
-    }, { maxRetries: 0 });
-    if (!response.output.some((item) => item.type === "web_search_call")) {
-        throw new Error("Research response did not use web_search; knowledge file unchanged");
+    }, { maxRetries: 0 }).asResponse();
+    let rawResponse: unknown;
+    try {
+        rawResponse = await httpResponse.json();
+    } catch {
+        throw new MemeResponseError("invalid Responses payload: HTTP JSON parse failed");
     }
-    if (response.status !== "completed") throw new Error(`Research response status: ${response.status}`);
-    const parsed: unknown = JSON.parse(response.output_text);
-    if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { memes?: unknown }).memes)) {
-        throw new Error("Invalid structured research result");
+    if (process.env.BOT_LOG_LEVEL === "debug") {
+        if (typeof rawResponse === "string") console.log("[Meme:debug] response normalized from string");
+        console.log("[Meme:debug] " + responseDiagnostics(rawResponse));
     }
-    const candidates = (parsed as { memes: unknown[] }).memes;
+    const { memes: candidates } = parseMemeResearchResponse(rawResponse);
+    console.log("[Meme] web research completed");
+    console.log(`[Meme] received ${candidates.length} candidates`);
     if (candidates.length > (topic ? 1 : limit)) throw new Error("Research returned too many candidates");
     const result = mergeMemeCandidates(existing, candidates, new Date().toISOString().slice(0, 10));
     for (const name of result.added) console.log(`[Meme] added ${name}`);
     for (const name of result.updated) console.log(`[Meme] updated ${name}`);
     for (const reason of result.skipped) console.log(`[Meme] skipped ${reason}`);
+    console.log(`[Meme] added ${result.added.length}, updated ${result.updated.length}`);
     const output = serializeMemes(result.entries);
     if (!dryRun && output !== await readFile(dataUrl, "utf8")) await writeFile(dataUrl, output, "utf8");
-    console.log(`[Meme] ${dryRun ? "dry run" : "saved"} ${result.entries.length} entries`);
+    console.log(`[Meme] ${dryRun ? "dry run; would save" : "saved"} src/skills/meme/data/memes.json (${result.entries.length} entries)`);
+}
+
+export function formatMemeUpdateError(error: unknown): string {
+    if (error instanceof MemeResponseError) return error.message;
+    if (error instanceof OpenAI.APIError) return `${error.name} status=${error.status}`;
+    if (error instanceof Error) {
+        const message = error.message;
+        if (/^(--limit must|Unknown option:|Meme topic is|缺少 CODEX_API_KEY|Research returned too many|Meme knowledge must|Invalid MemeEntry|Duplicate MemeEntry|Invalid update date)/.test(message)) {
+            return message;
+        }
+        return error.name;
+    }
+    return "unknown error";
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
     main().catch((error: unknown) => {
-        console.error("[Meme] update failed:", error instanceof Error ? error.message : String(error));
+        console.error("[Meme] update failed:", formatMemeUpdateError(error));
         process.exitCode = 1;
     });
 }
