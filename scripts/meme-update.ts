@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import OpenAI from "openai";
-import { mergeMemeCandidates, serializeMemes } from "./meme-update-core.js";
+import { mergeMemeCandidatesWithinLimit, serializeMemes, writeMemeJson } from "./meme-update-core.js";
 import { MemeResponseError, parseMemeResearchResponse, responseDiagnostics } from "./meme-response.js";
 import { validateMemeFile } from "../src/skills/meme/validation.js";
 
@@ -47,6 +47,30 @@ const memeSchema = {
     required: ["name", "aliases", "summary", "origin", "meaning", "usage", "examples", "sources"],
 };
 
+export function researchCandidateLimit(limit: number, topic?: string): number {
+    return topic ? 1 : limit;
+}
+
+export function buildMemeResearchSchema(limit: number, topic?: string) {
+    return {
+        type: "object", additionalProperties: false,
+        properties: {
+            memes: { type: "array", maxItems: researchCandidateLimit(limit, topic), items: memeSchema },
+        },
+        required: ["memes"],
+    };
+}
+
+export function buildMemeResearchInstructions(limit: number, topic?: string): string {
+    return [
+        "你是网络梗资料整理员。必须使用 web_search 核查真实来源，然后用自己的话返回简短中文结构化摘要，不复制文章或评论长段落。",
+        "关注近期在中国大陆社交平台、游戏、二次元及技术社区有明显传播的梗；海外梗仅在中文社区传播时收录。不要编造热度排名。",
+        "尽量交叉确认出处，优先原始内容；有争议就明确写不确定。解释含义、传播背景、常见用法、语气、反讽或误用风险，少量短例子。每条至少一个可访问的 HTTP(S) 来源链接。",
+        "跳过未证实、过气且无近期使用价值、隐私泄露、针对普通个人的网暴、极端暴力鼓动及违法操作教程。",
+        topic ? "仅研究用户指定的一个梗，勿返回其他梗。" : `最多返回 ${limit} 个值得认识的梗。`,
+    ].join("\n");
+}
+
 async function main(): Promise<void> {
     const { limit, topic, dryRun } = parseMemeUpdateArgs(process.argv.slice(2));
     const apiKey = process.env.CODEX_API_KEY;
@@ -59,19 +83,12 @@ async function main(): Promise<void> {
     // third-party gateways that JSON-encode the whole Response as a string.
     const httpResponse = await client.responses.create({
         model: MODEL,
-        instructions: [
-            "你是网络梗资料整理员。必须使用 web_search 核查真实来源，然后用自己的话返回简短中文结构化摘要，不复制文章或评论长段落。",
-            "关注近期在中国大陆社交平台、游戏、二次元及技术社区有明显传播的梗；海外梗仅在中文社区传播时收录。不要编造热度排名。",
-            "尽量交叉确认出处，优先原始内容；有争议就明确写不确定。解释含义、传播背景、常见用法、语气、反讽或误用风险，少量短例子。每条至少一个可访问的 HTTP(S) 来源链接。",
-            "跳过未证实、过气且无近期使用价值、隐私泄露、针对普通个人的网暴、极端暴力鼓动及违法操作教程。",
-            topic ? "仅研究用户指定的一个梗，勿返回其他梗。" : `最多返回 ${limit} 个值得认识的梗。`,
-        ].join("\n"),
+        instructions: buildMemeResearchInstructions(limit, topic),
         input: topic ? `深入研究这个梗：${topic}` : `寻找近期值得认识的中文网络梗，最多 ${limit} 个。`,
         tools: [{ type: "web_search" }],
         tool_choice: "required",
         text: { format: { type: "json_schema", name: "meme_research", strict: true,
-            schema: { type: "object", additionalProperties: false,
-                properties: { memes: { type: "array", items: memeSchema } }, required: ["memes"] } } },
+            schema: buildMemeResearchSchema(limit, topic) } },
         store: false,
     }, { maxRetries: 0 }).asResponse();
     let rawResponse: unknown;
@@ -87,15 +104,27 @@ async function main(): Promise<void> {
     const { memes: candidates } = parseMemeResearchResponse(rawResponse);
     console.log("[Meme] web research completed");
     console.log(`[Meme] received ${candidates.length} candidates`);
-    if (candidates.length > (topic ? 1 : limit)) throw new Error("Research returned too many candidates");
-    const result = mergeMemeCandidates(existing, candidates, new Date().toISOString().slice(0, 10));
+    const today = new Date().toISOString().slice(0, 10);
+    const candidateLimit = researchCandidateLimit(limit, topic);
+    const limited = mergeMemeCandidatesWithinLimit(existing, candidates, candidateLimit, today);
+    for (const reason of limited.prepared.skipped) console.log(`[Meme] skipped ${reason}`);
+    if (limited.prepared.candidates.length > candidateLimit) {
+        console.log(`[Meme] candidate limit exceeded: valid unique=${limited.prepared.candidates.length} limit=${candidateLimit}, keeping first ${candidateLimit}`);
+    }
+    const result = limited.merge;
     for (const name of result.added) console.log(`[Meme] added ${name}`);
     for (const name of result.updated) console.log(`[Meme] updated ${name}`);
     for (const reason of result.skipped) console.log(`[Meme] skipped ${reason}`);
     console.log(`[Meme] added ${result.added.length}, updated ${result.updated.length}`);
     const output = serializeMemes(result.entries);
-    if (!dryRun && output !== await readFile(dataUrl, "utf8")) await writeFile(dataUrl, output, "utf8");
-    console.log(`[Meme] ${dryRun ? "dry run; would save" : "saved"} src/skills/meme/data/memes.json (${result.entries.length} entries)`);
+    const current = await readFile(dataUrl, "utf8");
+    const wrote = await writeMemeJson(output, dryRun, current,
+        (content) => writeFile(dataUrl, content, "utf8"));
+    console.log(dryRun
+        ? `[Meme] dry run complete; would save src/skills/meme/data/memes.json (${result.entries.length} entries)`
+        : wrote
+          ? `[Meme] saved src/skills/meme/data/memes.json (${result.entries.length} entries)`
+          : `[Meme] data unchanged src/skills/meme/data/memes.json (${result.entries.length} entries)`);
 }
 
 export function formatMemeUpdateError(error: unknown): string {

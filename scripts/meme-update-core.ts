@@ -10,6 +10,53 @@ export interface MergeResult {
     skipped: string[];
 }
 
+export interface PreparedMemeCandidates {
+    candidates: MemeCandidate[];
+    skipped: string[];
+}
+
+/** Validate and deduplicate before applying the candidate cap, so bad or repeated items don't use slots. */
+export function prepareMemeCandidates(rawCandidates: readonly unknown[], today: string): PreparedMemeCandidates {
+    const result = mergeMemeCandidates([], rawCandidates, today);
+    return {
+        candidates: result.entries.map(({ name, aliases, summary, origin, meaning, usage, examples, sources }) =>
+            ({ name, aliases, summary, origin, meaning, usage, examples, sources })),
+        skipped: result.skipped,
+    };
+}
+
+export function truncateMemeCandidates(candidates: readonly MemeCandidate[], limit: number): MemeCandidate[] {
+    if (!Number.isInteger(limit) || limit < 1) throw new Error("Invalid candidate limit");
+    return [...candidates].slice(0, limit);
+}
+
+export function mergeMemeCandidatesWithinLimit(
+    existing: readonly MemeEntry[],
+    rawCandidates: readonly unknown[],
+    limit: number,
+    today: string,
+): { received: number; prepared: PreparedMemeCandidates; accepted: MemeCandidate[]; merge: MergeResult } {
+    const prepared = prepareMemeCandidates(rawCandidates, today);
+    const accepted = truncateMemeCandidates(prepared.candidates, limit);
+    return {
+        received: rawCandidates.length,
+        prepared,
+        accepted,
+        merge: mergeMemeCandidates(existing, accepted, today),
+    };
+}
+
+export async function writeMemeJson(
+    output: string,
+    dryRun: boolean,
+    current: string,
+    write: (content: string) => Promise<void>,
+): Promise<boolean> {
+    if (dryRun || output === current) return false;
+    await write(output);
+    return true;
+}
+
 export function mergeMemeCandidates(existing: readonly MemeEntry[], rawCandidates: readonly unknown[], today: string): MergeResult {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) throw new Error("Invalid update date");
     const entries = [...existing];

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { mergeMemeCandidates, serializeMemes } from "../scripts/meme-update-core.js";
-import { parseMemeUpdateArgs } from "../scripts/meme-update.js";
+import { mergeMemeCandidates, mergeMemeCandidatesWithinLimit, serializeMemes, writeMemeJson } from "../scripts/meme-update-core.js";
+import { buildMemeResearchInstructions, buildMemeResearchSchema, parseMemeUpdateArgs, researchCandidateLimit } from "../scripts/meme-update.js";
 import { searchMemes } from "../src/skills/meme/search.js";
 import { lookupMeme, memeLookupTool } from "../src/skills/meme/skill.js";
 import type { MemeCandidate, MemeEntry } from "../src/skills/meme/types.js";
@@ -16,6 +16,12 @@ const candidate: MemeCandidate = {
 const entry: MemeEntry = { id: "meme-123456789abc", ...candidate,
     firstSeenAt: "2026-01-01", updatedAt: "2026-01-01" };
 const dataUrl = new URL("../src/skills/meme/data/memes.json", import.meta.url);
+const makeCandidate = (index: number): MemeCandidate => ({
+    ...candidate,
+    name: `测试网络梗 ${index}`,
+    aliases: [`梗别名 ${index}`],
+    sources: [{ name: "示例", url: `https://example.com/meme-${index}` }],
+});
 
 test("exact name outranks alias", () => {
     const aliasEntry = { ...entry, id: "other-1234", name: "别名条目", aliases: [entry.name] };
@@ -75,6 +81,63 @@ test("CLI parses topic, limit, dry run", () => {
     assert.deepEqual(parseMemeUpdateArgs(["--limit", "5", "--dry-run", "汗流浃背了吧老弟"]),
         { limit: 5, topic: "汗流浃背了吧老弟", dryRun: true });
     assert.throws(() => parseMemeUpdateArgs(["--limit", "11"]));
+});
+test("default candidate limit retains exactly eight", () => {
+    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 8 }, (_, i) => makeCandidate(i)), 8, "2026-09-24");
+    assert.equal(result.accepted.length, 8);
+    assert.equal(result.merge.added.length, 8);
+});
+test("excess candidates are truncated instead of failing", () => {
+    const nine = mergeMemeCandidatesWithinLimit([], Array.from({ length: 9 }, (_, i) => makeCandidate(i)), 8, "2026-09-24");
+    const twenty = mergeMemeCandidatesWithinLimit([], Array.from({ length: 20 }, (_, i) => makeCandidate(i)), 8, "2026-09-24");
+    assert.equal(nine.accepted.length, 8);
+    assert.equal(nine.merge.added.length, 8);
+    assert.equal(twenty.accepted.length, 8);
+});
+test("fewer candidates than the limit are all retained", () => {
+    assert.equal(mergeMemeCandidatesWithinLimit([], [makeCandidate(1), makeCandidate(2)], 8, "2026-09-24").accepted.length, 2);
+});
+test("invalid entries are filtered before the final limit", () => {
+    const raw = [{ ...makeCandidate(99), sources: [] }, { ...makeCandidate(98), name: "" },
+        ...Array.from({ length: 8 }, (_, i) => makeCandidate(i))];
+    const result = mergeMemeCandidatesWithinLimit([], raw, 8, "2026-09-24");
+    assert.equal(result.accepted.length, 8);
+    assert.equal(result.prepared.skipped.length, 2);
+});
+test("duplicate candidates are removed before consuming limit slots", () => {
+    const unique = Array.from({ length: 8 }, (_, i) => makeCandidate(i));
+    const result = mergeMemeCandidatesWithinLimit([], [...unique, { ...unique[0], summary: "重复" }], 8, "2026-09-24");
+    assert.equal(result.accepted.length, 8);
+    assert.equal(result.merge.entries.length, 8);
+});
+test("limit five caps seven valid unique candidates and still merges", () => {
+    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 7 }, (_, i) => makeCandidate(i)), 5, "2026-09-24");
+    assert.equal(result.accepted.length, 5);
+    assert.equal(result.merge.added.length, 5);
+    assert.equal(researchCandidateLimit(5), 5);
+});
+test("research prompt and strict schema use the dynamic candidate limit", () => {
+    const schema = buildMemeResearchSchema(5) as { properties: { memes: { maxItems: number } } };
+    assert.equal(schema.properties.memes.maxItems, 5);
+    assert.match(buildMemeResearchInstructions(5), /最多返回 5 个/);
+    assert.equal((buildMemeResearchSchema(8, "指定梗") as { properties: { memes: { maxItems: number } } }).properties.memes.maxItems, 1);
+    assert.equal(researchCandidateLimit(8, "指定梗"), 1);
+});
+test("dry run truncates excess and never invokes the writer", async () => {
+    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 9 }, (_, i) => makeCandidate(i)), 8, "2026-09-24");
+    let writes = 0;
+    const wrote = await writeMemeJson(serializeMemes(result.merge.entries), true, "[]\n", async () => { writes++; });
+    assert.equal(result.accepted.length, 8);
+    assert.equal(wrote, false);
+    assert.equal(writes, 0);
+});
+test("regular update truncates excess and writes merged entries", async () => {
+    const result = mergeMemeCandidatesWithinLimit([], Array.from({ length: 9 }, (_, i) => makeCandidate(i)), 8, "2026-09-24");
+    let written = "";
+    const wrote = await writeMemeJson(serializeMemes(result.merge.entries), false, "[]\n", async (content) => { written = content; });
+    assert.equal(result.merge.added.length, 8);
+    assert.equal(wrote, true);
+    assert.equal(JSON.parse(written).length, 8);
 });
 test("runtime lookup is read-only and misses safely", async () => {
     const before = await readFile(dataUrl, "utf8");
