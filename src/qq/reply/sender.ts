@@ -1,33 +1,17 @@
 import { MsgType, type QQBot } from "@tencent-connect/qqbot-nodejs";
 
-import type { QqReplyAction } from "../../ai/reply-result.js";
-import { renderStructuredMentions } from "./mentions.js";
+import type { RenderedQQReply } from "./renderer.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
 
 export function getTriggerMessageId(message: NormalizedQqMessage): string | undefined {
     return message.id ?? message.replyTarget.msgId;
 }
 
-export async function prepareAiReply(
-    message: NormalizedQqMessage,
-    action: QqReplyAction,
-    index: number,
-) {
-    const content = action.messages[index];
-    // A shared mention list belongs to the first QQ message only. Legacy inline
-    // mention tags in later messages become readable text, never another real @.
-    const safeContent = index === 0 ? content : content.replace(
-        /<mention>([^<]{1,64})<\/mention>/g,
-        (_tag, name: string) => "@" + name.trim(),
-    );
-    return renderStructuredMentions(message, safeContent, index === 0 ? action.mentions : []);
-}
-
 /** Keep Tencent payload fields in one place. */
 export async function sendAiReply(
     bot: QQBot,
     message: NormalizedQqMessage,
-    rendered: Awaited<ReturnType<typeof prepareAiReply>>,
+    rendered: RenderedQQReply,
     quoteTrigger: boolean,
     beforeSend: () => boolean,
 ): Promise<boolean> {

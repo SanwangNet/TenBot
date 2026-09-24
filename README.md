@@ -47,6 +47,12 @@ flowchart TD
 
 联网搜索结果会将 Responses API 提供的引用转换为普通 Markdown 来源链接；来源元数据缺失时会隐藏内部引用标记。
 
+### QQ Reply Skill
+
+`qq_reply` 只让模型表达最终 QQ 回复意图：1～3 条文字、已知群友昵称和引用偏好。普通 `output_text` 也会归一化成同一个 `QQReplyAction`，随后由 Reply Coordinator 判断请求是否仍有效、是否必须引用触发消息。QQ Renderer 将昵称解析为真实 @ 并生成 Markdown；QQ Sender 才调用腾讯 SDK。模型不能指定消息 ID、用户 OpenID、API payload 或文件路径。
+
+未来若加入图片或表情包，可由独立 Asset Skill 返回可信 asset ID，Node 在 Renderer / Sender 边界解析本地资源并通过 SDK `sendImage` 发送；当前尚无用户可见的表情包回复功能。
+
 ### Meme Skill
 
 `src/skills/meme/data/memes.json` 是可提交 Git 的静态网络梗知识文件。Bot 启动时只读取它；聊天中的 `meme_lookup` 最多返回三个相关条目，不会新增或修改知识。查不到时，模型仍可按需使用现有 `web_search` 现场回答，但搜索结果不会写入 Meme Skill。当前知识文件为空，需手动维护后才有本地命中。
@@ -75,9 +81,9 @@ src/
     handlers/             消息与按钮入口
     message/              入站归一化和触发判断
     conversation/         最近上下文、活跃会话、成员业务规则
-    reply/                AI 回复协调与 QQ 发送
+    reply/                AI 回复协调、渲染与 QQ 发送
     minecraft-status*.ts  Minecraft 状态回复
-  skills/                 Minecraft 查询能力与只读 Meme Skill
+  skills/                 Minecraft、只读 Meme 与 QQ Reply 表达能力
   ai/                     Responses API、输入和回复结果
   shared/                 日志
   members/                MemberRepository、SQLite 与 D1 适配器

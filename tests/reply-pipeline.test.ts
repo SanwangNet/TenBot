@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import type { QQBot, QQBotInboundMessage } from "@tencent-connect/qqbot-nodejs";
 
-import { normalizeTextReply, parseQqReplyArguments, qqReplyTool, type AiResult } from "../src/ai/reply-result.js";
+import { normalizeTextReply, type AiResult } from "../src/ai/reply-result.js";
+import { normalizeQQReplyAction, parseQqReplyArguments, qqReplyTool } from "../src/skills/qq-reply/skill.js";
 import { AiResponseFailure, classifyUpstreamFailure } from "../src/ai/upstream-error.js";
 import { isConversationActive } from "../src/qq/conversation/engagement.js";
 import { MemoryMemberRepository } from "../src/members/memory-repository.js";
@@ -63,7 +64,7 @@ function fakeBot() {
 }
 
 function reply(content: string | string[], quote: "auto" | "trigger" | "none" = "auto"): AiResult {
-    return { kind: "reply", source: "qq_reply", action: {
+    return { kind: "reply", action: {
         messages: Array.isArray(content) ? content : [content], mentions: [], quote,
     } };
 }
@@ -104,11 +105,11 @@ test("qq_reply parser validates semantic fields", () => {
 
 test("plain output_text and code blocks always normalize to one message", () => {
     assert.deepEqual(normalizeTextReply(" hello "), {
-        kind: "reply", source: "text", action: { messages: ["hello"], mentions: [], quote: "auto" },
+        kind: "reply", action: { messages: ["hello"], mentions: [], quote: "auto" },
     });
     const code = "```ts\nconsole.log('a。b');\n```";
     assert.deepEqual(normalizeTextReply(code), {
-        kind: "reply", source: "text", action: { messages: [code], mentions: [], quote: "auto" },
+        kind: "reply", action: { messages: [code], mentions: [], quote: "auto" },
     });
     assert.equal(normalizeTextReply("  "), null);
 });
@@ -124,6 +125,27 @@ test("qq_reply schema and parser limit clean messages to three", () => {
     }))?.messages, ["放心", "毕竟我没身体", "第三句"]);
     assert.equal(parseQqReplyArguments('{"messages":["",42]}'), null);
     assert.equal(parseQqReplyArguments('{"messages":"hello"}'), null);
+});
+
+test("QQ Reply Skill keeps only semantic fields", () => {
+    assert.deepEqual(Object.keys(qqReplyTool.parameters.properties), ["messages", "mentions", "quote"]);
+    assert.deepEqual(normalizeQQReplyAction({
+        messages: ["你好"], mentions: ["芷"], quote: "trigger",
+        msg_type: 2, msg_id: "raw-id", member_openid: "raw-openid", localPath: "C:\\secret.png",
+    }), { messages: ["你好"], mentions: ["芷"], quote: "trigger" });
+});
+
+test("plain output and qq_reply use the same renderer and sender", async () => {
+    const plain = normalizeTextReply("你好");
+    const toolAction = parseQqReplyArguments('{"messages":["你好"],"mentions":[],"quote":"auto"}');
+    assert.ok(plain && toolAction);
+    for (const result of [plain, { kind: "reply" as const, action: toolAction }]) {
+        const trigger = message();
+        recordIncomingMessageRevision(trigger);
+        const { bot, calls } = fakeBot();
+        await coordinateAiReply(request(bot, trigger), { executeAi: async () => result });
+        assert.deepEqual(calls, [{ method: "markdown", args: [trigger.replyTarget, "你好"] }]);
+    }
 });
 
 test("coordinator also caps injected replies and skips empty entries", async () => {
@@ -198,7 +220,7 @@ test("shared mentions and inline mention tags create real @ only in the first me
     await rememberKnownMember({ ...trigger, author: { member_openid: "member-1", username: "芷" } });
     const { bot, calls } = fakeBot();
     await coordinateAiReply(request(bot, trigger), {
-        executeAi: async () => ({ kind: "reply", source: "qq_reply", action: {
+        executeAi: async () => ({ kind: "reply", action: {
             messages: ["第一条", "<mention>芷</mention> 第二条"], mentions: ["芷"], quote: "auto",
         } }),
         multiMessageDelayMs: 0,

@@ -8,7 +8,8 @@ import {
     type CitedText,
 } from "./citations.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
-import { normalizeReplyMessages, normalizeTextReply, qqReplyTool, parseQqReplyArguments, type AiResult } from "./reply-result.js";
+import { normalizeTextReply, type AiResult } from "./reply-result.js";
+import { normalizeReplyMessages, qqReplyTool, parseQqReplyArguments } from "../skills/qq-reply/skill.js";
 import { logger } from "../shared/logger.js";
 import { AiResponseFailure } from "./upstream-error.js";
 import { lookupMeme, memeLookupTool } from "../skills/meme/skill.js";
@@ -256,7 +257,7 @@ export async function chat(
             rendered.some((item) => item.metadataUnavailable),
         );
         logger.info(`[AI] done ${elapsed}: messages=${action.messages.length}`);
-        return { kind: "reply", source: "qq_reply", action };
+        return { kind: "reply", action };
     }
 
     if (!output.trim()) {

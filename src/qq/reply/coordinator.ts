@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 
 import { AI_MODEL, chat } from "../../ai/client.js";
-import { normalizeReplyMessages } from "../../ai/reply-result.js";
-import type { AiResult, QuotePreference } from "../../ai/reply-result.js";
+import type { AiResult } from "../../ai/reply-result.js";
+import { normalizeQQReplyAction, type QuotePreference } from "../../skills/qq-reply/skill.js";
 import { classifyUpstreamFailure } from "../../ai/upstream-error.js";
 import { logger, shortId } from "../../shared/logger.js";
 import {
@@ -14,7 +14,8 @@ import {
 } from "../conversation/recent-context.js";
 import { markConversationActive, stopConversation } from "../conversation/engagement.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
-import { getTriggerMessageId, prepareAiReply, sendAiReply, sendTimeoutReply } from "./sender.js";
+import { prepareAiReply } from "./renderer.js";
+import { getTriggerMessageId, sendAiReply, sendTimeoutReply } from "./sender.js";
 
 export const AI_REQUEST_TIMEOUT_MS = 30_000;
 export const MULTI_MESSAGE_DELAY_MS = 450;
@@ -324,16 +325,15 @@ export async function coordinateAiReply(
             if (request.isGroup) stopConversation(request.message);
             return;
         }
-        const messages = normalizeReplyMessages(result.action.messages);
-        if (!messages.length) {
+        const action = normalizeQQReplyAction(result.action);
+        if (!action) {
             if (!transitionRunning(pending, "failed")) return;
             logger.error("[AI] reply contains no valid messages");
             await sendFailureNotice(request);
             return;
         }
         if (!transitionRunning(pending, "sending")) return;
-        const action = { ...result.action, messages };
-        const total = messages.length;
+        const total = action.messages.length;
         let sentCount = 0;
         let sendFailed = false;
         try {
