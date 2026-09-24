@@ -11,6 +11,7 @@ import { SYSTEM_PROMPT } from "./prompt.js";
 import { normalizeReplyMessages, normalizeTextReply, qqReplyTool, parseQqReplyArguments, type AiResult } from "./reply-result.js";
 import { logger } from "../shared/logger.js";
 import { AiResponseFailure } from "./upstream-error.js";
+import { lookupMeme, memeLookupTool } from "../skills/meme/skill.js";
 
 export const AI_MODEL = "gpt-6-sol";
 
@@ -44,7 +45,7 @@ export async function chat(
     }
 
     const startedAt = Date.now();
-    const requestInput: any =
+    let requestInput: any =
         options.imageUrls && options.imageUrls.length > 0
             ? [{
                   role: "user",
@@ -58,6 +59,8 @@ export async function chat(
               }]
             : input;
 
+    let searchNoticeSent = false;
+    for (let turn = 0; turn < 3; turn++) {
     const stream = await getClient().responses.create({
         model: AI_MODEL,
         instructions: SYSTEM_PROMPT,
@@ -67,6 +70,7 @@ export async function chat(
         tools: [
             { type: "web_search" },
             qqReplyTool,
+            memeLookupTool,
         ],
         tool_choice: "auto",
         store: false,
@@ -93,8 +97,8 @@ export async function chat(
         }
         return part;
     };
-    let searchNoticeSent = false;
     let completed = false;
+    let completedResponse: any;
     const functionNames = new Map<string, string>();
     const qqReplyCalls = new Map<number, string>();
 
@@ -157,6 +161,7 @@ export async function chat(
 
             if (event.type === "response.completed") {
                 completed = true;
+                completedResponse = event.response;
                 for (const [index, item] of event.response.output.entries()) {
                     if (item.type === "function_call" && item.name === "qq_reply") {
                         qqReplyCalls.set(index, item.arguments);
@@ -193,6 +198,21 @@ export async function chat(
     }
     if (!completed) {
         throw new Error("模型响应流意外结束");
+    }
+
+    const memeCalls = completedResponse.output.filter((item: any) =>
+        item.type === "function_call" && item.name === "meme_lookup");
+    if (memeCalls.length) {
+        if (turn === 2) throw new Error("meme_lookup 调用次数过多");
+        requestInput = [
+            ...(Array.isArray(requestInput) ? requestInput : [{ role: "user", content: input }]),
+            ...completedResponse.output,
+            ...completedResponse.output.filter((item: any) => item.type === "function_call").map((call: any) => ({
+                type: "function_call_output", call_id: call.call_id,
+                output: call.name === "meme_lookup" ? lookupMeme(call.arguments) : "请在查询完成后决定最终回复。",
+            })),
+        ];
+        continue;
     }
 
     if (unindexedOutput && ![...textParts.values()].some((part) => part.text)) {
@@ -249,4 +269,6 @@ export async function chat(
     );
     logger.info(`[AI] done ${elapsed}: content length ${output.trim().length}`);
     return normalizeTextReply(output)!;
+    }
+    throw new Error("meme_lookup 调用次数过多");
 }

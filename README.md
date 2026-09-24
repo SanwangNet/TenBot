@@ -10,6 +10,7 @@
 - AI 请求有 30 秒硬截止；超时或可重试的上游故障由本地发送固定提示，迟到结果不会再发送。
 - 结构化 `qq_reply` 支持 Markdown 和已知成员 @；生成期间群里有新消息时，回复会引用原触发消息。
 - 自然聊天时，AI 可通过结构化 `qq_reply` 一次发送最多三条连续 QQ 消息；Node 不按标点自动拆分。
+- AI 可按需调用只读 `meme_lookup`，查询项目内维护的网络梗摘要。
 - 群聊可按 @、名字或活跃会话触发；模型可以选择 `<NO_REPLY>`。
 
 ## 命令
@@ -46,6 +47,21 @@ flowchart TD
 
 联网搜索结果会将 Responses API 提供的引用转换为普通 Markdown 来源链接；来源元数据缺失时会隐藏内部引用标记。
 
+### Meme Skill
+
+`src/skills/meme/data/memes.json` 是可提交 Git 的静态网络梗知识文件。Bot 启动时只读取它；聊天中的 `meme_lookup` 最多返回三个相关条目，不会新增或修改知识。查不到时，模型仍可按需使用现有 `web_search` 现场回答，但搜索结果不会写入 Meme Skill。当前知识文件为空，需手动维护后才有本地命中。
+
+维护入口独立于 Bot：
+
+```bash
+pnpm meme:update --dry-run
+pnpm meme:update "汗流浃背了吧老弟"
+pnpm meme:update
+pnpm meme:update --limit 10
+```
+
+脚本使用 `CODEX_API_KEY` 和 `CODEX_BASE_URL` 调用 Responses API、`web_search` 和严格结构化输出，查找梗的出处、含义及使用语境；Node 校验后合并写入 JSON。`--dry-run` 完成研究与校验，但不写文件。执行写入后，请人工查看 `git diff` 和来源，再决定是否提交。脚本不会执行 Git 操作。Bot 的本地命令不需要 AI 环境变量。
+
 AI 请求使用 Responses API 兼容后端。只有实际发起聊天请求时才读取 `CODEX_API_KEY` 和 `CODEX_BASE_URL`；本地命令不依赖 LLM 服务。
 
 ## 项目结构
@@ -61,14 +77,15 @@ src/
     conversation/         最近上下文、活跃会话、成员业务规则
     reply/                AI 回复协调与 QQ 发送
     minecraft-status*.ts  Minecraft 状态回复
-  skills/                 可复用的 Minecraft 查询能力
+  skills/                 Minecraft 查询能力与只读 Meme Skill
   ai/                     Responses API、输入和回复结果
   shared/                 日志
   members/                MemberRepository、SQLite 与 D1 适配器
 migrations/               D1 成员表迁移 SQL
+scripts/meme-update.ts     手动运行的网络梗研究与更新脚本
 ```
 
-Command 是用户明确调用的 QQ 入口；Skill 是命令、按钮等入口可共用的内部能力；LLM 处理普通自然语言聊天。
+Command 是用户明确调用的 QQ 入口；Skill 是命令、按钮或 AI Tool 可共用的内部能力；LLM 处理普通自然语言聊天。
 
 ## 环境变量
 
@@ -76,8 +93,8 @@ Command 是用户明确调用的 QQ 入口；Skill 是命令、按钮等入口�
 | --- | --- |
 | `QQBOT_APP_ID` | QQ Bot 应用 ID |
 | `QQBOT_APP_SECRET` | QQ Bot 应用密钥 |
-| `CODEX_API_KEY` | AI 后端密钥；仅聊天需要 |
-| `CODEX_BASE_URL` | Responses API 兼容后端地址；仅聊天需要 |
+| `CODEX_API_KEY` | AI 后端密钥；聊天与 `meme:update` 需要 |
+| `CODEX_BASE_URL` | Responses API 兼容后端地址；聊天与 `meme:update` 需要 |
 | `BOT_LOG_LEVEL` | 日志级别，支持 `info`、`debug`、`error` |
 
 将密钥放在本地 `.env`，不要提交真实值。`BOT_LOG_LEVEL=info` 适合日常运行；`BOT_LOG_LEVEL=debug` 会输出更多诊断信息。

@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx src/main.ts",
-    "test": "tsx --test tests/reply-pipeline.test.ts tests/commands.test.ts tests/members.test.ts tests/citations.test.ts"
+    "test": "tsx --test tests/reply-pipeline.test.ts tests/commands.test.ts tests/members.test.ts tests/citations.test.ts tests/meme.test.ts",
+    "meme:update": "tsx scripts/meme-update.ts"
   },
   "keywords": [],
   "author": "",

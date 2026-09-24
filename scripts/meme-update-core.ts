@@ -1,0 +1,69 @@
+import { createHash } from "node:crypto";
+import { normalizeMemeTerm } from "../src/skills/meme/search.js";
+import type { MemeCandidate, MemeEntry } from "../src/skills/meme/types.js";
+import { validateMemeCandidate, validateMemeFile } from "../src/skills/meme/validation.js";
+
+export interface MergeResult {
+    entries: MemeEntry[];
+    added: string[];
+    updated: string[];
+    skipped: string[];
+}
+
+export function mergeMemeCandidates(existing: readonly MemeEntry[], rawCandidates: readonly unknown[], today: string): MergeResult {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) throw new Error("Invalid update date");
+    const entries = [...existing];
+    const result: MergeResult = { entries, added: [], updated: [], skipped: [] };
+    for (const [index, raw] of rawCandidates.entries()) {
+        const candidate = validateMemeCandidate(raw);
+        if (!candidate) {
+            result.skipped.push(`candidate ${index + 1}: invalid`);
+            continue;
+        }
+        const terms = new Set([candidate.name, ...candidate.aliases].map(normalizeMemeTerm));
+        const matches = entries.filter((entry) => {
+            const rawId = raw && typeof raw === "object" && "id" in raw ? (raw as { id?: unknown }).id : undefined;
+            return rawId === entry.id || [entry.name, ...entry.aliases].some((term) => terms.has(normalizeMemeTerm(term)));
+        });
+        if (matches.length > 1) {
+            result.skipped.push(`${candidate.name}: ambiguous duplicate`);
+            continue;
+        }
+        if (matches.length) {
+            const old = matches[0];
+            const merged: MemeEntry = {
+                ...candidate,
+                id: old.id,
+                aliases: [...new Set([...old.aliases, old.name, ...candidate.aliases])]
+                    .filter((alias) => alias !== candidate.name)
+                    .sort((a, b) => a.localeCompare(b, "zh-CN")),
+                firstSeenAt: old.firstSeenAt,
+                updatedAt: today,
+            };
+            const position = entries.indexOf(old);
+            entries[position] = merged;
+            result.updated.push(candidate.name);
+        } else {
+            const id = stableMemeId(candidate);
+            if (entries.some((entry) => entry.id === id)) {
+                result.skipped.push(`${candidate.name}: id collision`);
+                continue;
+            }
+            entries.push({ id, ...candidate, firstSeenAt: today, updatedAt: today });
+            result.added.push(candidate.name);
+        }
+    }
+    return result;
+}
+
+function stableMemeId(candidate: MemeCandidate): string {
+    const normalized = normalizeMemeTerm(candidate.name);
+    const ascii = normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48);
+    const hash = createHash("sha256").update(normalized).digest("hex").slice(0, 12);
+    return `${ascii || "meme"}-${hash}`;
+}
+
+export function serializeMemes(entries: readonly MemeEntry[]): string {
+    const valid = validateMemeFile(entries);
+    return JSON.stringify([...valid].sort((a, b) => a.id.localeCompare(b.id)), null, 2) + "\n";
+}
