@@ -179,7 +179,10 @@ test("offline Responses stream renders citations in output_text and multi-messag
         [complete([
             { type: "message", content: [part([annotation])] },
             { type: "function_call", name: "qq_reply", arguments: JSON.stringify({
-                messages: [text, "补一句"], mentions: [], quote: "auto",
+                messages: [
+                    { content: text, quote: { mode: "message", ref: "m2" } },
+                    { content: "补一句", quote: { mode: "none", ref: null } },
+                ], mentions: [],
             }) },
         ])],
     ];
@@ -198,8 +201,10 @@ test("offline Responses stream renders citations in output_text and multi-messag
         assert.equal(plain.kind, "reply");
         assert.equal(tool.kind, "reply");
         if (plain.kind !== "reply" || tool.kind !== "reply") return;
-        assert.deepEqual(plain.action.messages, ["事实。（[OpenAI](https://openai.com/a)）"]);
-        assert.deepEqual(tool.action.messages, ["事实。（[OpenAI](https://openai.com/a)）", "补一句"]);
+        assert.deepEqual(plain.action.messages.map((message) => message.content), ["事实。（[OpenAI](https://openai.com/a)）"]);
+        assert.deepEqual(tool.action.messages.map((message) => message.content), ["事实。（[OpenAI](https://openai.com/a)）", "补一句"]);
+        assert.deepEqual(tool.action.messages.map((message) => message.quote),
+            [{ mode: "message", ref: "m2" }, { mode: "none", ref: null }]);
     } finally {
         globalThis.fetch = originalFetch;
     }

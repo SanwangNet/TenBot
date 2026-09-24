@@ -63,7 +63,7 @@ function controlledAttempts(records: RecordedAttempt[]) {
         });
 }
 const reply = (content: string): AiResult => ({
-    kind: "reply", action: { messages: [content], mentions: [], quote: "auto" },
+    kind: "reply", action: { messages: [{ content, quote: { mode: "auto", ref: null } }], mentions: [] },
 });
 
 test("hard mention, name, active and Meme text keep distinct trigger semantics", () => {

@@ -8,7 +8,7 @@ import { routeCommand } from "../../commands/router.js";
 import { buildAutoMemeContext } from "../../skills/meme/skill.js";
 import { logger, shortId, truncateLogText } from "../../shared/logger.js";
 import {
-    buildReplyCycleContext,
+    buildReplyCycleSnapshot,
     getRecentImages,
     rememberIncomingMessage,
     recordIncomingMessageRevision,
@@ -132,7 +132,7 @@ export function registerMessageHandler(bot: QQBot): void {
                 await bot.sendText(latestMessage.replyTarget, randomSearchNotice());
             },
             buildAttempt: async (attemptMessage, context) => {
-                const chatInput = buildReplyCycleContext(attemptMessage);
+                const snapshot = buildReplyCycleSnapshot(attemptMessage);
                 const knownMembersContext = trigger.isGroup
                     ? await buildKnownMembersContext(attemptMessage)
                     : "";
@@ -143,7 +143,7 @@ export function registerMessageHandler(bot: QQBot): void {
                         " -> " + truncateLogText(first, 64));
                 }
                 const replyPolicy = buildReplyPolicy(context.allowNoReply);
-                const aiInput = buildAiInput(chatInput, knownMembersContext, replyPolicy, memeContext);
+                const aiInput = buildAiInput(snapshot.text, knownMembersContext, replyPolicy, memeContext);
                 const recentImageUrls = getRecentImages(attemptMessage, 1);
                 const useVision = wantsVision(
                     attemptMessage.displayContent,
@@ -151,7 +151,7 @@ export function registerMessageHandler(bot: QQBot): void {
                     context.mentionedByName,
                     recentImageUrls.length > 0,
                 );
-                return { aiInput, imageUrls: useVision ? recentImageUrls : [] };
+                return { aiInput, imageUrls: useVision ? recentImageUrls : [], refs: snapshot.refs };
             },
         });
     });

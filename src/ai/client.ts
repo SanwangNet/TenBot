@@ -66,8 +66,8 @@ export async function chat(
         model: AI_MODEL,
         instructions: SYSTEM_PROMPT,
         input: requestInput,
-        reasoning: { effort: "medium" },
-        text: { verbosity: "medium" },
+        reasoning: { effort: "low" },
+        text: { verbosity: "low" },
         tools: [
             { type: "web_search" },
             qqReplyTool,
@@ -242,15 +242,16 @@ export async function chat(
             logger.debug("[AI] invalid qq_reply arguments discarded");
             continue;
         }
-        if (action.messages.length === 1 && action.messages[0] === "<NO_REPLY>") {
+        if (action.messages.length === 1 && action.messages[0].content === "<NO_REPLY>") {
             logger.info(`[AI] done ${elapsed}: <NO_REPLY>`);
             return { kind: "no_reply" };
         }
         const rendered = action.messages.map((message) => {
-            const matchingPart = parts.find((part) => part.text === message);
-            return renderCitations(message, matchingPart?.citations ?? [], markerSources);
+            const matchingPart = parts.find((part) => part.text === message.content);
+            return renderCitations(message.content, matchingPart?.citations ?? [], markerSources);
         });
-        action.messages = normalizeReplyMessages(rendered.map((item) => item.content));
+        action.messages = normalizeReplyMessages(action.messages.map((message, index) =>
+            ({ ...message, content: rendered[index].content })));
         if (!action.messages.length) continue;
         reportCitations(
             rendered.reduce((count, item) => count + item.renderedCount, 0),

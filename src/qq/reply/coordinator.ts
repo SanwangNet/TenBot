@@ -65,6 +65,7 @@ interface Attempt {
     snapshotRevision: number;
     startedAt: number;
     controller: AbortController;
+    refs: Map<string, string>;
     status: AttemptStatus;
     resolveStop: (reason: StopReason) => void;
     stop: Promise<StopReason>;
@@ -326,12 +327,12 @@ function updateCycle(cycle: Cycle, request: ReplyRequest): void {
     attempt.controller.abort();
     resolveStop(attempt, "interrupted");
 }
-function startAttempt(cycle: Cycle, revision: number): Attempt {
+function startAttempt(cycle: Cycle, revision: number, refs: Map<string, string>): Attempt {
     let resolve!: (reason: StopReason) => void;
     const stop = new Promise<StopReason>((done) => { resolve = done; });
     const attempt: Attempt = {
         requestId: randomUUID(), snapshotRevision: revision, startedAt: Date.now(),
-        controller: new AbortController(), status: "running", resolveStop: resolve, stop,
+        controller: new AbortController(), refs, status: "running", resolveStop: resolve, stop,
     };
     cycle.currentAttempt = attempt;
     cycle.lastAttemptSnapshotRevision = revision;
@@ -359,8 +360,8 @@ async function sendFallback(request: ReplyRequest, cycle: Cycle, text: string, l
     const newer = Math.max(0, getMessageRevision(request.message) - cycle.anchorRevision);
     const quote = shouldQuoteTrigger("auto", request.isGroup, newer, Boolean(cycle.anchorMessageId));
     try {
-        await sendTimeoutReply(request.bot, cycleReplyMessage(cycle, request), text, quote);
-        rememberBotReply(request.message, text);
+        const sent = await sendTimeoutReply(request.bot, cycleReplyMessage(cycle, request), text, quote);
+        rememberBotReply(request.message, text, sent);
         logger.info("[Reply] " + label + " fallback sent");
     } catch (error) { logger.error("[Reply] " + label + " fallback send error", error); }
 }
@@ -435,15 +436,25 @@ export function handleRecalledMessage(conversationKey: string, messageId: string
     const removed = removeMessageFromContext(conversationKey, messageId);
     if (cancelled || removed) logger.info("[Recall] message=" + shortId(messageId));
 }
-export function shouldQuoteTrigger(preference: QuotePreference, isGroup: boolean, newer: number, hasId: boolean): boolean {
-    return hasId && (preference === "trigger" || (isGroup && newer > 0));
+export function shouldQuoteTrigger(preference: QuotePreference | "auto" | "trigger" | "none", isGroup: boolean, newer: number, hasId: boolean): boolean {
+    const mode = typeof preference === "string" ? preference : preference.mode;
+    return hasId && (mode === "trigger" || (mode === "auto" && isGroup && newer > 0));
 }
-function quoteDecision(request: ReplyRequest, cycle: Cycle, preference: QuotePreference): boolean {
+function quoteDecision(request: ReplyRequest, cycle: Cycle, attempt: Attempt, preference: QuotePreference): string | undefined {
+    if (preference.mode === "message") {
+        const safeRef = /^m[1-9]\d{0,5}$/.test(preference.ref) ? preference.ref : "[malformed]";
+        logger.debug("[Reply] quote selected ref=" + safeRef);
+        const id = safeRef !== "[malformed]" ? attempt.refs.get(safeRef) : undefined;
+        if (id) {
+            logger.debug("[Reply] quote resolved ref=" + safeRef);
+            return id;
+        }
+        logger.debug("[Reply] invalid quote ref=" + safeRef + ", fallback=auto");
+    } else if (preference.mode === "none") return undefined;
     const newer = Math.max(0, getMessageRevision(request.message) - cycle.anchorRevision);
-    const quote = shouldQuoteTrigger(preference, request.isGroup, newer, Boolean(cycle.anchorMessageId || getTriggerMessageId(request.message)));
+    const quote = shouldQuoteTrigger("auto", request.isGroup, newer, Boolean(cycle.anchorMessageId || getTriggerMessageId(request.message)));
     if (quote && newer > 0) logger.info("[Reply] quote trigger newerMessages=" + newer);
-    else if (quote) logger.info("[Reply] quoted trigger by qq_reply");
-    return quote;
+    return quote ? cycle.anchorMessageId ?? getTriggerMessageId(request.message) : undefined;
 }
 async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt, result: AiResult): Promise<void> {
     if (cycle.cancelled || cycle.currentAttempt !== attempt || attempt.status !== "completed") return;
@@ -460,6 +471,8 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
     attempt.status = "sending";
     if (cycle.timer) clearTimeout(cycle.timer);
     cycle.timer = undefined;
+    // Freeze every transport target before the first send or 450ms delay.
+    const quoteIds = action.messages.map((message) => quoteDecision(request, cycle, attempt, message.quote));
     let sent = 0;
     let failed = false;
     const delay = cycle.deps.multiMessageDelayMs ?? MULTI_MESSAGE_DELAY_MS;
@@ -470,12 +483,12 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
             if (attempt.status !== "sending" || cycle.cancelled) break;
             const rendered = await prepareAiReply(request.message, action, index);
             if (attempt.status !== "sending" || cycle.cancelled) break;
-            const quote = index === 0 && quoteDecision(request, cycle, action.quote);
             try {
-                if (!await sendAiReply(request.bot, cycleReplyMessage(cycle, request), rendered, quote,
-                    () => attempt.status === "sending" && !cycle.cancelled)) break;
+                const response = await sendAiReply(request.bot, request.message, rendered, quoteIds[index],
+                    () => attempt.status === "sending" && !cycle.cancelled);
+                if (!response.sent) break;
                 sent++;
-                rememberBotReply(request.message, rendered.contextText);
+                rememberBotReply(request.message, rendered.contextText, response);
                 logger.info(action.messages.length === 1 ? "[Reply] sent" : "[Reply] sent " + sent + "/" + action.messages.length);
             } catch (error) {
                 failed = true;
@@ -538,7 +551,7 @@ async function executeCycle(cycle: Cycle): Promise<void> {
             cycle.trailingAtBot = false;
             cycle.trailingName = false;
             cycle.trailingUpdates = [];
-            const attempt = startAttempt(cycle, revision);
+            const attempt = startAttempt(cycle, revision, input.refs ?? new Map());
             const outcome = await runAttempt(cycle, request, input, attempt);
             if (outcome.kind === "interrupted" && !cycle.timedOut && !cycle.cancelled) {
                 clearAttempt(cycle, attempt);

@@ -12,26 +12,21 @@ export async function sendAiReply(
     bot: QQBot,
     message: NormalizedQqMessage,
     rendered: RenderedQQReply,
-    quoteTrigger: boolean,
+    quoteMessageId: string | undefined,
     beforeSend: () => boolean,
-): Promise<boolean> {
-    const triggerMessageId = getTriggerMessageId(message);
+): Promise<{ sent: boolean; id?: string; refIdx?: string }> {
 
     // This check and the QQ call have no await between them.
-    if (!beforeSend()) return false;
+    if (!beforeSend()) return { sent: false };
 
-    if (quoteTrigger && triggerMessageId) {
-        await bot.send({
+    const response = quoteMessageId ? await bot.send({
             target: message.replyTarget,
             msgType: MsgType.MARKDOWN,
             markdown: { content: rendered.sendText },
-            messageReference: { message_id: triggerMessageId },
-        });
-    } else {
-        await bot.sendMarkdown(message.replyTarget, rendered.sendText);
-    }
+            messageReference: { message_id: quoteMessageId },
+        }) : await bot.sendMarkdown(message.replyTarget, rendered.sendText);
 
-    return true;
+    return { sent: true, id: response?.id, refIdx: response?.ext_info?.ref_idx };
 }
 
 export async function sendTimeoutReply(
@@ -39,16 +34,13 @@ export async function sendTimeoutReply(
     message: NormalizedQqMessage,
     content: string,
     quoteTrigger: boolean,
-): Promise<void> {
+): Promise<{ id?: string; refIdx?: string }> {
     const triggerMessageId = getTriggerMessageId(message);
-    if (quoteTrigger && triggerMessageId) {
-        await bot.send({
-            target: message.replyTarget,
-            msgType: MsgType.MARKDOWN,
-            markdown: { content },
-            messageReference: { message_id: triggerMessageId },
-        });
-    } else {
-        await bot.sendText(message.replyTarget, content);
-    }
+    const response = quoteTrigger && triggerMessageId ? await bot.send({
+        target: message.replyTarget,
+        msgType: MsgType.MARKDOWN,
+        markdown: { content },
+        messageReference: { message_id: triggerMessageId },
+    }) : await bot.sendText(message.replyTarget, content);
+    return { id: response?.id, refIdx: response?.ext_info?.ref_idx };
 }

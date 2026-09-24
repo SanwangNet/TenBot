@@ -1,4 +1,4 @@
-import { QQBot } from "@tencent-connect/qqbot-nodejs";
+import { QQBot, quoteRef } from "@tencent-connect/qqbot-nodejs";
 
 import { logger, qqSdkLogger } from "../shared/logger.js";
 import { registerInteractionHandler } from "./handlers/interaction-handler.js";
@@ -18,6 +18,7 @@ export function createQqBot(): QQBot {
         logger: qqSdkLogger,
         markdownSupport: true,
     });
+    bot.use(quoteRef({ preferMsgElements: false }));
 
     bot.on("ready", () => {
         logger.info("QQ Bot 已连接");

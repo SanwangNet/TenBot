@@ -13,7 +13,7 @@ export async function prepareAiReply(
     action: QQReplyAction,
     index: number,
 ): Promise<RenderedQQReply> {
-    const content = action.messages[index];
+    const content = action.messages[index].content;
     // Mentions belong to the first QQ message. Later inline tags stay readable text.
     const safeContent = index === 0 ? content : content.replace(
         /<mention>([^<]{1,64})<\/mention>/g,

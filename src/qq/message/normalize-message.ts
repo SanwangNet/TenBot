@@ -1,5 +1,13 @@
-import type { QQBotInboundMessage } from "@tencent-connect/qqbot-nodejs";
+import type { MiddlewareContext, QQBotInboundMessage, ResolvedQuote } from "@tencent-connect/qqbot-nodejs";
 import { getKnownMemberNameById } from "../conversation/known-members.js";
+import { findRecentQuotedMessage } from "../conversation/recent-context.js";
+import { logger } from "../../shared/logger.js";
+
+export interface QuotedMessage {
+    authorName?: string;
+    content?: string;
+    realMessageId?: string;
+}
 
 export interface NormalizedMention {
     memberOpenid?: string;
@@ -27,6 +35,7 @@ export interface NormalizedQqMessage {
     replyTarget: QQBotInboundMessage["replyTarget"];
     timestamp?: string;
     raw: any;
+    quotedMessage?: QuotedMessage;
 }
 
 function stringField(value: unknown): string | undefined {
@@ -93,7 +102,7 @@ export async function normalizeQqMessage(
           raw?.group_openid ?? raw?.group_id ?? message.replyTarget?.targetId
         : undefined;
     const content = message.content?.trim?.() ?? "";
-    return {
+    const normalized: NormalizedQqMessage = {
         source: message,
         id: message.messageId,
         kind: message.kind,
@@ -113,4 +122,31 @@ export async function normalizeQqMessage(
         timestamp: message.timestamp ?? raw?.timestamp,
         raw,
     };
+    if (message.refMsgIdx) {
+        const recent = findRecentQuotedMessage(normalized, message.refMsgIdx);
+        const resolved = (context as MiddlewareContext | null)?.state?.quote as ResolvedQuote | undefined;
+        const quotedElement = message.msgElements?.[0];
+        const attachments = resolved?.attachments ?? quotedElement?.attachments?.map((attachment) => ({
+            contentType: attachment.content_type,
+        })) ?? [];
+        const media = attachments.map((attachment) => {
+            const type = attachment.contentType.toLowerCase();
+            if (type.startsWith("image/")) return "[图片]";
+            if (type.startsWith("audio/")) return "[语音]";
+            if (type.startsWith("video/")) return "[视频]";
+            return "[文件]";
+        });
+        const fallbackText = [quotedElement?.content ?? resolved?.rawContent ?? resolved?.entry?.content ?? "", ...media]
+            .filter(Boolean).join(" ");
+        const content = recent?.content ?? (fallbackText
+            ? await resolveDisplayContent(fallbackText, [], groupId) : undefined);
+        normalized.quotedMessage = {
+            authorName: recent?.authorName ?? resolved?.entry?.senderName,
+            content,
+            realMessageId: recent?.id ?? (resolved?.entry?.messageId || undefined),
+        };
+        if (content) logger.debug("[Quote] resolved inbound reference");
+        else logger.debug("[Quote] inbound reference unresolved");
+    }
+    return normalized;
 }

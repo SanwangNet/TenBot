@@ -203,7 +203,7 @@ test("offline meme_lookup call continues to final reply", async () => {
     try {
         const result = await chat("未知梗是什么意思", { signal: new AbortController().signal });
         assert.equal(result.kind, "reply");
-        if (result.kind === "reply") assert.deepEqual(result.action.messages, ["我还不确定这个梗的意思。"]);
+        if (result.kind === "reply") assert.deepEqual(result.action.messages.map((message) => message.content), ["我还不确定这个梗的意思。"]);
         assert.equal(requests.length, 2);
         const second = requests[1] as { input: Array<{ type?: string; call_id?: string; output?: string }> };
         assert.deepEqual(second.input.find((item) => item.type === "function_call_output"), {

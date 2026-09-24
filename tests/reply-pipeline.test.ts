@@ -65,7 +65,9 @@ function fakeBot() {
 
 function reply(content: string | string[], quote: "auto" | "trigger" | "none" = "auto"): AiResult {
     return { kind: "reply", action: {
-        messages: Array.isArray(content) ? content : [content], mentions: [], quote,
+        messages: (Array.isArray(content) ? content : [content]).map((item, index) => ({
+            content: item, quote: { mode: index > 0 || quote === "none" ? "none" : "auto", ref: null },
+        })), mentions: [],
     } };
 }
 
@@ -81,7 +83,7 @@ function request(bot: QQBot, trigger: NormalizedQqMessage) {
     };
 }
 
-test("revision is monotonic and quote none yields to newer group messages", () => {
+test("revision is monotonic and quote none suppresses delayed auto quote", () => {
     const trigger = message();
     assert.equal(recordIncomingMessageRevision(trigger), 1);
     assert.equal(getMessageRevision(trigger), 1);
@@ -89,14 +91,14 @@ test("revision is monotonic and quote none yields to newer group messages", () =
     assert.equal(getMessageRevision(trigger), 2);
     assert.equal(shouldQuoteTrigger("auto", true, 0, true), false);
     assert.equal(shouldQuoteTrigger("trigger", true, 0, true), true);
-    assert.equal(shouldQuoteTrigger("none", true, 1, true), true);
+    assert.equal(shouldQuoteTrigger("none", true, 1, true), false);
     assert.equal(shouldQuoteTrigger("auto", false, 1, true), false);
     assert.equal(shouldQuoteTrigger("trigger", true, 1, false), false);
 });
 
 test("qq_reply parser validates semantic fields", () => {
     assert.deepEqual(parseQqReplyArguments('{"content":"你好","mentions":[" 尘柒 "],"quote":"trigger"}'), {
-        messages: ["你好"], mentions: ["尘柒"], quote: "trigger",
+        messages: [{ content: "你好", quote: { mode: "auto", ref: null } }], mentions: ["尘柒"],
     });
     assert.equal(parseQqReplyArguments('{"content":"","mentions":[]}'), null);
     assert.equal(parseQqReplyArguments('{"content":"你好","mentions":[42]}'), null);
@@ -105,11 +107,11 @@ test("qq_reply parser validates semantic fields", () => {
 
 test("plain output_text and code blocks always normalize to one message", () => {
     assert.deepEqual(normalizeTextReply(" hello "), {
-        kind: "reply", action: { messages: ["hello"], mentions: [], quote: "auto" },
+        kind: "reply", action: { messages: [{ content: "hello", quote: { mode: "auto", ref: null } }], mentions: [] },
     });
     const code = "```ts\nconsole.log('a。b');\n```";
     assert.deepEqual(normalizeTextReply(code), {
-        kind: "reply", action: { messages: [code], mentions: [], quote: "auto" },
+        kind: "reply", action: { messages: [{ content: code, quote: { mode: "auto", ref: null } }], mentions: [] },
     });
     assert.equal(normalizeTextReply("  "), null);
 });
@@ -122,17 +124,17 @@ test("qq_reply schema and parser limit clean messages to three", () => {
     assert.deepEqual(parseQqReplyArguments(JSON.stringify({
         messages: [" 放心 ", "", " 毕竟我没身体 ", "第三句", "第四句"],
         mentions: [], quote: "auto",
-    }))?.messages, ["放心", "毕竟我没身体", "第三句"]);
+    }))?.messages.map((message) => message.content), ["放心", "毕竟我没身体", "第三句"]);
     assert.equal(parseQqReplyArguments('{"messages":["",42]}'), null);
     assert.equal(parseQqReplyArguments('{"messages":"hello"}'), null);
 });
 
 test("QQ Reply Skill keeps only semantic fields", () => {
-    assert.deepEqual(Object.keys(qqReplyTool.parameters.properties), ["messages", "mentions", "quote"]);
+    assert.deepEqual(Object.keys(qqReplyTool.parameters.properties), ["messages", "mentions"]);
     assert.deepEqual(normalizeQQReplyAction({
         messages: ["你好"], mentions: ["芷"], quote: "trigger",
         msg_type: 2, msg_id: "raw-id", member_openid: "raw-openid", localPath: "C:\\secret.png",
-    }), { messages: ["你好"], mentions: ["芷"], quote: "trigger" });
+    }), { messages: [{ content: "你好", quote: { mode: "auto", ref: null } }], mentions: ["芷"] });
 });
 
 test("plain output and qq_reply use the same renderer and sender", async () => {
@@ -208,7 +210,7 @@ test("two messages quote only the first after newer group activity", async () =>
     const newer = message(trigger.groupId);
     recordIncomingMessageRevision(newer);
     coordinateAiReply(request(bot, newer), { executeAi: async () => ai });
-    resolveAi(reply(["第一条", "第二条"], "none"));
+    resolveAi(reply(["第一条", "第二条"], "auto"));
     await pending;
     assert.deepEqual(calls.map((call) => call.method), ["send", "markdown"]);
     assert.deepEqual((calls[0].args[0] as { messageReference: unknown }).messageReference,
@@ -223,7 +225,10 @@ test("shared mentions and inline mention tags create real @ only in the first me
     const { bot, calls } = fakeBot();
     await coordinateAiReply(request(bot, trigger), {
         executeAi: async () => ({ kind: "reply", action: {
-            messages: ["第一条", "<mention>芷</mention> 第二条"], mentions: ["芷"], quote: "auto",
+            messages: [
+                { content: "第一条", quote: { mode: "auto", ref: null } },
+                { content: "<mention>芷</mention> 第二条", quote: { mode: "none", ref: null } },
+            ], mentions: ["芷"],
         } }),
         multiMessageDelayMs: 0,
     });
@@ -332,7 +337,7 @@ test("fast reply uses ordinary Markdown send", async () => {
     assert.equal(calls.length, 1);
 });
 
-test("a newer group message quotes the original trigger even with quote none", async () => {
+test("quote none suppresses a delayed trigger reference", async () => {
     const trigger = message();
     recordIncomingMessageRevision(trigger);
     const { bot, calls } = fakeBot();
@@ -344,10 +349,7 @@ test("a newer group message quotes the original trigger even with quote none", a
     coordinateAiReply(request(bot, newer), { executeAi: async () => ai });
     resolveAi(reply("pong", "none"));
     await pending;
-    assert.deepEqual(calls.map((call) => call.method), ["send"]);
-    assert.deepEqual((calls[0].args[0] as { messageReference: unknown }).messageReference, {
-        message_id: trigger.id,
-    });
+    assert.deepEqual(calls.map((call) => call.method), ["markdown"]);
 });
 
 test("timeout records local notice, leaves engagement inactive, and discards late AI result", async () => {
@@ -575,7 +577,7 @@ test("recall during asynchronous mention rendering prevents QQ send", async () =
     configureMemberRepository(new SlowRepository());
     try {
         const pending = coordinateAiReply(request(bot, trigger), {
-            executeAi: async () => ({ ...reply("你好"), action: { messages: ["你好"], mentions: ["芷"], quote: "auto" } }),
+            executeAi: async () => ({ kind: "reply", action: { messages: [{ content: "你好", quote: { mode: "auto", ref: null } }], mentions: ["芷"] } }),
         });
         await started;
         assert.equal(cancelPendingRequestByMessageId(trigger.id!), 1);
