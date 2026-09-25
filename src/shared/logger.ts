@@ -1,4 +1,5 @@
 import type { Logger as QqSdkLogger } from "@tencent-connect/qqbot-nodejs";
+import { parseLogLevel } from "../config/config-validation.js";
 
 export type LogLevel = "info" | "debug" | "error";
 
@@ -10,10 +11,7 @@ export interface LogEntry {
 
 export type LogListener = (entry: LogEntry) => void;
 
-const configuredLevel = process.env.BOT_LOG_LEVEL?.toLowerCase();
-const logLevel: LogLevel = configuredLevel === "debug" || configuredLevel === "error"
-    ? configuredLevel
-    : "info";
+const logLevel: LogLevel = parseLogLevel(process.env.BOT_LOG_LEVEL);
 
 const levels: Record<LogLevel, number> = {
     debug: 0,

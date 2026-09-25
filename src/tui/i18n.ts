@@ -1,6 +1,8 @@
 import type { LogEntry } from "../shared/logger.js";
 import type { QqConnectionState } from "../control/runtime-status.js";
 import type { ModelVerbosity, ReasoningEffort } from "../ai/model-plugin.js";
+import type { LogLevel } from "../shared/logger.js";
+import type { SettingsField } from "./state.js";
 
 export const PAGE_LABELS = {
     overview: "总览",
@@ -60,6 +62,23 @@ export function enabledLabel(enabled: boolean): string {
 
 export function configuredLabel(configured: boolean): string {
     return configured ? "已配置" : "未配置";
+}
+
+export function logLevelLabel(level: LogLevel): string {
+    return ({ debug: "调试", info: "信息", error: "错误" } satisfies Record<LogLevel, string>)[level];
+}
+
+export function settingsFieldLabel(field: SettingsField): string {
+    return ({
+        aiProvider: "模型提供商",
+        "gpt.model": "GPT 模型",
+        "gpt.reasoningEffort": "GPT 推理强度",
+        "gpt.verbosity": "GPT 输出详细度",
+        "deepseek.model": "DeepSeek 模型",
+        "deepseek.reasoningEffort": "DeepSeek 推理强度",
+        logLevel: "日志级别",
+        "botLoopGuard.maxCycles": "自动互聊上限",
+    } satisfies Record<SettingsField, string>)[field];
 }
 
 const SCOPE_LABELS: Record<string, string> = {

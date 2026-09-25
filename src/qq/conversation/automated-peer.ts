@@ -1,8 +1,13 @@
 import "dotenv/config";
 
+import {
+    DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES,
+    parseAutomatedPeerIds,
+    parseBotLoopGuardMaxCycles,
+} from "../../config/config-validation.js";
 import { logger, truncateLogText } from "../../shared/logger.js";
 
-export const DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES = 4;
+export { DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES, parseAutomatedPeerIds, parseBotLoopGuardMaxCycles } from "../../config/config-validation.js";
 export const BOT_LOOP_GUARD_STATE_TTL_MS = 30 * 60 * 1000;
 export const BOT_LOOP_GUARD_NOTICE = "已达到自动账号连续交互限制，等待真人消息。";
 
@@ -28,22 +33,6 @@ interface ConversationGuardState {
     updatedAt: number;
 }
 
-export function parseAutomatedPeerIds(value: string | undefined): ReadonlySet<string> {
-    return new Set((value ?? "").split(",").map((id) => id.trim()).filter(Boolean));
-}
-
-export function parseBotLoopGuardMaxCycles(value: string | undefined): number {
-    if (value === undefined || value.trim() === "") return DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES;
-    if (!/^\d+$/.test(value.trim())) {
-        throw new Error("BOT_LOOP_GUARD_MAX_CYCLES 必须是大于等于 1 的整数");
-    }
-    const parsed = Number(value.trim());
-    if (!Number.isSafeInteger(parsed) || parsed < 1) {
-        throw new Error("BOT_LOOP_GUARD_MAX_CYCLES 必须是大于等于 1 的整数");
-    }
-    return parsed;
-}
-
 function authorLabel(authorName?: string): string {
     return JSON.stringify(truncateLogText(authorName?.trim() || "未知成员", 60));
 }
@@ -58,7 +47,7 @@ export function createAutomatedPeerLoopGuard(
         throw new Error("BOT_LOOP_GUARD_MAX_CYCLES 必须是大于等于 1 的整数");
     }
     const ids = typeof peerIds === "string" || peerIds === undefined
-        ? parseAutomatedPeerIds(peerIds)
+        ? new Set(parseAutomatedPeerIds(peerIds))
         : new Set([...peerIds].map((id) => id.trim()).filter(Boolean));
     const states = new Map<string, ConversationGuardState>();
 

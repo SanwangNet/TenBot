@@ -1,29 +1,30 @@
 import "dotenv/config";
 
+import { loadAppConfig } from "../config/config-validation.js";
 import type { ModelPlugin } from "./model-plugin.js";
-import { createDeepSeekPlugin, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_MODEL } from "./plugins/deepseek/index.js";
+import { createDeepSeekPlugin } from "./plugins/deepseek/index.js";
 import { createGptPlugin } from "./plugins/gpt/index.js";
 
-export type ModelProviderId = "gpt" | "deepseek";
+export type { ModelProviderId } from "../config/config-types.js";
 
 /** Pure selection entry point, also used by offline configuration tests. */
 export function createModelPlugin(env: NodeJS.ProcessEnv = process.env): ModelPlugin {
-    const provider = (env.AI_PROVIDER ?? "gpt").trim().toLowerCase() || "gpt";
-    if (provider === "gpt") {
+    const config = loadAppConfig(env);
+    if (config.ai.provider === "gpt") {
         return createGptPlugin({
-            apiKey: env.CODEX_API_KEY,
-            baseURL: env.CODEX_BASE_URL,
-            model: env.CODEX_MODEL ?? "gpt-6-sol",
+            apiKey: config.ai.gpt.apiKey,
+            baseURL: config.ai.gpt.baseURL,
+            model: config.ai.gpt.model,
+            reasoningEffort: config.ai.gpt.reasoningEffort,
+            verbosity: config.ai.gpt.verbosity,
         });
     }
-    if (provider === "deepseek") {
-        return createDeepSeekPlugin({
-            apiKey: env.DEEPSEEK_API_KEY,
-            baseURL: env.DEEPSEEK_BASE_URL ?? DEFAULT_DEEPSEEK_BASE_URL,
-            model: env.DEEPSEEK_MODEL ?? DEFAULT_DEEPSEEK_MODEL,
-        });
-    }
-    throw new Error(`不支持的 AI_PROVIDER: ${provider}`);
+    return createDeepSeekPlugin({
+        apiKey: config.ai.deepseek.apiKey,
+        baseURL: config.ai.deepseek.baseURL,
+        model: config.ai.deepseek.model,
+        reasoningEffort: config.ai.deepseek.reasoningEffort,
+    });
 }
 
 let activePlugin: ModelPlugin | undefined;

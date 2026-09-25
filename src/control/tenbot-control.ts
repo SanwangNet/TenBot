@@ -1,4 +1,5 @@
 import type { PromptProvider } from "../ai/prompt-store.js";
+import type { ConfigUpdateResult, PublicConfig, PublicConfigPatch } from "../config/config-types.js";
 import type { LogEntry, LogListener } from "../shared/logger.js";
 import type { RuntimeEvent, RuntimeEventListener } from "./runtime-event.js";
 import type { RuntimeStatus } from "./runtime-status.js";
@@ -13,6 +14,8 @@ export type StatusListener = (status: RuntimeStatus) => void;
 
 export interface TenBotControl {
     getStatus(): RuntimeStatus;
+    getConfig(): PublicConfig;
+    updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
     subscribeStatus(listener: StatusListener): () => void;
     subscribeLogs(listener: LogListener): () => void;
     subscribeEvents(listener: RuntimeEventListener): () => void;
@@ -23,6 +26,8 @@ export interface TenBotControl {
 
 export interface TenBotControlOperations {
     getStatus(): RuntimeStatus;
+    getConfig(): PublicConfig;
+    updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
     reloadPrompt(provider?: PromptProvider): Promise<ReloadResult>;
     reloadMemes(): Promise<ReloadResult>;
     shutdown(): Promise<void>;
@@ -40,6 +45,8 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
 
     return {
         getStatus,
+        getConfig: () => structuredClone(operations.getConfig()),
+        updateConfig: (patch) => operations.updateConfig(patch),
         subscribeStatus(listener) {
             statusListeners.add(listener);
             listener(getStatus());

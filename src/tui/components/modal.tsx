@@ -49,6 +49,57 @@ export function ModalLayer({ modal, columns }: { modal: ModalState; columns: num
             <Text dimColor>Enter / Esc 关闭</Text>
         </ModalFrame>;
     }
+    if (modal.type === "config-select") {
+        return <ModalFrame title={modal.title} width={width}>
+            {modal.options.map((option, index) => <Text key={option.value} color={index === modal.index ? "cyan" : undefined}>
+                {index === modal.index ? "› " : "  "}{option.label}
+            </Text>)}
+            <Text> </Text>
+            <Text dimColor>↑↓ 选择 · Enter 确认 · Esc 取消</Text>
+        </ModalFrame>;
+    }
+    if (modal.type === "config-text") {
+        const before = modal.value.slice(0, modal.cursor);
+        const after = modal.value.slice(modal.cursor);
+        return <ModalFrame title={modal.title} width={width}>
+            <Text> </Text>
+            <Text>{before}<Text color="cyan">█</Text>{after}</Text>
+            <Text> </Text>
+            <Text dimColor>输入文字 · Backspace 删除 · ← → 移动</Text>
+            <Text dimColor>Enter 下一步 · Esc 取消</Text>
+        </ModalFrame>;
+    }
+    if (modal.type === "config-confirm") {
+        return <ModalFrame title="确认修改" width={width}>
+            <Text>{modal.label}</Text>
+            <Text> </Text>
+            <Text>{modal.from}</Text>
+            <Text color="cyan">↓</Text>
+            <Text>{modal.to}</Text>
+            <Text> </Text>
+            <Text color="yellow">修改后需要重启 TenBot。</Text>
+            <Text> </Text>
+            <Text dimColor>Enter 保存 · Esc 取消</Text>
+        </ModalFrame>;
+    }
+    if (modal.type === "config-invalid") {
+        return <ModalFrame title="配置无效" width={width}>
+            <Text color="red">✕ {modal.message}</Text>
+            <Text> </Text>
+            <Text dimColor>Enter / Esc 返回</Text>
+        </ModalFrame>;
+    }
+    if (modal.type === "config-result") {
+        return <ModalFrame title={modal.result.ok ? "配置已保存" : "配置保存失败"} width={width}>
+            <Text color={modal.result.ok ? "green" : "red"}>{modal.result.ok ? "✓" : "✕"} {modal.label}</Text>
+            <Text> </Text>
+            <Text>{modal.result.message}</Text>
+            {modal.result.ok && modal.result.requiresRestart ? <Text color="yellow">需要重启 TenBot 后生效。</Text> : null}
+            {!modal.result.ok && modal.result.details ? <Text dimColor>{modal.result.details}</Text> : null}
+            <Text> </Text>
+            <Text dimColor>Enter / Esc 关闭</Text>
+        </ModalFrame>;
+    }
     const notice = modal.notice;
     if (modal.type === "provider-error-details") {
         return <ModalFrame title="模型提供商错误 · 详情" width={width}>

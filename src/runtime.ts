@@ -3,6 +3,9 @@ import "dotenv/config";
 import { getModelPlugin } from "./ai/model-registry.js";
 import type { ModelPlugin } from "./ai/model-plugin.js";
 import { getPromptStore, type PromptProvider } from "./ai/prompt-store.js";
+import { createConfigStore } from "./config/config-store.js";
+import { loadAppConfig } from "./config/config-validation.js";
+import type { AppConfig } from "./config/config-types.js";
 import { createTenBotControl, type ReloadResult, type TenBotControl } from "./control/tenbot-control.js";
 import { createProviderErrorNotice } from "./control/provider-error.js";
 import type { RuntimeStatus } from "./control/runtime-status.js";
@@ -28,10 +31,13 @@ export interface CreateTenBotRuntimeOptions {
 export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = {}): Promise<TenBotRuntime> {
     setConsoleLogOutputEnabled(options.consoleLogs ?? true);
     const logs = new LogBuffer();
+    const configStore = createConfigStore();
+    let appConfig: AppConfig;
     const promptStore = getPromptStore();
     let model: ModelPlugin;
     let provider: PromptProvider;
     try {
+        appConfig = loadAppConfig(process.env);
         model = getModelPlugin();
         if (model.id !== "gpt" && model.id !== "deepseek") throw new Error(`Unsupported model id: ${model.id}`);
         provider = model.id;
@@ -76,8 +82,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         const prompt = promptStore.get(provider);
         const memes = getMemeRuntimeSnapshot();
         const configured = provider === "gpt"
-            ? Boolean(process.env.CODEX_API_KEY && process.env.CODEX_BASE_URL)
-            : Boolean(process.env.DEEPSEEK_API_KEY);
+            ? Boolean(appConfig.ai.gpt.apiKey && appConfig.ai.gpt.baseURL)
+            : Boolean(appConfig.ai.deepseek.apiKey);
         return {
             qq: qqState,
             provider: {
@@ -90,6 +96,10 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             },
             activeCycles: getActiveReplyCycleCount(),
             contextConversations: getRecentContextConversationCount(),
+            runtimeConfig: {
+                logLevel: appConfig.logging.level,
+                botLoopGuardMaxCycles: appConfig.botLoopGuard.maxCycles,
+            },
             memes: {
                 count: memes.entries.length,
                 revision: memes.revision,
@@ -111,6 +121,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
 
     control = createTenBotControl({
         getStatus: status,
+        getConfig: () => configStore.getPublicConfig(),
+        updateConfig: (patch) => configStore.updatePublicConfig(patch),
         subscribeLogs: (listener) => logs.subscribe(listener),
         async reloadPrompt(requestedProvider): Promise<ReloadResult> {
             const target = requestedProvider ?? provider;

@@ -46,6 +46,12 @@ test("registry selects GPT, DeepSeek, and defaults to GPT without requiring cred
     assert.equal(createModelPlugin({ AI_PROVIDER: "deepseek" }).id, "deepseek");
     assert.equal(createModelPlugin({}).id, "gpt");
     assert.equal(createModelPlugin({ AI_PROVIDER: "deepseek", DEEPSEEK_MODEL: "custom" }).model, "custom");
+    const configuredGpt = createModelPlugin({ AI_PROVIDER: "gpt", CODEX_MODEL: "gpt-next", CODEX_REASONING_EFFORT: "xhigh", CODEX_VERBOSITY: "low" });
+    assert.equal(configuredGpt.model, "gpt-next");
+    assert.equal(configuredGpt.reasoningEffort, "xhigh");
+    assert.equal(configuredGpt.verbosity, "low");
+    const configuredDeepSeek = createModelPlugin({ AI_PROVIDER: "deepseek", DEEPSEEK_REASONING_EFFORT: "low" });
+    assert.equal(configuredDeepSeek.reasoningEffort, "low");
     assert.throws(() => createModelPlugin({ AI_PROVIDER: "other" }), /不支持的 AI_PROVIDER/);
 });
 

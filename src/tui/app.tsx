@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useWindowSize } from "ink";
+import type { ConfigUpdateResult, PublicConfig, PublicConfigPatch } from "../config/config-types.js";
+import { validatePublicConfigPatch } from "../config/config-validation.js";
 import type { RuntimeStatus } from "../control/runtime-status.js";
 import type { ReloadResult, TenBotControl } from "../control/tenbot-control.js";
 import type { ProviderErrorNotice } from "../control/provider-error.js";
@@ -17,8 +19,8 @@ import { ModelView } from "./views/model-view.js";
 import { OverviewView } from "./views/overview-view.js";
 import { PromptView } from "./views/prompt-view.js";
 import { SettingsView } from "./views/settings-view.js";
-import { PAGE_LABELS, PAGES } from "./i18n.js";
-import { clampLogOffset, initialTuiState, type ModalState, type TuiState } from "./state.js";
+import { logLevelLabel, PAGE_LABELS, PAGES, providerLabel, reasoningLabel, settingsFieldLabel, verbosityLabel } from "./i18n.js";
+import { clampLogOffset, initialTuiState, moveSettingsSelection, SETTINGS_FIELDS, type ConfigOption, type ConfigSelectField, type ConfigTextField, type ModalState, type SettingsField, type TuiState } from "./state.js";
 import type { TuiPage } from "./types.js";
 
 export interface TenBotTuiProps {
@@ -28,6 +30,8 @@ export interface TenBotTuiProps {
 
 export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
     const [status, setStatus] = useState(() => control.getStatus());
+    const [config, setConfig] = useState(() => control.getConfig());
+    const [pendingRestart, setPendingRestart] = useState(false);
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [ui, setUi] = useState<TuiState>(initialTuiState);
     const [now, setNow] = useState(() => new Date());
@@ -53,6 +57,10 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
             unsubscribeEvents();
         };
     }, [control]);
+
+    useEffect(() => {
+        if (ui.page === "settings") setConfig(control.getConfig());
+    }, [control, ui.page]);
 
     useEffect(() => {
         const timer = setInterval(() => setNow(new Date()), 1000);
@@ -103,16 +111,93 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
         }
     };
 
+    const saveConfig = async (patch: PublicConfigPatch, label: string) => {
+        let result: ConfigUpdateResult;
+        try {
+            result = await control.updateConfig(patch);
+        } catch {
+            result = { ok: false, requiresRestart: false, changedFields: [], message: "配置保存失败", details: "无法完成配置操作" };
+        }
+        setConfig(control.getConfig());
+        if (result.ok && result.requiresRestart) setPendingRestart(true);
+        setUi((current) => ({ ...current, modal: { type: "config-result", result, label } }));
+    };
+
     useInput((input, key) => {
         const lower = input.toLowerCase();
-        if (lower === "q" || (key.ctrl && lower === "c")) {
-            requestQuit();
+        if (ui.modal.type === "config-text") {
+            if (key.escape) {
+                setUi(closeModal);
+                return;
+            }
+            if (key.return) {
+                const current = ui.modal;
+                const patch = textPatch(current.field, current.value);
+                if (patch.error) setUi((state) => ({ ...state, modal: { type: "config-invalid", message: patch.error } }));
+                else if (patch.value) setUi((state) => ({ ...state, modal: { type: "config-confirm", patch: patch.value, label: settingsFieldLabel(current.field), from: configValue(config, current.field), to: displayPatchValue(patch.value) } }));
+                return;
+            }
+            if (key.backspace || input === "\b") {
+                if (ui.modal.cursor > 0) setUi((state) => state.modal.type === "config-text"
+                    ? { ...state, modal: { ...state.modal, value: state.modal.value.slice(0, state.modal.cursor - 1) + state.modal.value.slice(state.modal.cursor), cursor: state.modal.cursor - 1 } }
+                    : state);
+                return;
+            }
+            if (key.delete) {
+                setUi((state) => state.modal.type === "config-text"
+                    ? { ...state, modal: { ...state.modal, value: state.modal.value.slice(0, state.modal.cursor) + state.modal.value.slice(state.modal.cursor + 1) } }
+                    : state);
+                return;
+            }
+            if (key.leftArrow) {
+                setUi((state) => state.modal.type === "config-text" ? { ...state, modal: { ...state.modal, cursor: Math.max(0, state.modal.cursor - 1) } } : state);
+                return;
+            }
+            if (key.rightArrow) {
+                setUi((state) => state.modal.type === "config-text" ? { ...state, modal: { ...state.modal, cursor: Math.min(state.modal.value.length, state.modal.cursor + 1) } } : state);
+                return;
+            }
+            if (key.home || (key.ctrl && lower === "a")) {
+                setUi((state) => state.modal.type === "config-text" ? { ...state, modal: { ...state.modal, cursor: 0 } } : state);
+                return;
+            }
+            if (key.end) {
+                setUi((state) => state.modal.type === "config-text" ? { ...state, modal: { ...state.modal, cursor: state.modal.value.length } } : state);
+                return;
+            }
+            if (input && !key.ctrl && !key.meta && !/[\r\n]/.test(input)) {
+                setUi((state) => state.modal.type === "config-text"
+                    ? { ...state, modal: { ...state.modal, value: state.modal.value.slice(0, state.modal.cursor) + input + state.modal.value.slice(state.modal.cursor), cursor: state.modal.cursor + input.length } }
+                    : state);
+            }
             return;
         }
         if (ui.modal.type !== "none") {
             if (key.escape) {
                 if (ui.modal.type === "provider-error-details") setUi((current) => providerDetailsToSummary(current));
                 else setUi(closeModal);
+                return;
+            }
+            if (ui.modal.type === "config-select") {
+                if (key.upArrow || key.downArrow) {
+                    const delta = key.downArrow ? 1 : -1;
+                    setUi((current) => current.modal.type === "config-select"
+                        ? { ...current, modal: { ...current.modal, index: Math.min(current.modal.options.length - 1, Math.max(0, current.modal.index + delta)) } }
+                        : current);
+                } else if (key.return) {
+                    const current = ui.modal;
+                    const option = current.options[current.index];
+                    if (!option) return;
+                    const patch = optionPatch(current.field, option.value);
+                    setUi((state) => ({ ...state, modal: { type: "config-confirm", patch, label: settingsFieldLabel(current.field), from: configValue(config, current.field), to: displayPatchValue(patch) } }));
+                }
+                return;
+            }
+            if (ui.modal.type === "config-confirm") {
+                if (key.return) {
+                    const current = ui.modal;
+                    void saveConfig(current.patch, current.label);
+                }
                 return;
             }
             if (key.return) {
@@ -128,6 +213,10 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
                     ? { ...current, modal: { type: "provider-error-details", notice: current.modal.notice, count: current.modal.count } }
                     : current);
             }
+            return;
+        }
+        if (lower === "q" || (key.ctrl && lower === "c")) {
+            requestQuit();
             return;
         }
         if (input === "?") {
@@ -155,6 +244,12 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
             else if (key.downArrow) setUi((current) => ({ ...current, logOffset: clampLogOffset(current.logOffset - 1, logs.length, visibleLogLines) }));
             return;
         }
+        if (ui.page === "settings" && ui.focus === "main") {
+            if (key.upArrow) setUi((current) => ({ ...current, settingsIndex: moveSettingsSelection(current.settingsIndex, -1) }));
+            else if (key.downArrow) setUi((current) => ({ ...current, settingsIndex: moveSettingsSelection(current.settingsIndex, 1) }));
+            else if (key.return) setUi((current) => ({ ...current, modal: openConfigModal(SETTINGS_FIELDS[current.settingsIndex] ?? SETTINGS_FIELDS[0], config) }));
+            return;
+        }
         if (key.tab) {
             setUi((current) => ({ ...current, focus: current.focus === "sidebar" ? "main" : "sidebar" }));
             return;
@@ -166,16 +261,17 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
         if (ui.focus === "sidebar") {
             if (key.upArrow) setUi((current) => ({ ...current, selectedPage: movePage(current.selectedPage, -1) }));
             else if (key.downArrow) setUi((current) => ({ ...current, selectedPage: movePage(current.selectedPage, 1) }));
-            else if (key.return) setUi((current) => ({ ...current, page: current.selectedPage, focus: "main" }));
+            else if (key.return) setUi((current) => ({ ...current, page: current.selectedPage, focus: "main", settingsIndex: current.selectedPage === "settings" ? 0 : current.settingsIndex }));
         }
     });
 
-    const content = renderView(ui.page, status, logs, ui.logOffset, visibleLogLines);
+    const showPendingRestart = pendingRestart || hasPendingRestart(status, config);
+    const content = renderView(ui.page, status, config, logs, ui.logOffset, visibleLogLines, ui.settingsIndex, showPendingRestart);
     if (columns < 60) {
         return <Box flexDirection="column" width={columns} height={rows}>
             <TopBar status={status} now={now} compact />
             <Box flexGrow={1} padding={2}><Text color="yellow">终端窗口过窄，请扩大窗口。</Text></Box>
-            <Footer focus={ui.focus} />
+            <Footer focus={ui.focus} settings={ui.page === "settings" && ui.focus === "main"} />
             <ModalLayer modal={ui.modal} columns={columns} />
         </Box>;
     }
@@ -187,7 +283,7 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
                 <Text dimColor>窗口高度不足，已启用简化显示。</Text>
                 <Text>{status.provider.model} · {status.activeCycles} 个活动周期 · {status.contextConversations} 个会话</Text>
             </Box>
-            <Footer focus={ui.focus} />
+            <Footer focus={ui.focus} settings={ui.page === "settings" && ui.focus === "main"} />
             <ModalLayer modal={ui.modal} columns={columns} />
         </Box>;
     }
@@ -200,7 +296,7 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
                 <Box flexGrow={1} minHeight={0}>{content}</Box>
             </Box>
         </Box>
-        <Footer focus={ui.focus} />
+        <Footer focus={ui.focus} settings={ui.page === "settings" && ui.focus === "main"} />
         <ModalLayer modal={ui.modal} columns={columns} />
     </Box>;
 }
@@ -243,7 +339,7 @@ export function receiveProviderError(current: TuiState, notice: ProviderErrorNot
     return { ...current, queuedProviderError: { notice, count } };
 }
 
-function renderView(page: TuiPage, status: RuntimeStatus, logs: readonly LogEntry[], offset: number, visibleLines: number): React.ReactNode {
+function renderView(page: TuiPage, status: RuntimeStatus, config: PublicConfig, logs: readonly LogEntry[], offset: number, visibleLines: number, settingsIndex: number, pendingRestart: boolean): React.ReactNode {
     switch (page) {
         case "overview": return <OverviewView status={status} />;
         case "model": return <ModelView status={status} />;
@@ -251,6 +347,109 @@ function renderView(page: TuiPage, status: RuntimeStatus, logs: readonly LogEntr
         case "memes": return <MemesView status={status} />;
         case "conversations": return <ConversationsView status={status} />;
         case "logs": return <LogsView logs={logs} offset={offset} visibleLines={visibleLines} />;
-        case "settings": return <SettingsView status={status} />;
+        case "settings": return <SettingsView status={status} config={config} selectedIndex={settingsIndex} pendingRestart={pendingRestart} />;
     }
+}
+
+const reasoningOptions: readonly ConfigOption[] = [
+    { value: "none", label: "关闭" },
+    { value: "low", label: "低" },
+    { value: "medium", label: "中" },
+    { value: "high", label: "高" },
+    { value: "xhigh", label: "极高" },
+];
+const verbosityOptions: readonly ConfigOption[] = [
+    { value: "low", label: "简洁" },
+    { value: "medium", label: "标准" },
+    { value: "high", label: "详细" },
+];
+const providerOptions: readonly ConfigOption[] = [
+    { value: "gpt", label: "GPT" },
+    { value: "deepseek", label: "DeepSeek" },
+];
+const logLevelOptions: readonly ConfigOption[] = [
+    { value: "debug", label: "调试" },
+    { value: "info", label: "信息" },
+    { value: "error", label: "错误" },
+];
+
+function configValue(config: PublicConfig, field: SettingsField): string {
+    switch (field) {
+        case "aiProvider": return providerLabel(config.aiProvider);
+        case "gpt.model": return config.gpt.model;
+        case "gpt.reasoningEffort": return reasoningLabel(config.gpt.reasoningEffort);
+        case "gpt.verbosity": return verbosityLabel(config.gpt.verbosity);
+        case "deepseek.model": return config.deepseek.model;
+        case "deepseek.reasoningEffort": return reasoningLabel(config.deepseek.reasoningEffort);
+        case "logLevel": return logLevelLabel(config.logLevel);
+        case "botLoopGuard.maxCycles": return String(config.botLoopGuard.maxCycles);
+    }
+}
+
+function displayPatchValue(patch: PublicConfigPatch): string {
+    switch (patch.field) {
+        case "aiProvider": return providerLabel(patch.value);
+        case "gpt.reasoningEffort":
+        case "deepseek.reasoningEffort": return reasoningLabel(patch.value);
+        case "gpt.verbosity": return verbosityLabel(patch.value);
+        case "logLevel": return logLevelLabel(patch.value);
+        default: return String(patch.value);
+    }
+}
+
+function optionPatch(field: ConfigSelectField, value: string): PublicConfigPatch {
+    switch (field) {
+        case "aiProvider": return { field, value: value as "gpt" | "deepseek" };
+        case "gpt.reasoningEffort": return { field, value: value as "none" | "low" | "medium" | "high" | "xhigh" };
+        case "gpt.verbosity": return { field, value: value as "low" | "medium" | "high" };
+        case "deepseek.reasoningEffort": return { field, value: value as "none" | "low" | "medium" | "high" | "xhigh" };
+        case "logLevel": return { field, value: value as "debug" | "info" | "error" };
+    }
+}
+
+export function textPatch(field: ConfigTextField, value: string): { value: PublicConfigPatch; error?: undefined } | { value?: undefined; error: string } {
+    if (field === "botLoopGuard.maxCycles" && !/^\d+$/.test(value.trim())) {
+        return { error: "自动账号连续交互上限必须是大于等于 1 的整数" };
+    }
+    const patch: PublicConfigPatch = field === "gpt.model"
+        ? { field, value }
+        : field === "deepseek.model"
+            ? { field, value }
+            : { field, value: Number(value.trim()) };
+    try {
+        validatePublicConfigPatch(patch);
+        return { value: patch };
+    } catch (error) {
+        return { error: error instanceof Error ? error.message : "配置值不符合要求" };
+    }
+}
+
+export function openConfigModal(field: SettingsField, config: PublicConfig): ModalState {
+    if (field === "aiProvider") return selectConfigModal(field, providerOptions, config.aiProvider);
+    if (field === "gpt.reasoningEffort") return selectConfigModal(field, reasoningOptions, config.gpt.reasoningEffort);
+    if (field === "deepseek.reasoningEffort") return selectConfigModal(field, reasoningOptions, config.deepseek.reasoningEffort);
+    if (field === "gpt.verbosity") return selectConfigModal(field, verbosityOptions, config.gpt.verbosity);
+    if (field === "logLevel") return selectConfigModal(field, logLevelOptions, config.logLevel);
+    if (field === "gpt.model") return textConfigModal(field, config.gpt.model);
+    if (field === "deepseek.model") return textConfigModal(field, config.deepseek.model);
+    return textConfigModal(field, String(config.botLoopGuard.maxCycles));
+}
+
+function selectConfigModal(field: ConfigSelectField, options: readonly ConfigOption[], rawValue: string): ModalState {
+    const index = Math.max(0, options.findIndex((option) => option.value === rawValue));
+    return { type: "config-select", field, title: `选择${settingsFieldLabel(field)}`, options, index };
+}
+
+function textConfigModal(field: ConfigTextField, value: string): ModalState {
+    return { type: "config-text", field, title: `修改${settingsFieldLabel(field)}`, value, cursor: value.length };
+}
+
+export function hasPendingRestart(status: RuntimeStatus, config: PublicConfig): boolean {
+    if (status.provider.id !== config.aiProvider) return true;
+    const active = status.provider.id === "gpt" ? config.gpt : config.deepseek;
+    if (status.provider.model !== active.model) return true;
+    if (status.provider.reasoningEffort !== active.reasoningEffort) return true;
+    if (status.provider.id === "gpt" && status.provider.verbosity !== config.gpt.verbosity) return true;
+    if (status.runtimeConfig && (status.runtimeConfig.logLevel !== config.logLevel || status.runtimeConfig.botLoopGuardMaxCycles !== config.botLoopGuard.maxCycles)) return true;
+    return false;
 }

@@ -5,6 +5,7 @@ import type { RuntimeStatus } from "../src/control/runtime-status.js";
 import { LogBuffer } from "../src/control/log-buffer.js";
 import { MAX_TUI_LOG_ENTRIES } from "../src/control/tenbot-control.js";
 import { logger, setConsoleLogOutputEnabled } from "../src/shared/logger.js";
+import type { PublicConfig } from "../src/config/config-types.js";
 
 const status: RuntimeStatus = {
     qq: "connected",
@@ -15,12 +16,21 @@ const status: RuntimeStatus = {
     prompt: { provider: "deepseek", revision: 1, loadedAt: "2026-01-01T00:00:00.000Z" },
     shuttingDown: false,
 };
+const config: PublicConfig = {
+    aiProvider: "deepseek",
+    gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: false },
+    deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
+    logLevel: "info",
+    botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
+};
 
 test("Control exposes only serializable Runtime status and supports subscriptions", async () => {
     let current = structuredClone(status);
     let shutdowns = 0;
     const control = createTenBotControl({
         getStatus: () => current,
+        getConfig: () => config,
+        async updateConfig() { return { ok: true, requiresRestart: true, changedFields: ["aiProvider"], message: "saved" }; },
         async reloadPrompt() { return { ok: true, message: "Prompt reloaded", loadedAt: "2026-01-01T00:00:00.000Z" }; },
         async reloadMemes() { return { ok: true, message: "Memes reloaded", loadedAt: "2026-01-01T00:00:00.000Z" }; },
         async shutdown() { shutdowns++; },

@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { TenBotControl, ReloadResult } from "../src/control/tenbot-control.js";
 import type { RuntimeStatus } from "../src/control/runtime-status.js";
+import type { PublicConfig } from "../src/config/config-types.js";
 import { handleTuiKey } from "../src/tui/key-handler.js";
 import { createProviderErrorNotice } from "../src/control/provider-error.js";
 import { connectionLabel, formatTuiLogText, reasoningLabel, verbosityLabel } from "../src/tui/i18n.js";
-import { closeModal, receiveProviderError } from "../src/tui/app.js";
-import { clampLogOffset, initialTuiState, moveSidebarSelection } from "../src/tui/state.js";
+import { closeModal, hasPendingRestart, openConfigModal, receiveProviderError, textPatch } from "../src/tui/app.js";
+import { clampLogOffset, initialTuiState, moveSettingsSelection, moveSidebarSelection } from "../src/tui/state.js";
 import { supportsInteractiveTui } from "../src/tui/terminal-check.js";
 
 function fakeControl(calls: string[], result: ReloadResult = { ok: true, message: "reloaded", loadedAt: "now" }): TenBotControl {
@@ -16,8 +17,17 @@ function fakeControl(calls: string[], result: ReloadResult = { ok: true, message
         memes: { count: 0, revision: 1, loadedAt: "now" },
         prompt: { provider: "gpt", revision: 1, loadedAt: "now" }, shuttingDown: false,
     };
+    const config: PublicConfig = {
+        aiProvider: "gpt",
+        gpt: { model: "test", reasoningEffort: "high", verbosity: "high", configured: false },
+        deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: false },
+        logLevel: "info",
+        botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
+    };
     return {
         getStatus: () => status,
+        getConfig: () => config,
+        async updateConfig() { return { ok: true, requiresRestart: true, changedFields: [], message: "saved" }; },
         subscribeStatus: () => () => undefined,
         subscribeLogs: () => () => undefined,
         subscribeEvents: () => () => undefined,
@@ -71,6 +81,51 @@ test("sidebar and log navigation clamp to usable bounds", () => {
     assert.equal(moveSidebarSelection("logs", 1, ["overview", "model", "logs"]), "logs");
     assert.equal(clampLogOffset(30, 20, 5), 15);
     assert.equal(clampLogOffset(-1, 20, 5), 0);
+    assert.equal(moveSettingsSelection(0, -1), 0);
+    assert.equal(moveSettingsSelection(0, 1, 3), 1);
+    assert.equal(moveSettingsSelection(2, 1, 3), 2);
+});
+
+test("settings select and text editors create safe patches without touching a real env", () => {
+    const config: PublicConfig = {
+        aiProvider: "gpt",
+        gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: false },
+        deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: false },
+        logLevel: "info",
+        botLoopGuard: { maxCycles: 4, automatedPeerCount: 2 },
+    };
+    const provider = openConfigModal("aiProvider", config);
+    assert.equal(provider.type, "config-select");
+    if (provider.type === "config-select") {
+        assert.deepEqual(provider.options.map((option) => option.value), ["gpt", "deepseek"]);
+        assert.equal(provider.index, 0);
+    }
+    const text = openConfigModal("gpt.model", config);
+    assert.equal(text.type, "config-text");
+    assert.equal(textPatch("gpt.model", "gpt-next").value?.field, "gpt.model");
+    assert.match(textPatch("botLoopGuard.maxCycles", "0").error ?? "", /大于等于/);
+    assert.equal(initialTuiState.modal.type, "none");
+});
+
+test("settings shows a pending restart when saved config differs from the running runtime", () => {
+    const status: RuntimeStatus = {
+        qq: "connected",
+        provider: { id: "gpt", model: "gpt-6-sol", webSearch: true, configured: true, reasoningEffort: "high", verbosity: "high" },
+        activeCycles: 0,
+        contextConversations: 0,
+        runtimeConfig: { logLevel: "info", botLoopGuardMaxCycles: 4 },
+        memes: { count: 0, revision: 1, loadedAt: "now" },
+        prompt: { provider: "gpt", revision: 1, loadedAt: "now" },
+        shuttingDown: false,
+    };
+    const config: PublicConfig = {
+        aiProvider: "deepseek",
+        gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: true },
+        deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
+        logLevel: "info",
+        botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
+    };
+    assert.equal(hasPendingRestart(status, config), true);
 });
 
 test("provider error notice is structured and redacts credentials and headers", () => {
