@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 import type { AiResult } from "../src/ai/reply-result.js";
+import type { ModelPlugin } from "../src/ai/model-plugin.js";
 import { buildAutoMemeContext } from "../src/skills/meme/skill.js";
 import { buildReplyCycleContext, recordIncomingMessageRevision, rememberIncomingMessage } from "../src/qq/conversation/recent-context.js";
 import { getConversationGeneration, isConversationActive, markConversationActive } from "../src/qq/conversation/engagement.js";
@@ -509,6 +510,25 @@ test("each restarted attempt gets an ordinary deadline, while timeout retry stay
     assert.equal(attempts[2].signal.aborted, true);
     assert.ok(elapsed >= 90 && elapsed < 350, "the post-interruption timeout retry gets its own ordinary deadline");
     assert.ok(calls.some((call) => call.content === AI_TIMEOUT_REPLY || (call.payload as any)?.markdown?.content === AI_TIMEOUT_REPLY));
+});
+
+test("Reply Coordinator runs a ModelPlugin stub without constructing a provider client", async () => {
+    const value = message(randomUUID(), "stub plugin");
+    commit(value);
+    const { bot, calls } = fakeBot();
+    let names: string[] = [];
+    const plugin: ModelPlugin = {
+        id: "offline-stub",
+        model: "stub-model",
+        capabilities: { webSearch: false },
+        async generate(request) {
+            names = request.tools.map((tool) => tool.name);
+            return reply("plugin result");
+        },
+    };
+    await coordinateAiReply(requestFor(bot, value), { modelPlugin: plugin, multiMessageDelayMs: 0 });
+    assert.deepEqual(names, ["qq_reply", "meme_lookup"]);
+    assert.equal(calls.some((call) => call.content === "plugin result" || (call.payload as any)?.markdown?.content === "plugin result"), true);
 });
 
 test("ordinary timeout retries once with a fresh snapshot and keeps engagement and anchor", async () => {

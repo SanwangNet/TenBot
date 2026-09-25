@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
-import { AI_MODEL, chat } from "../../ai/client.js";
+import { chat, runModelPlugin } from "../../ai/client.js";
+import { getModelPlugin } from "../../ai/model-registry.js";
+import type { ModelPlugin } from "../../ai/model-plugin.js";
 import type { AiResult } from "../../ai/reply-result.js";
 import { normalizeQQReplyAction, type QuotePreference } from "../../skills/qq-reply/skill.js";
 import { classifyUpstreamFailure } from "../../ai/upstream-error.js";
@@ -55,6 +57,7 @@ export interface ReplyRequest {
 }
 interface Dependencies {
     executeAi?: typeof chat;
+    modelPlugin?: ModelPlugin;
     timeoutMs?: number;
     webSearchTimeoutMs?: number;
     multiMessageDelayMs?: number;
@@ -68,6 +71,7 @@ interface Attempt {
     startedAt: number;
     deadlineAt: number;
     controller: AbortController;
+    modelPlugin: ModelPlugin;
     refs: Map<string, string>;
     hasUsedWebSearch: boolean;
     status: AttemptStatus;
@@ -158,7 +162,7 @@ function expireAttempt(cycle: Cycle, attempt: Attempt): void {
     clearAttemptTimer(attempt);
     attempt.controller.abort();
     resolveStop(attempt, "timeout");
-    logger.info("[AI] timeout request=" + shortId(attempt.requestId) + " attempt=" + attempt.attemptNumber +
+    logger.info("[AI] timeout provider=" + attempt.modelPlugin.id + " request=" + shortId(attempt.requestId) + " attempt=" + attempt.attemptNumber +
         " revision=" + attempt.snapshotRevision);
 }
 function armAttemptDeadline(cycle: Cycle, attempt: Attempt): void {
@@ -340,10 +344,11 @@ function startAttempt(cycle: Cycle, revision: number, refs: Map<string, string>)
         ? cycle.cycleStartedAt + (cycle.deps.webSearchTimeoutMs ?? AI_WEB_SEARCH_TIMEOUT_MS)
         : startedAt + (cycle.deps.timeoutMs ?? AI_REQUEST_TIMEOUT_MS);
     cycle.deadlineAt = deadlineAt;
+    const modelPlugin = cycle.deps.modelPlugin ?? getModelPlugin();
     const attempt: Attempt = {
         requestId: randomUUID(), attemptNumber: ++cycle.attemptNumber,
         snapshotRevision: revision, startedAt, deadlineAt,
-        controller: new AbortController(), refs, hasUsedWebSearch: false,
+        controller: new AbortController(), modelPlugin, refs, hasUsedWebSearch: false,
         status: "running", resolveStop: resolve, stop,
     };
     cycle.currentAttempt = attempt;
@@ -354,7 +359,8 @@ function startAttempt(cycle: Cycle, revision: number, refs: Map<string, string>)
     cycle.trailingUpdates = [];
     cycle.budgetLogged = false;
     armAttemptDeadline(cycle, attempt);
-    logger.info("[AI] start request=" + shortId(attempt.requestId) + " model=" + AI_MODEL +
+    logger.info("[AI] start provider=" + modelPlugin.id + " model=" + modelPlugin.model +
+        " request=" + shortId(attempt.requestId) +
         " attempt=" + attempt.attemptNumber + " snapshot=" + revision +
         " anchor=" + cycle.effectiveAnchor.revision);
     return attempt;
@@ -393,10 +399,14 @@ function webSearchCallback(request: ReplyRequest, cycle: Cycle, attempt: Attempt
 type WorkResult = { kind: "result"; value: AiResult } | { kind: "error"; error: unknown };
 type AttemptResult = WorkResult | { kind: StopReason };
 async function runAttempt(cycle: Cycle, request: ReplyRequest, input: AttemptInput, attempt: Attempt): Promise<AttemptResult> {
-    const execute = cycle.deps.executeAi ?? chat;
     const work: Promise<WorkResult> = Promise.resolve()
-        .then(() => execute(input.aiInput, { signal: attempt.controller.signal, imageUrls: input.imageUrls,
-            onWebSearchStart: webSearchCallback(request, cycle, attempt) }))
+        .then(() => {
+            const options = { signal: attempt.controller.signal, imageUrls: input.imageUrls,
+                onWebSearchStart: webSearchCallback(request, cycle, attempt) };
+            return cycle.deps.executeAi
+                ? cycle.deps.executeAi(input.aiInput, options)
+                : runModelPlugin(attempt.modelPlugin, input.aiInput, options);
+        })
         .then((value): WorkResult => {
             if (attempt.status === "running") {
                 attempt.status = "completed";
@@ -602,10 +612,10 @@ async function executeCycle(cycle: Cycle): Promise<void> {
                 cycle.consumedRevision = attempt.snapshotRevision;
                 const upstream = classifyUpstreamFailure(outcome.error);
                 if (upstream) {
-                    logger.info("[AI] upstream error status=" + (upstream.status ?? "unknown") + " retryable=yes");
+                    logger.info("[AI] upstream error provider=" + attempt.modelPlugin.id + " status=" + (upstream.status ?? "unknown") + " retryable=yes");
                     await sendFallback(request, cycle, AI_UPSTREAM_ERROR_REPLY, "upstream");
                 } else {
-                    logger.error("[AI] error", outcome.error);
+                    logger.error("[AI] error provider=" + attempt.modelPlugin.id, outcome.error);
                     await sendFailureNotice(request);
                 }
                 break;

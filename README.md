@@ -77,7 +77,9 @@ pnpm meme:update --limit 10
 
 脚本使用 `CODEX_API_KEY` 和 `CODEX_BASE_URL` 调用 Responses API、`web_search` 和严格结构化输出，查找梗的出处、含义及使用语境；Node 校验后合并写入 JSON。`--dry-run` 完成研究与校验，但不写文件。执行写入后，请人工查看 `git diff` 和来源，再决定是否提交。脚本不会执行 Git 操作。Bot 的本地命令不需要 AI 环境变量。
 
-AI 请求使用 Responses API 兼容后端。只有实际发起聊天请求时才读取 `CODEX_API_KEY` 和 `CODEX_BASE_URL`；本地命令不依赖 LLM 服务。
+TenBot 内置 GPT 和 DeepSeek 两个 Model Plugin，通过 `AI_PROVIDER` 选择，未设置时使用 GPT。它们是 TenBot 内部的模型适配层，不是第三方插件生态。两者分别加载自己的 Prompt；GPT 提供内建网页搜索，DeepSeek 当前不提供网页搜索，但仍可正常聊天并调用 `qq_reply` 和 `meme_lookup`。
+
+GPT 使用现有 Responses API 兼容地址配置；DeepSeek 使用独立的官方 Responses API 配置。只有实际发起聊天请求时才读取所选模型的密钥。本地 QQ 命令不依赖模型服务。
 
 ## 项目结构
 
@@ -93,7 +95,9 @@ src/
     reply/                AI 回复协调、渲染与 QQ 发送
     minecraft-status*.ts  Minecraft 状态回复
   skills/                 Minecraft、只读 Meme 与 QQ Reply 表达能力
-  ai/                     Responses API、输入和回复结果
+  ai/                     Runtime 输入/结果、模型注册和内建 Model Plugins
+    plugins/gpt/           GPT 适配和专属 Prompt
+    plugins/deepseek/      DeepSeek 适配和专属 Prompt
   shared/                 日志
   members/                MemberRepository、SQLite 与 D1 适配器
 migrations/               D1 成员表迁移 SQL
@@ -108,8 +112,13 @@ Command 是用户明确调用的 QQ 入口；Skill 是命令、按钮或 AI Tool
 | --- | --- |
 | `QQBOT_APP_ID` | QQ Bot 应用 ID |
 | `QQBOT_APP_SECRET` | QQ Bot 应用密钥 |
-| `CODEX_API_KEY` | AI 后端密钥；聊天与 `meme:update` 需要 |
-| `CODEX_BASE_URL` | Responses API 兼容后端地址；聊天与 `meme:update` 需要 |
+| `AI_PROVIDER` | 模型选择：`gpt` 或 `deepseek`；默认 `gpt` |
+| `CODEX_API_KEY` | GPT 后端密钥；GPT 聊天与 `meme:update` 需要 |
+| `CODEX_BASE_URL` | GPT Responses API 兼容地址；GPT 聊天与 `meme:update` 需要 |
+| `CODEX_MODEL` | 可选 GPT 模型名；默认 `gpt-6-sol` |
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 |
+| `DEEPSEEK_BASE_URL` | 可选 DeepSeek API 地址；默认 `https://api.deepseek.com` |
+| `DEEPSEEK_MODEL` | 可选 DeepSeek 模型名；默认 `deepseek-flash` |
 | `BOT_LOG_LEVEL` | 日志级别，支持 `info`、`debug`、`error` |
 
 将密钥放在本地 `.env`，不要提交真实值。`BOT_LOG_LEVEL=info` 适合日常运行；`BOT_LOG_LEVEL=debug` 会输出更多诊断信息。

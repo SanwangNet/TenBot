@@ -33,7 +33,7 @@ function sanitizeText(value: string): string {
         .replace(/\/(groups|users|members|files)\/[A-Za-z0-9_-]{6,}/gi, "/$1/[ID]")
         .replace(/\b[A-Za-z0-9_-]{24,}\b/g, (id) => `${id.slice(0, 6)}…`);
 
-    for (const secret of [process.env.QQBOT_APP_SECRET, process.env.CODEX_API_KEY]) {
+    for (const secret of [process.env.QQBOT_APP_SECRET, process.env.CODEX_API_KEY, process.env.DEEPSEEK_API_KEY]) {
         if (secret) {
             safe = safe.replaceAll(secret, "[REDACTED]");
         }
