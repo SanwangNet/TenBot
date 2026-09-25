@@ -74,7 +74,7 @@ export const qqReplyTool = {
     type: "function" as const,
     name: "qq_reply",
     description:
-        "表达最终 QQ 回复意图。messages 放 1～3 条，每条都有独立的 content 和 quote；mentions 是整次回复共享的已知群友昵称，仅第一条实际 @。每条 quote.auto 让系统按会话时序决定引用，quote.none 不引用；明确回答某条 QQ 消息时用 quote.message 和当前上下文的 [mN] ref。只能选当前上下文提供的 ref，不要在正文写 mN。不要填写 QQ ID 或腾讯 API 字段。若决定不回复，直接输出 <NO_REPLY>。",
+        "表达最终 QQ 回复意图。messages 放 1～3 条，每条都有独立的 content 和 quote；mentions 是整次回复共享的已知群友昵称，仅第一条实际 @。每条 quote 独立选择：auto 由系统按当前会话时序决定（发送延迟期间目标会冻结），none 表示不引用；如果一句话明显对应 Recent Context 中某条消息，优先用 quote.message 并填写对应 [mN]；只是自然补充时用 none；没有特定对象、但延迟发送时可能需要系统帮助避免语义漂移时用 auto。每条最多引用一个目标；想分别回应多条消息时拆成多条回复。只能选当前输入中实际展示的 [mN]，不可自造 mN、暴露或猜真实 QQ 消息 ID，也不要把 [mN] 写进正文。不要填写任何腾讯 API 字段。若决定不回复，直接输出 <NO_REPLY>。",
     strict: true,
     parameters: {
         type: "object",

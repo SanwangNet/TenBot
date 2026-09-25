@@ -48,7 +48,7 @@ flowchart TD
 
 每个 conversation 同时最多一个生成中的 AI Attempt。生成中的新消息会 abort 当前 Attempt 并重建最新上下文，每个 Cycle 最多三次中断；达到上限后新消息缓存到下一 Cycle。正常硬截止从 Cycle 开始计 30 秒；当 Responses 流实际发出 Web Search 事件时，该 Cycle 的截止时间升至同一起点后 120 秒。
 
-QQ Reply Skill 的 1～3 条回复可各自使用本次 Attempt 的临时 `[mN]` 标记选择引用目标；Node 在发送时映射到真实 QQ message reference，真实消息 ID 不进入模型输入。用户主动引用的 QQ 消息会尽量通过 SDK 的引用索引或事件中的引用内容显示给 AI；内容不可用时安全降级，不影响当前消息。
+QQ Reply Skill 每次可发送 1～3 条消息，每条独立选择 `auto`、`none` 或当前 Attempt 的临时 `[mN]` 引用目标；Node 在发送时映射到真实 QQ message reference，真实消息 ID 只由 Node 管理，不进入模型输入。`mentions` 仍只在第一条实际消息发送。用户主动引用的 QQ 消息会尽量通过 SDK 的引用索引或事件中的引用内容显示给 AI；内容不可用时安全降级，不影响当前消息。
 
 Meme Runtime 在启动时从名称和别名派生中文拼音、首字母检索键，支持中文、全拼、缩写、大小写及部分混合输入。检索区分强命中和弱候选；强命中优先给 AI `interactions` 常见接法，弱候选提示谨慎判断。派生键只留在内存，不写入 Meme 数据或提供给模型。
 

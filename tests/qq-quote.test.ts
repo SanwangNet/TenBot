@@ -193,6 +193,35 @@ test("attempt refs expose m1-m3 without transport IDs and can quote m2 or m3", a
     }
 });
 
+test("semantic anchor and ordinary context share the restarted attempt ref map", async () => {
+    const group = randomUUID();
+    const a = await normalizeQqMessage({}, inbound(group, "anchor-real", "A", "idx-A"));
+    const b = await normalizeQqMessage({}, inbound(group, "newer-real", "B", "idx-B"));
+    commit(a);
+    const { fake, calls } = bot();
+    let finishFirst!: (result: AiResult) => void;
+    let executions = 0;
+    const pending = coordinateAiReply(request(fake, a), {
+        executeAi: async (input) => {
+            executions++;
+            if (executions === 1) return await new Promise<AiResult>((resolve) => { finishFirst = resolve; });
+            assert.match(input, /本轮最初因这条消息开始考虑参与：\[m1\].*A/);
+            assert.match(input, /\[m2\].*B/);
+            return multi([
+                { content: "回应起因", quote: { mode: "message", ref: "m1" } },
+                { content: "回应新消息", quote: { mode: "message", ref: "m2" } },
+            ]);
+        }, multiMessageDelayMs: 0,
+    });
+    for (let i = 0; i < 20 && executions < 1; i++) await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.equal(executions, 1);
+    commit(b);
+    coordinateAiReply(request(fake, b));
+    finishFirst({ kind: "no_reply" });
+    await pending;
+    assert.deepEqual(calls.map((call) => call.payload?.messageReference?.message_id), ["anchor-real", "newer-real"]);
+});
+
 test("none suppresses delayed quote, auto keeps it, and unknown ref falls back without guessing", async () => {
     for (const [quote, expected] of [
         [{ mode: "none", ref: null }, false],
