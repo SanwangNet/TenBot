@@ -111,7 +111,11 @@ export async function normalizeQqMessage(
         displayContent: await resolveDisplayContent(content, mentions, groupId),
         groupId,
         author,
-        authorId: author?.id ?? author?.member_openid ?? author?.user_openid ?? message.senderId,
+        // The SDK maps QQ's stable member OpenID into senderId as well. Never
+        // infer a peer identity from display fields or an untyped author.id.
+        authorId: message.kind === "group"
+            ? stringField(author?.member_openid ?? author?.memberOpenid) ?? stringField(message.senderId)
+            : stringField(author?.user_openid ?? author?.userOpenid) ?? stringField(message.senderId),
         authorName: author?.username ?? raw?.author?.username ??
             author?.nickname ?? raw?.author?.nickname ?? message.senderName,
         authorIsBot: message.senderIsBot === true ||

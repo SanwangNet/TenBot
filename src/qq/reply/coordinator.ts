@@ -7,6 +7,11 @@ import type { AiResult } from "../../ai/reply-result.js";
 import { normalizeQQReplyAction, type QuotePreference } from "../../skills/qq-reply/skill.js";
 import { classifyUpstreamFailure } from "../../ai/upstream-error.js";
 import { logger, shortId } from "../../shared/logger.js";
+import {
+    automatedPeerLoopGuard,
+    BOT_LOOP_GUARD_NOTICE,
+    type AutomatedPeerLoopGuard,
+} from "../conversation/automated-peer.js";
 import { getConversationKey, getMessageRevision, rememberBotReply, removeMessageFromContext } from "../conversation/recent-context.js";
 import { getConversationGeneration, isConversationActive, markConversationActive, stopConversation } from "../conversation/engagement.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
@@ -55,13 +60,15 @@ export interface ReplyRequest {
     shouldStartCycle?: boolean;
     buildAttempt?: (message: NormalizedQqMessage, context: AttemptBuildContext) => Promise<AttemptInput>;
 }
-interface Dependencies {
+export interface ReplyCoordinatorDependencies {
     executeAi?: typeof chat;
     modelPlugin?: ModelPlugin;
     timeoutMs?: number;
     webSearchTimeoutMs?: number;
     multiMessageDelayMs?: number;
+    botLoopGuard?: AutomatedPeerLoopGuard;
 }
+type Dependencies = ReplyCoordinatorDependencies;
 type AttemptStatus = "running" | "interrupted" | "completed" | "sending" | "timed_out" | "cancelled" | "failed";
 type StopReason = "interrupted" | "timeout" | "cancelled";
 interface Attempt {
@@ -373,6 +380,15 @@ async function sendFailureNotice(request: ReplyRequest): Promise<void> {
     try { await request.bot.sendText(request.message.replyTarget, AI_ERROR_REPLY); }
     catch (error) { logger.error("[QQ] send error", error); }
 }
+async function sendBotLoopNotice(request: ReplyRequest): Promise<void> {
+    try {
+        await request.bot.sendText(request.message.replyTarget, BOT_LOOP_GUARD_NOTICE);
+        rememberBotReply(request.message, BOT_LOOP_GUARD_NOTICE);
+        logger.info("[BotLoop] local notice sent");
+    } catch (error) {
+        logger.error("[BotLoop] local notice send error", error);
+    }
+}
 function cycleReplyMessage(cycle: Cycle, request: ReplyRequest): NormalizedQqMessage {
     return cycle.anchorMessageId ? { ...request.message, id: cycle.anchorMessageId } : request.message;
 }
@@ -546,9 +562,7 @@ function finishCycle(cycle: Cycle): void {
             triggerPriority: priority, isAtBot: atBot, mentionedByName: name,
             triggerKind: kindOf(priority, request.isGroup),
             allowNoReply: request.isGroup && priority < 3 };
-        const next = createCycle(followup, cycle.deps, priority, trailingUpdates);
-        logger.info("[Cycle] next id=" + shortId(next.cycleId));
-        void executeCycle(next);
+        void startNewCycle(followup, cycle.deps, priority, trailingUpdates, true);
     });
 }
 async function executeCycle(cycle: Cycle): Promise<void> {
@@ -645,7 +659,19 @@ export function coordinateAiReply(request: ReplyRequest, dependencies: Dependenc
         return active.done;
     }
     if (request.shouldStartCycle === false) return Promise.resolve();
-    const cycle = createCycle(request, dependencies, priorityOf(request));
+    return startNewCycle(request, dependencies, priorityOf(request));
+}
+
+function startNewCycle(request: ReplyRequest, dependencies: Dependencies, priority: TriggerPriority,
+    trailingUpdates: readonly TrailingUpdate[] = [], isTrailing = false): Promise<void> {
+    const decision = (dependencies.botLoopGuard ?? automatedPeerLoopGuard).beforeNewCycle(
+        getConversationKey(request.message), request.message.authorId, request.message.authorName,
+    );
+    if (!decision.allowed) {
+        return decision.sendNotice ? sendBotLoopNotice(request) : Promise.resolve();
+    }
+    const cycle = createCycle(request, dependencies, priority, trailingUpdates);
+    if (isTrailing) logger.info("[Cycle] next id=" + shortId(cycle.cycleId));
     void executeCycle(cycle);
     return cycle.done;
 }

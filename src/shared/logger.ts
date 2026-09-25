@@ -93,6 +93,13 @@ export function truncateLogText(value: string, maxLength = 160): string {
     return safe.length > maxLength ? `${safe.slice(0, maxLength)}…` : safe;
 }
 
+/** A full peer ID is emitted only in explicit debug mode so it can be registered. */
+export function debugPeerIdentity(authorName: string | undefined, stableId: string | undefined): void {
+    if (logLevel !== "debug" || !stableId) return;
+    const id = stableId.length <= 256 ? JSON.stringify(stableId) : "[invalid-id]";
+    console.log(`[${timestamp()}] [Peer] author=${JSON.stringify(truncateLogText(authorName || "未知成员", 60))} id=${id}`);
+}
+
 export function shortId(value: string | undefined, length = 6): string {
     if (!value) {
         return "unknown";

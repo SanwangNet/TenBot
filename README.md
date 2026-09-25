@@ -120,8 +120,12 @@ Command 是用户明确调用的 QQ 入口；Skill 是命令、按钮或 AI Tool
 | `DEEPSEEK_BASE_URL` | 可选 DeepSeek API 地址；默认 `https://api.deepseek.com` |
 | `DEEPSEEK_MODEL` | 可选 DeepSeek 模型名；默认 `deepseek-flash` |
 | `BOT_LOG_LEVEL` | 日志级别，支持 `info`、`debug`、`error` |
+| `AUTOMATED_PEER_IDS` | 逗号分隔的已登记自动化 QQ 群成员稳定 ID（`member_openid`） |
+| `BOT_LOOP_GUARD_MAX_CYCLES` | 每个会话允许连续触发的自动账号 AI Cycle 数；默认 `4`，最小 `1` |
 
 将密钥放在本地 `.env`，不要提交真实值。`BOT_LOG_LEVEL=info` 适合日常运行；`BOT_LOG_LEVEL=debug` 会输出更多诊断信息。
+
+只按稳定群成员 ID（`member_openid`）匹配，不按昵称或推测的 Bot 行为识别。设置 `AUTOMATED_PEER_IDS=id1,id2` 后重启 TenBot。需要查询 ID 时，临时设置 `BOT_LOG_LEVEL=debug`，从 `[Peer]` 身份日志复制完整 ID，然后恢复为 `info`。达到每会话 Cycle 上限后会停止 AI 调用，直到收到未登记的真人消息。计数只保存在内存中，TenBot 重启后清零。
 
 ## 安装与开发
 

@@ -8,14 +8,19 @@ import { routeCommand } from "../../commands/router.js";
 import { projectMemeCandidates } from "../../skills/meme/projection.js";
 import { searchAutoMemeCandidates } from "../../skills/meme/skill.js";
 import type { MemeSearchQuery } from "../../skills/meme/search.js";
-import { logger, shortId, truncateLogText } from "../../shared/logger.js";
+import { debugPeerIdentity, logger, shortId, truncateLogText } from "../../shared/logger.js";
 import {
     buildReplyCycleSnapshot,
+    getConversationKey,
     getRecentImages,
     rememberIncomingMessage,
     recordIncomingMessageRevision,
 } from "../conversation/recent-context.js";
 import { isConversationActive } from "../conversation/engagement.js";
+import {
+    automatedPeerLoopGuard,
+    type AutomatedPeerLoopGuard,
+} from "../conversation/automated-peer.js";
 import { buildKnownMembersContext, rememberKnownMember } from "../conversation/known-members.js";
 import { normalizeQqMessage } from "../message/normalize-message.js";
 import { decideMessageTrigger, isOnlyQQFace, wantsVision } from "../message/trigger.js";
@@ -44,10 +49,16 @@ function summarizeMessage(input: string, imageAttachments: any[]): string {
     return "[\u56fe\u7247 x" + imageAttachments.length + "]";
 }
 
-export function registerMessageHandler(bot: QQBot): void {
+export function registerMessageHandler(bot: QQBot, loopGuard: AutomatedPeerLoopGuard = automatedPeerLoopGuard): void {
     bot.on("message", async (context, message: QQBotInboundMessage) => {
         const normalized = await normalizeQqMessage(context, message);
-        if (normalized.authorIsBot) return;
+        debugPeerIdentity(normalized.authorName, normalized.authorId);
+        const isAutomatedPeer = loopGuard.isAutomatedPeer(normalized.authorId);
+        // QQ's bot flag is not reliable membership policy; unregistered IDs fail open as human activity.
+
+        const conversationKey = getConversationKey(normalized);
+        if (isAutomatedPeer) loopGuard.observeAutomatedPeerMessage(conversationKey);
+        else loopGuard.resetByHumanMessage(conversationKey, normalized.authorName);
 
         // Learn members and route native commands before they can affect an AI cycle.
         await rememberKnownMember(normalized);
@@ -173,6 +184,6 @@ export function registerMessageHandler(bot: QQBot): void {
                 );
                 return { aiInput, imageUrls: useVision ? recentImageUrls : [], refs: snapshot.refs };
             },
-        });
+        }, { botLoopGuard: loopGuard });
     });
 }
