@@ -11,7 +11,7 @@ TenBot 是 SanWang 内部使用的 QQ Bot，使用 TypeScript、Node.js 和 QQ �
 - **网络梗知识**：本地 memes.json 支持中文、别名、拼音和首字母模糊检索。自动检索最多提供 3 个候选，由模型结合聊天上下文判断是否使用；模型也可调用只读 meme_lookup 查询详情。
 - **自动账号防循环**：可按稳定群成员 ID 登记自动化账号。每个会话连续由登记账号启动的 AI Cycle 默认最多 4 次；达到限制后暂停 AI 调用，收到未登记成员的消息后重置。
 - **Minecraft 状态**：/mc 命令、状态卡刷新按钮和 AI 的 Minecraft 状态查询共用同一查询能力。
-- **本地 TUI**：查看连接状态、Provider、运行计数和日志；可热加载当前 Prompt 与 Meme 数据。
+- **本地全屏 TUI**：以 alternate screen 接管终端，查看运行状态、模型、Prompt、Meme、对话和日志；退出后恢复原来的终端内容。
 
 ## 安装与配置
 
@@ -56,18 +56,26 @@ DEEPSEEK_BASE_URL 可选，默认值为 https://api.deepseek.com；DEEPSEEK_MODE
 
     pnpm tui
 
+TUI 是纯键盘的中文全屏控制台，支持 PowerShell 和 WebStorm Terminal。进入后使用左侧导航和右侧主内容区；退出时会恢复普通终端和光标。
+
 TUI 快捷键：
 
 | 按键 | 操作 |
 | --- | --- |
-| p | 重载当前 Provider 的 Prompt |
-| m | 重载 memes.json |
-| r | 同时重载 Prompt 和 Meme 数据 |
-| q 或 Ctrl+C | 优雅关闭 TenBot |
-| Page Up / Page Down | 查看较早或较新的日志 |
-| End | 回到最新日志 |
+| ↑ / ↓ | 移动侧栏选择；日志页中逐行查看 |
+| Enter | 打开页面；确认弹窗操作 |
+| Esc | 返回侧栏；关闭或返回弹窗 |
+| P | 重载当前模型提供商的 Prompt |
+| M | 重载 memes.json |
+| R | 弹出确认后同时重载 Prompt 和 Meme 数据 |
+| ? | 打开帮助 |
+| PageUp / PageDown | 日志翻页 |
+| Home / End | 日志跳到最早 / 最新 |
+| Q 或 Ctrl+C | 优雅关闭 TenBot |
 
-TUI 与 QQ Runtime 在同一进程运行，通过 TenBotControl 读取可序列化状态、订阅日志并执行重载与关闭。当前没有 HTTP API 或 WebSocket 服务。
+TUI 与 QQ Runtime 在同一进程运行，通过 TenBotControl 读取可序列化状态、订阅日志和 Runtime event，并执行重载与关闭。Prompt 和 Meme 仍由外部编辑器维护，TUI 只负责查看、热加载和显示状态；当前不支持鼠标，也不支持运行时切换 Provider。当前没有 HTTP API 或 WebSocket 服务。
+
+如果当前 stdin 或 stdout 不是 TTY，`pnpm tui` 会显示中文提示并正常退出，请使用普通终端或运行 `pnpm dev`。
 
 ## QQ 命令
 

@@ -7,6 +7,7 @@ import type { AiResult } from "../../ai/reply-result.js";
 import type { MemeRuntimeSnapshot } from "../../skills/meme/store.js";
 import { normalizeQQReplyAction, type QuotePreference } from "../../skills/qq-reply/skill.js";
 import { classifyUpstreamFailure } from "../../ai/upstream-error.js";
+import { ModelProviderError } from "../../ai/model-plugin.js";
 import { logger, shortId } from "../../shared/logger.js";
 import {
     automatedPeerLoopGuard,
@@ -68,6 +69,26 @@ export interface ReplyCoordinatorDependencies {
     webSearchTimeoutMs?: number;
     multiMessageDelayMs?: number;
     botLoopGuard?: AutomatedPeerLoopGuard;
+}
+
+export interface ProviderErrorSignal {
+    provider: string;
+    model: string;
+    error: unknown;
+}
+
+type ProviderErrorListener = (signal: ProviderErrorSignal) => void;
+const providerErrorListeners = new Set<ProviderErrorListener>();
+
+export function subscribeProviderErrors(listener: ProviderErrorListener): () => void {
+    providerErrorListeners.add(listener);
+    return () => providerErrorListeners.delete(listener);
+}
+
+function publishProviderError(signal: ProviderErrorSignal): void {
+    for (const listener of providerErrorListeners) {
+        try { listener(signal); } catch { /* Observers must not change Reply Cycle behavior. */ }
+    }
 }
 type Dependencies = ReplyCoordinatorDependencies;
 type AttemptStatus = "running" | "interrupted" | "completed" | "sending" | "timed_out" | "cancelled" | "failed";
@@ -628,6 +649,9 @@ async function executeCycle(cycle: Cycle): Promise<void> {
                 attempt.status = "failed";
                 cycle.consumedRevision = attempt.snapshotRevision;
                 const upstream = classifyUpstreamFailure(outcome.error);
+                if (outcome.error instanceof ModelProviderError || upstream) {
+                    publishProviderError({ provider: attempt.modelPlugin.id, model: attempt.modelPlugin.model, error: outcome.error });
+                }
                 if (upstream) {
                     logger.info("[AI] upstream error provider=" + attempt.modelPlugin.id + " status=" + (upstream.status ?? "unknown") + " retryable=yes");
                     await sendFallback(request, cycle, AI_UPSTREAM_ERROR_REPLY, "upstream");

@@ -83,6 +83,10 @@ test("GPT declares built-in web search while DeepSeek omits it and still complet
     const deepseek = createDeepSeekPlugin({ apiKey: "offline" });
     assert.equal(gpt.capabilities.webSearch, true);
     assert.equal(deepseek.capabilities.webSearch, false);
+    assert.equal(gpt.reasoningEffort, "high");
+    assert.equal(gpt.verbosity, "high");
+    assert.equal(deepseek.reasoningEffort, "high");
+    assert.equal(deepseek.verbosity, undefined);
     await withResponses([sse([messageText("GPT")]), sse([messageText("DeepSeek")])], async (bodies) => {
         const gptResult = await gpt.generate(pluginRequest(), options());
         const deepseekResult = await deepseek.generate(pluginRequest(), options());

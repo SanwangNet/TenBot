@@ -13,7 +13,7 @@ export async function handleTuiKey(
 ): Promise<void> {
     if (input === "q" || (key.ctrl && input.toLowerCase() === "c")) {
         try { await control.shutdown(); }
-        catch { report("Shutdown reported an error"); }
+        catch { report("关闭时发生异常"); }
         finally { quit(); }
         return;
     }
@@ -26,9 +26,9 @@ export async function handleTuiKey(
             report(result.message);
         } else if (input === "r") {
             const [prompt, memes] = await Promise.all([control.reloadPrompt(), control.reloadMemes()]);
-            report(prompt.ok && memes.ok ? "Runtime data reloaded" : "One reload failed; its previous data was kept");
+            report(prompt.ok && memes.ok ? "提示词和梗数据已重载" : "部分重载失败；已保留旧版本");
         }
     } catch {
-        report("Reload failed; previous data kept");
+        report("重载失败；已保留旧版本");
     }
 }

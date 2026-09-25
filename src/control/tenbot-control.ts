@@ -1,12 +1,13 @@
 import type { PromptProvider } from "../ai/prompt-store.js";
 import type { LogEntry, LogListener } from "../shared/logger.js";
+import type { RuntimeEvent, RuntimeEventListener } from "./runtime-event.js";
 import type { RuntimeStatus } from "./runtime-status.js";
 
 export const MAX_TUI_LOG_ENTRIES = 400;
 
 export type ReloadResult =
-    | { ok: true; message: string; loadedAt: string }
-    | { ok: false; message: string };
+    | { ok: true; message: string; loadedAt: string; revision?: number; count?: number }
+    | { ok: false; message: string; details?: string };
 
 export type StatusListener = (status: RuntimeStatus) => void;
 
@@ -14,6 +15,7 @@ export interface TenBotControl {
     getStatus(): RuntimeStatus;
     subscribeStatus(listener: StatusListener): () => void;
     subscribeLogs(listener: LogListener): () => void;
+    subscribeEvents(listener: RuntimeEventListener): () => void;
     reloadPrompt(provider?: PromptProvider): Promise<ReloadResult>;
     reloadMemes(): Promise<ReloadResult>;
     shutdown(): Promise<void>;
@@ -28,8 +30,12 @@ export interface TenBotControlOperations {
 }
 
 /** Keeps UI-facing data and operations separate from Runtime implementation objects. */
-export function createTenBotControl(operations: TenBotControlOperations): TenBotControl & { publishStatus(): void } {
+export function createTenBotControl(operations: TenBotControlOperations): TenBotControl & {
+    publishStatus(): void;
+    publishEvent(event: RuntimeEvent): void;
+} {
     const statusListeners = new Set<StatusListener>();
+    const eventListeners = new Set<RuntimeEventListener>();
     const getStatus = (): RuntimeStatus => structuredClone(operations.getStatus());
 
     return {
@@ -40,6 +46,10 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
             return () => statusListeners.delete(listener);
         },
         subscribeLogs: (listener) => operations.subscribeLogs(listener),
+        subscribeEvents(listener) {
+            eventListeners.add(listener);
+            return () => eventListeners.delete(listener);
+        },
         async reloadPrompt(provider) {
             const result = await operations.reloadPrompt(provider);
             this.publishStatus();
@@ -55,6 +65,11 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
             const status = getStatus();
             for (const listener of statusListeners) {
                 try { listener(status); } catch { /* UI listeners cannot block Runtime work. */ }
+            }
+        },
+        publishEvent(event: RuntimeEvent) {
+            for (const listener of eventListeners) {
+                try { listener(structuredClone(event)); } catch { /* UI listeners cannot block Runtime work. */ }
             }
         },
     };

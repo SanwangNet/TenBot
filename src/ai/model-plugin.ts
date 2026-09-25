@@ -6,6 +6,9 @@ export interface ModelCapabilities {
     webSearch: boolean;
 }
 
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
+export type ModelVerbosity = "low" | "medium" | "high";
+
 export interface ModelToolDefinition {
     type: "function";
     name: string;
@@ -47,6 +50,9 @@ export interface ModelPlugin {
     readonly id: string;
     readonly model: string;
     readonly capabilities: Readonly<ModelCapabilities>;
+    /** Read-only provider metadata for control surfaces; it does not change generate(). */
+    readonly reasoningEffort?: ReasoningEffort;
+    readonly verbosity?: ModelVerbosity;
     generate(request: ModelRequest, options: ModelGenerateOptions): Promise<ModelResult>;
 }
 

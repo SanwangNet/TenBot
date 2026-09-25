@@ -4,6 +4,7 @@ import { getModelPlugin } from "./ai/model-registry.js";
 import type { ModelPlugin } from "./ai/model-plugin.js";
 import { getPromptStore, type PromptProvider } from "./ai/prompt-store.js";
 import { createTenBotControl, type ReloadResult, type TenBotControl } from "./control/tenbot-control.js";
+import { createProviderErrorNotice } from "./control/provider-error.js";
 import type { RuntimeStatus } from "./control/runtime-status.js";
 import { LogBuffer } from "./control/log-buffer.js";
 import { SqliteMemberRepository } from "./members/sqlite-repository.js";
@@ -11,7 +12,7 @@ import { MemoryMemberRepository } from "./members/memory-repository.js";
 import { createQqBot, type QqConnectionState } from "./qq/bot.js";
 import { configureMemberRepository } from "./qq/conversation/known-members.js";
 import { getRecentContextConversationCount } from "./qq/conversation/recent-context.js";
-import { getActiveReplyCycleCount, shutdownReplyCoordinator } from "./qq/reply/coordinator.js";
+import { getActiveReplyCycleCount, shutdownReplyCoordinator, subscribeProviderErrors } from "./qq/reply/coordinator.js";
 import { getMemeRuntimeSnapshot, loadMemeRuntime, reloadMemes as reloadMemeData } from "./skills/meme/skill.js";
 import { logger, setConsoleLogOutputEnabled } from "./shared/logger.js";
 
@@ -49,6 +50,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     let memberRepository: SqliteMemberRepository | undefined;
 
     let control: ReturnType<typeof createTenBotControl> | undefined;
+    let unsubscribeProviderErrors: () => void = () => undefined;
     let bot: ReturnType<typeof createQqBot>;
     try {
         bot = createQqBot((state) => {
@@ -78,11 +80,31 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             : Boolean(process.env.DEEPSEEK_API_KEY);
         return {
             qq: qqState,
-            provider: { id: provider, model: model.model, webSearch: model.capabilities.webSearch, configured },
+            provider: {
+                id: provider,
+                model: model.model,
+                webSearch: model.capabilities.webSearch,
+                configured,
+                reasoningEffort: model.reasoningEffort,
+                verbosity: model.verbosity,
+            },
             activeCycles: getActiveReplyCycleCount(),
             contextConversations: getRecentContextConversationCount(),
-            memes: { count: memes.entries.length, revision: memes.revision, loadedAt: memes.loadedAt },
-            prompt: { provider, revision: prompt.revision, loadedAt: prompt.loadedAt },
+            memes: {
+                count: memes.entries.length,
+                revision: memes.revision,
+                loadedAt: memes.loadedAt,
+                path: "src/skills/meme/data/memes.json",
+                sampleNames: memes.entries.slice(0, 5).map((entry) => entry.name),
+            },
+            prompt: {
+                provider,
+                revision: prompt.revision,
+                loadedAt: prompt.loadedAt,
+                path: `src/ai/plugins/${provider}/prompt.md`,
+                characters: prompt.content.length,
+                lines: prompt.content.split(/\r?\n/).length,
+            },
             shuttingDown,
         };
     };
@@ -95,7 +117,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             try {
                 const prompt = await promptStore.reload(target);
                 logger.info(`[Control] prompt reloaded provider=${target} revision=${prompt.revision}`);
-                return { ok: true, message: "Prompt reloaded", loadedAt: prompt.loadedAt };
+                return { ok: true, message: "Prompt reloaded", loadedAt: prompt.loadedAt, revision: prompt.revision };
             } catch (error) {
                 logger.error(`[Control] prompt reload failed provider=${target}`, error);
                 return { ok: false, message: "Prompt reload failed; keeping the previous version" };
@@ -105,7 +127,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             try {
                 const memes = await reloadMemeData();
                 logger.info(`[Control] memes reloaded count=${memes.entries.length} revision=${memes.revision}`);
-                return { ok: true, message: "Memes reloaded", loadedAt: memes.loadedAt };
+                return { ok: true, message: "Memes reloaded", loadedAt: memes.loadedAt, revision: memes.revision, count: memes.entries.length };
             } catch (error) {
                 logger.error("[Control] Meme reload failed; keeping the previous version", error);
                 return { ok: false, message: "Meme reload failed; keeping the previous version" };
@@ -127,12 +149,20 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                     qqState = "disconnected";
                     control?.publishStatus();
                     clearInterval(statusTimer);
+                    unsubscribeProviderErrors();
                     logs.dispose();
                     setConsoleLogOutputEnabled(true);
                 }
             })();
             return shutdownPromise;
         },
+    });
+
+    unsubscribeProviderErrors = subscribeProviderErrors((signal) => {
+        control?.publishEvent({
+            type: "provider-error",
+            notice: createProviderErrorNotice(signal.provider, signal.model, signal.error),
+        });
     });
 
     let lastStatus = JSON.stringify(status());

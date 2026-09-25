@@ -59,6 +59,8 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
         id: config.id,
         model: config.model,
         capabilities: config.capabilities,
+        reasoningEffort: config.reasoningEffort,
+        verbosity: config.verbosity,
         async generate(request, options) {
             if (options.signal.aborted) throw new ModelAbortedError();
             logger.debug("[AI input length]", request.input.length);

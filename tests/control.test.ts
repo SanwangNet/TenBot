@@ -39,6 +39,14 @@ test("Control exposes only serializable Runtime status and supports subscription
     current.qq = "error";
     control.publishStatus();
     assert.deepEqual(observed, ["connected", "disconnected"]);
+    const events: string[] = [];
+    const unsubscribeEvent = control.subscribeEvents((event) => events.push(event.notice.provider));
+    control.publishEvent({
+        type: "provider-error",
+        notice: { provider: "deepseek", model: "deepseek-flash", status: 503, retryable: true, message: "暂时不可用", timestamp: "now" },
+    });
+    unsubscribeEvent();
+    assert.deepEqual(events, ["deepseek"]);
     await control.shutdown();
     assert.equal(shutdowns, 1);
 });
