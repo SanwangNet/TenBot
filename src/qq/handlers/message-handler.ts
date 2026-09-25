@@ -54,6 +54,7 @@ export function registerMessageHandler(
     bot: QQBot,
     loopGuard: AutomatedPeerLoopGuard = automatedPeerLoopGuard,
     observePeer?: (message: NormalizedQqMessage) => void,
+    observeConversationMessage?: (message: NormalizedQqMessage) => void,
 ): void {
     bot.on("message", async (context, message: QQBotInboundMessage) => {
         const normalized = await normalizeQqMessage(context, message);
@@ -115,6 +116,8 @@ export function registerMessageHandler(
         // Filtered QQ faces and local commands never increment revision or interrupt generation.
         const revision = recordIncomingMessageRevision(normalized);
         rememberIncomingMessage(normalized, input);
+        try { observeConversationMessage?.(normalized); }
+        catch { /* Timeline observation must not change message handling. */ }
         logger.debug("[Cycle] inbound revision=" + revision);
 
         if (!input && hasImages) {

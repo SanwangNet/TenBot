@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx src/main.ts",
     "tui": "tsx src/tui/main.tsx",
-    "test": "tsx --test tests/reply-pipeline.test.ts tests/reply-cycle.test.ts tests/qq-quote.test.ts tests/commands.test.ts tests/members.test.ts tests/citations.test.ts tests/meme.test.ts tests/meme-auto.test.ts tests/meme-search.test.ts tests/meme-response.test.ts tests/model-plugin.test.ts tests/automated-peer.test.ts tests/config.test.ts tests/control.test.ts tests/prompt-store.test.ts tests/meme-reload.test.ts tests/runtime-shutdown.test.ts tests/tui.test.ts",
+    "test": "tsx --test tests/reply-pipeline.test.ts tests/reply-cycle.test.ts tests/qq-quote.test.ts tests/commands.test.ts tests/members.test.ts tests/citations.test.ts tests/meme.test.ts tests/meme-auto.test.ts tests/meme-search.test.ts tests/meme-response.test.ts tests/model-plugin.test.ts tests/automated-peer.test.ts tests/config.test.ts tests/control.test.ts tests/prompt-store.test.ts tests/meme-reload.test.ts tests/runtime-shutdown.test.ts tests/tui.test.ts tests/hot-reload.test.ts",
     "meme:update": "tsx scripts/meme-update.ts"
   },
   "keywords": [],

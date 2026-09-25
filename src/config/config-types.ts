@@ -4,6 +4,10 @@ import type { LogLevel } from "../shared/logger.js";
 export type ModelProviderId = "gpt" | "deepseek";
 
 export interface AppConfig {
+    qq: {
+        appId?: string;
+        appSecret?: string;
+    };
     ai: {
         provider: ModelProviderId;
         gpt: {
@@ -79,6 +83,9 @@ export type AutomatedPeerConfigResult =
     | { ok: false; changed: false; peerIds: string[]; message: string; details?: string };
 
 export interface ConfigStore {
+    /** Internal Runtime input; never exposed through TenBotControl. */
+    getAppConfig(): AppConfig;
+    getEnvPath(): string;
     getPublicConfig(): PublicConfig;
     updatePublicConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
     getAutomatedPeerIds(): string[];

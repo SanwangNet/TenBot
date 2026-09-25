@@ -4,8 +4,10 @@ import { createTenBotControl } from "../src/control/tenbot-control.js";
 import type { RuntimeStatus } from "../src/control/runtime-status.js";
 import { LogBuffer } from "../src/control/log-buffer.js";
 import { MAX_TUI_LOG_ENTRIES } from "../src/control/tenbot-control.js";
-import { logger, setConsoleLogOutputEnabled } from "../src/shared/logger.js";
+import { getLogLevel, logger, setConsoleLogOutputEnabled, setLogLevel, subscribeLogs } from "../src/shared/logger.js";
 import type { PublicConfig } from "../src/config/config-types.js";
+import { ConversationTimelineStore } from "../src/control/conversation-timeline.js";
+import { toConversationIdentity } from "../src/control/conversation-identity.js";
 
 const status: RuntimeStatus = {
     qq: "connected",
@@ -98,4 +100,46 @@ test("plain logger mode continues to write to console", () => {
     try { logger.error("plain sink check"); }
     finally { console.error = previousConsole; }
     assert.match(output, /plain sink check/);
+});
+
+test("logger level can change at runtime and affects plain and subscribed logs", () => {
+    const previousLevel = getLogLevel();
+    const previousConsole = console.error;
+    const entries: string[] = [];
+    const unsubscribe = subscribeLogs((entry) => entries.push(entry.text));
+    console.error = () => undefined;
+    try {
+        setLogLevel("error");
+        logger.info("hidden after hot reload");
+        logger.error("visible after hot reload");
+        assert.deepEqual(entries, ["visible after hot reload"]);
+        assert.equal(logger.level, "error");
+    } finally {
+        unsubscribe();
+        setLogLevel(previousLevel);
+        console.error = previousConsole;
+    }
+});
+
+test("conversation timeline keeps interrupted attempts and bounds per-conversation history", () => {
+    const store = new ConversationTimelineStore(2, 3);
+    const event = (item: Parameters<ConversationTimelineStore["append"]>[0]["item"]): Parameters<ConversationTimelineStore["append"]>[0] => ({
+        type: "conversation-item", conversationId: "c-a", label: "群 A", item,
+    });
+    store.append(event({ id: "attempt:a1", type: "ai-attempt", cycleId: "cycle-1", attemptId: "a1", timestamp: "1", status: "generating" }));
+    store.append(event({ id: "message:1", type: "group-message", displayName: "成员", content: "消息", timestamp: "2" }));
+    store.append(event({ id: "attempt:a1", type: "ai-attempt", cycleId: "cycle-1", attemptId: "a1", timestamp: "3", status: "interrupted" }));
+    store.append(event({ id: "attempt:a2", type: "ai-attempt", cycleId: "cycle-1", attemptId: "a2", timestamp: "4", status: "generating" }));
+    const items = store.get("c-a");
+    assert.equal(items.length, 3);
+    assert.equal(items.find((item) => item.type === "ai-attempt" && item.attemptId === "a1")?.type, "ai-attempt");
+    assert.equal((items[0] as { status?: string }).status, "interrupted");
+    assert.equal(store.list()[0]?.label, "群 A");
+});
+
+test("conversation DTO identity hashes internal conversation keys", () => {
+    const rawKey = "group:member_openid-sensitive-group-key";
+    const identity = toConversationIdentity(rawKey);
+    assert.match(identity.conversationId, /^c-[A-F0-9]{8}$/);
+    assert.doesNotMatch(JSON.stringify(identity), /member_openid|sensitive-group-key/);
 });

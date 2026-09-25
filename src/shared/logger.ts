@@ -11,7 +11,7 @@ export interface LogEntry {
 
 export type LogListener = (entry: LogEntry) => void;
 
-const logLevel: LogLevel = parseLogLevel(process.env.BOT_LOG_LEVEL);
+let logLevel: LogLevel = parseLogLevel(process.env.BOT_LOG_LEVEL);
 
 const levels: Record<LogLevel, number> = {
     debug: 0,
@@ -114,6 +114,15 @@ export function subscribeLogs(listener: LogListener): () => void {
 
 export function setConsoleLogOutputEnabled(enabled: boolean): void {
     consoleOutputEnabled = enabled;
+}
+
+export function setLogLevel(level: LogLevel): void {
+    logLevel = level;
+    logger.level = level;
+}
+
+export function getLogLevel(): LogLevel {
+    return logLevel;
 }
 
 export function truncateLogText(value: string, maxLength = 160): string {

@@ -86,6 +86,16 @@ test("ConfigStore automated peer mutations serialize concurrent updates and reje
     });
 });
 
+test("registered automated peer IDs survive a new ConfigStore instance and do not depend on recent peers", async () => {
+    await withTempEnv("AI_PROVIDER=gpt\n", async (envPath) => {
+        const firstRuntimeStore = createConfigStore({ envPath, environment: {} });
+        const added = await firstRuntimeStore.addAutomatedPeer("stable-peer-a");
+        assert.equal(added.ok, true);
+        const afterRestart = createConfigStore({ envPath, environment: {} });
+        assert.deepEqual(afterRestart.getAutomatedPeerIds(), ["stable-peer-a"]);
+    });
+});
+
 test("ConfigStore automated peer mutations re-read external changes before saving", async () => {
     await withTempEnv("AUTOMATED_PEER_IDS=a\n", async (envPath) => {
         const store = createConfigStore({ envPath, environment: {} });
@@ -145,6 +155,17 @@ test("public config exposes only safe metadata and shared defaults parse provide
     assert.equal(publicConfig.botLoopGuard.automatedPeerCount, 2);
     assert.equal(publicConfig.logLevel, "debug");
     assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|secret\.example/);
+});
+
+test("ConfigStore reload parsing follows current disk values instead of stale dotenv values", async () => {
+    await withTempEnv("AI_PROVIDER=gpt\nCODEX_MODEL=gpt-old\n", async (envPath) => {
+        const store = createConfigStore({ envPath, environment: { AI_PROVIDER: "gpt", CODEX_MODEL: "gpt-old" } });
+        await writeFile(envPath, "AI_PROVIDER=deepseek\nDEEPSEEK_MODEL=deepseek-new\n", "utf8");
+        const config = store.getAppConfig();
+        assert.equal(config.ai.provider, "deepseek");
+        assert.equal(config.ai.deepseek.model, "deepseek-new");
+        assert.equal(config.ai.gpt.model, "gpt-6-sol", "removed .env keys do not survive in a stale process.env snapshot");
+    });
 });
 
 test("ConfigStore rejects unsafe model names and invalid guard, reasoning, verbosity, and log values", async () => {

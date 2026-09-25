@@ -67,6 +67,10 @@ export class PromptStore {
     getLoaded(provider: PromptProvider): PromptSnapshot | undefined {
         return this.snapshots.get(provider);
     }
+
+    getPath(provider: PromptProvider): URL | string {
+        return this.paths[provider];
+    }
 }
 
 let activePromptStore: PromptStore | undefined;

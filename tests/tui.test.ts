@@ -10,6 +10,9 @@ import { closeModal, hasPendingRestart, openConfigModal, receiveProviderError, t
 import { activateSidebarPage, clampLogOffset, handleLogsNavigation, initialTuiState, moveSettingsSelection, moveSidebarSelection, quitConfirmationAction, requestQuitConfirmation, toggleTuiFocus } from "../src/tui/state.js";
 import { supportsInteractiveTui } from "../src/tui/terminal-check.js";
 import { ClickableRegionRegistry, SgrMouseParser, TerminalMouseSession } from "../src/tui/mouse-input.js";
+import { splitDisplayPath } from "../src/tui/path-display.js";
+import { collapseAdjacentLogs } from "../src/tui/log-collapse.js";
+import { cycleModelProvider } from "../src/ai/model-registry.js";
 
 function fakeControl(calls: string[], result: ReloadResult = { ok: true, message: "reloaded", loadedAt: "now" }): TenBotControl {
     const status: RuntimeStatus = {
@@ -31,6 +34,8 @@ function fakeControl(calls: string[], result: ReloadResult = { ok: true, message
         async updateConfig() { return { ok: true, requiresRestart: true, changedFields: [], message: "saved" }; },
         getAutomatedPeers: () => [],
         getRecentPeers: () => [],
+        getConversations: () => [],
+        getConversationTimeline: () => [],
         async addAutomatedPeer() { return { ok: true, changed: true, message: "added" }; },
         async removeAutomatedPeer() { return { ok: true, changed: true, message: "removed" }; },
         subscribeStatus: () => () => undefined,
@@ -78,6 +83,34 @@ test("TUI localizes status values and log scopes without changing plain logger t
     assert.equal(verbosityLabel("low"), "简洁");
     assert.equal(verbosityLabel(undefined), "默认");
     assert.equal(formatTuiLogText({ timestamp: "now", level: "info", text: "[GROUP] [Cycle] [AI] [Unknown]" }), "[群聊] [周期] [模型] [Unknown]");
+});
+
+test("Prompt path display handles Windows and POSIX paths", () => {
+    assert.deepEqual(splitDisplayPath("C:\\TenBot\\src\\ai\\plugins\\gpt\\prompt.md"), {
+        fileName: "prompt.md", directory: "C:/TenBot/src/ai/plugins/gpt",
+    });
+    assert.deepEqual(splitDisplayPath("src/ai/plugins/deepseek/prompt.md"), {
+        fileName: "prompt.md", directory: "src/ai/plugins/deepseek",
+    });
+});
+
+test("TUI log folding merges only adjacent same-level display rows and keeps the latest timestamp", () => {
+    const rows = collapseAdjacentLogs([
+        { timestamp: "t1", level: "debug", text: "A" },
+        { timestamp: "t2", level: "debug", text: "A" },
+        { timestamp: "t3", level: "debug", text: "A" },
+        { timestamp: "t4", level: "info", text: "B" },
+        { timestamp: "t5", level: "debug", text: "A" },
+    ]);
+    assert.deepEqual(rows.map(({ displayText, count, entry }) => [displayText, count, entry.timestamp]), [
+        ["A", 3, "t3"], ["B", 1, "t4"], ["A", 1, "t5"],
+    ]);
+});
+
+test("provider carousel cycles its view without changing the selected runtime configuration", () => {
+    assert.equal(cycleModelProvider("gpt", 1), "deepseek");
+    assert.equal(cycleModelProvider("deepseek", 1), "gpt");
+    assert.equal(cycleModelProvider("gpt", -1), "deepseek");
 });
 
 test("sidebar and log navigation clamp to usable bounds", () => {
@@ -198,13 +231,14 @@ test("settings select and text editors create safe patches without touching a re
     assert.equal(initialTuiState.modal.type, "none");
 });
 
-test("settings shows a pending restart when saved config differs from the running runtime", () => {
+test("settings shows pending restart only when Runtime marks a non-hot-reloadable change", () => {
     const status: RuntimeStatus = {
         qq: "connected",
         provider: { id: "gpt", model: "gpt-6-sol", webSearch: true, configured: true, reasoningEffort: "high", verbosity: "high" },
         activeCycles: 0,
         contextConversations: 0,
         runtimeConfig: { logLevel: "info", botLoopGuardMaxCycles: 4 },
+        hotReload: { enabled: true, revision: 2, loadedAt: "now", lastSuccessAt: "now", requiresRestart: true },
         memes: { count: 0, revision: 1, loadedAt: "now" },
         prompt: { provider: "gpt", revision: 1, loadedAt: "now" },
         shuttingDown: false,

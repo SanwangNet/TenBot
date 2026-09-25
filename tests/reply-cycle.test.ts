@@ -9,7 +9,7 @@ import { buildReplyCycleContext, recordIncomingMessageRevision, rememberIncoming
 import { getConversationGeneration, isConversationActive, markConversationActive } from "../src/qq/conversation/engagement.js";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 import { decideMessageTrigger } from "../src/qq/message/trigger.js";
-import { buildReplyCycleMemeQuery, coordinateAiReply, AI_TIMEOUT_REPLY, AI_WEB_SEARCH_TIMEOUT_REPLY, type AttemptBuildContext } from "../src/qq/reply/coordinator.js";
+import { buildReplyCycleMemeQuery, coordinateAiReply, AI_TIMEOUT_REPLY, AI_WEB_SEARCH_TIMEOUT_REPLY, subscribeReplyLifecycle, type AttemptBuildContext } from "../src/qq/reply/coordinator.js";
 
 type RecordedAttempt = { input: string; signal: AbortSignal; resolve: (result: AiResult) => void };
 function message(groupId = randomUUID(), content = "A"): NormalizedQqMessage {
@@ -807,6 +807,31 @@ test("new messages during the QQ send phase do not abort an already completed ac
     await pending;
     await waitFor(() => attempts.length === 2);
     assert.deepEqual(calls, ["one"]);
+});
+
+test("conversation observer retains an interrupted Attempt and emits the replacement Attempt", async () => {
+    const group = randomUUID();
+    const firstMessage = message(group, "start");
+    const nextMessage = message(group, "interrupt");
+    commit(firstMessage);
+    const { bot } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const events: Array<{ kind: string; attemptId: string }> = [];
+    const unsubscribe = subscribeReplyLifecycle((signal) => events.push({ kind: signal.kind, attemptId: signal.attemptId }));
+    try {
+        const pending = coordinateAiReply(requestFor(bot, firstMessage), { executeAi: controlledAttempts(attempts) });
+        await waitFor(() => attempts.length === 1);
+        commit(nextMessage);
+        coordinateAiReply(requestFor(bot, nextMessage, 0), { executeAi: controlledAttempts(attempts) });
+        await waitFor(() => attempts.length === 2);
+        attempts[1]?.resolve(reply("replacement"));
+        await pending;
+        assert.deepEqual(events.map((event) => event.kind), ["started", "interrupted", "started", "reply-sent", "completed"]);
+        assert.equal(events[0]?.attemptId, events[1]?.attemptId, "interrupted lifecycle updates the same retained item");
+        assert.notEqual(events[2]?.attemptId, events[0]?.attemptId);
+    } finally {
+        unsubscribe();
+    }
 });
 
 test("deadline settles a cycle even when the upstream promise ignores abort", async () => {

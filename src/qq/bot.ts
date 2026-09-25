@@ -10,9 +10,11 @@ export type QqConnectionState = "connecting" | "connected" | "disconnected" | "e
 export function createQqBot(
     onConnectionState?: (state: QqConnectionState) => void,
     observePeer?: (message: NormalizedQqMessage) => void,
+    observeConversationMessage?: (message: NormalizedQqMessage) => void,
+    connectionConfig?: { appId?: string; appSecret?: string },
 ): QQBot {
-    const appId = process.env.QQBOT_APP_ID;
-    const appSecret = process.env.QQBOT_APP_SECRET;
+    const appId = connectionConfig ? connectionConfig.appId : process.env.QQBOT_APP_ID;
+    const appSecret = connectionConfig ? connectionConfig.appSecret : process.env.QQBOT_APP_SECRET;
 
     if (!appId || !appSecret) {
         throw new Error("缺少 QQBOT_APP_ID 或 QQBOT_APP_SECRET");
@@ -45,7 +47,7 @@ export function createQqBot(
         }
     });
 
-    registerMessageHandler(bot, undefined, observePeer);
+    registerMessageHandler(bot, undefined, observePeer, observeConversationMessage);
     registerInteractionHandler(bot);
 
     return bot;

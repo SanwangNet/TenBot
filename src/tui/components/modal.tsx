@@ -34,12 +34,15 @@ function ModalFrame({ title, children, width }: { title: string; children: React
     </Box>;
 }
 
-function PeerDetails({ peer }: { peer: AutomatedPeerSummary }) {
+function PeerDetails({ peer, registered, maxCycles }: { peer: AutomatedPeerSummary; registered: boolean; maxCycles: number }) {
     return <>
         <Text>名称       {peer.displayName}</Text>
         <Text wrap="wrap">稳定 ID   {peer.id}</Text>
+        <Text>类型       {registered ? "Bot" : "普通账号"}</Text>
         <Text>平台标记   {peer.platformBotHint ? "Bot" : "无"}</Text>
         <Text>最近出现   {peer.lastSeenAt ? new Date(peer.lastSeenAt).toLocaleTimeString("zh-CN", { hour12: false }) : "未知"}</Text>
+        <Text>自动互聊保护   {registered ? "已启用" : "未启用"}</Text>
+        <Text>连续交互上限   {maxCycles}（全局）</Text>
     </>;
 }
 
@@ -53,6 +56,7 @@ export function ModalLayer({
     onProviderDetails,
     onAddPeer,
     onRemovePeer,
+    maxCycles,
 }: {
     modal: ModalState;
     columns: number;
@@ -63,6 +67,7 @@ export function ModalLayer({
     onProviderDetails(): void;
     onAddPeer(peer: AutomatedPeerSummary): void;
     onRemovePeer(peer: AutomatedPeerSummary): void;
+    maxCycles: number;
 }) {
     if (modal.type === "none") return null;
     const width = Math.max(24, Math.min(72, columns - 4));
@@ -140,7 +145,7 @@ export function ModalLayer({
             <Text color="cyan">↓</Text>
             <Text>{modal.to}</Text>
             <Text> </Text>
-            <Text color="yellow">修改后需要重启 TenBot。</Text>
+            <Text color="yellow">确认后将立即热重载运行配置。</Text>
             <Text> </Text>
             <ModalActions registry={registry} onConfirm={onConfirm} onCancel={onClose} confirmLabel="保存" />
         </ModalFrame>;
@@ -165,13 +170,13 @@ export function ModalLayer({
     }
     if (modal.type === "automated-peer-details") {
         return <ModalFrame title="自动账号详情" width={width}>
-            <PeerDetails peer={modal.peer} />
+            <PeerDetails peer={modal.peer} registered={modal.registered} maxCycles={maxCycles} />
             <Text> </Text>
             <ModalActions
                 registry={registry}
                 onConfirm={modal.registered ? () => onRemovePeer(modal.peer) : () => onAddPeer(modal.peer)}
                 onCancel={onClose}
-                confirmLabel={modal.registered ? "删除" : "添加"}
+                confirmLabel={modal.registered ? "取消 Bot" : "设为 Bot"}
                 cancelLabel="关闭"
             />
         </ModalFrame>;

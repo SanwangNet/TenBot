@@ -20,6 +20,14 @@ export interface RuntimeStatus {
         logLevel: LogLevel;
         botLoopGuardMaxCycles: number;
     };
+    hotReload?: {
+        enabled: boolean;
+        revision: number;
+        loadedAt: string;
+        lastSuccessAt: string;
+        lastFailure?: { message: string; timestamp: string };
+        requiresRestart: boolean;
+    };
     memes: {
         count: number;
         revision: number;

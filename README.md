@@ -34,7 +34,7 @@ GPT 可选设置 CODEX_MODEL、CODEX_REASONING_EFFORT 和 CODEX_VERBOSITY，默�
     AI_PROVIDER=deepseek
     DEEPSEEK_API_KEY=你的 DeepSeek API 密钥
 
-DEEPSEEK_BASE_URL 可选，默认值为 https://api.deepseek.com；DEEPSEEK_MODEL 和 DEEPSEEK_REASONING_EFFORT 可选，默认分别为 deepseek-flash 和 high。DeepSeek 当前没有输出详细度配置。GPT 和 DeepSeek 在进程启动时选择其一；未设置 AI_PROVIDER 时使用 GPT，不会在请求失败后自动切换 Provider。
+DEEPSEEK_BASE_URL 可选，默认值为 https://api.deepseek.com；DEEPSEEK_MODEL 和 DEEPSEEK_REASONING_EFFORT 可选，默认分别为 deepseek-flash 和 high。DeepSeek 当前没有输出详细度配置。未设置 AI_PROVIDER 时使用 GPT；运行时切换由用户在 TUI 显式确认，不会因请求失败自动切换 Provider。
 
 其他可选设置：
 
@@ -70,13 +70,16 @@ TUI 是中文全屏控制台，支持 PowerShell 和 WebStorm Terminal。进入�
 - 自动账号连续交互上限
 - 自动账号的添加和删除
 
-修改会先经过确认，再只更新 `.env` 中对应的变量；未知变量、secret、注释、空行和原有换行风格会保留。模型、日志级别和连续交互上限需要重启 TenBot 后生效，当前不支持运行时 Provider 热切换或自动重启。保存后请按 `Q` 退出，再重新运行 `pnpm tui`。自动账号添加和删除会立即更新当前运行时的 ID allowlist，不会清空已有会话计数或改变正在执行的 Cycle。
+修改会先经过确认，再只更新 `.env` 中对应的变量；未知变量、secret、注释、空行和原有换行风格会保留。Provider、模型参数、日志级别、连续交互上限和自动账号 ID 会立即热重载；进行中的模型 Attempt 保留启动时的模型和 Prompt 快照，新 Attempt 使用最新配置。当前不支持自动重启。QQ App ID 或密钥变化需要重启 QQ Runtime。
+
+设置页使用 Provider 卡片浏览 GPT 与 DeepSeek 配置。左右方向键只切换正在查看的卡片；选择“设为当前模型提供商”并确认后才会保存和热切换运行 Provider。密钥和 Base URL 不会显示在 TUI。
 
 TUI 快捷键：
 
 | 按键 | 操作 |
 | --- | --- |
-| ↑ / ↓ | 移动侧栏、设置项或自动账号；日志页中逐行查看 |
+| ↑ / ↓ | 移动侧栏、设置项或自动账号；日志和对话页中逐行查看 |
+| ← / → | 设置页切换 Provider 卡片；对话页切换群会话 |
 | Enter | 打开页面；在设置页修改配置；确认弹窗操作 |
 | Esc | 从主区返回侧栏；关闭或返回弹窗 |
 | Tab | 在侧栏和主内容区之间切换焦点 |
@@ -91,7 +94,19 @@ TUI 快捷键：
 
 ### 自动账号
 
-自动账号使用 QQ 群消息中的稳定成员 ID 登记，身份判断不依据昵称、消息内容或平台 Bot 标记。自动账号页展示已登记账号和最近出现的群成员；最近成员只保存在内存中，最多保留 100 个，重启后清空。选择最近成员后可以查看完整稳定 ID 并确认添加；已登记账号可确认删除。平台的 Bot 标记只作提示，必须由用户主动登记。添加或删除后，Guard 对后续新消息立即使用更新后的 ID 列表；已有会话计数保持不变。
+自动账号使用 QQ 群消息中的稳定成员 ID 写入 `.env` 的 `AUTOMATED_PEER_IDS`，重启后仍会恢复登记状态；身份判断不依据昵称、消息内容或平台 Bot 标记。管理菜单可查看 Bot/普通账号状态、设为 Bot 或取消 Bot，以及全局互聊上限。最近发现的群成员资料只保存在内存中，最多保留 100 个，重启后清空；缺少昵称时已登记账号仍显示为“未知账号”和短 ID。平台 Bot 标记只作提示，必须由用户主动登记。修改后 Guard 对后续新消息立即使用新列表，不清空已有会话计数。
+
+### 对话观察
+
+对话页只读展示进入最近上下文的群消息、模型 Attempt 状态和成功发送的回复。消息按群与 TenBot 左右对齐；被中断的 Attempt 会保留。最多缓存最近 20 个会话，每个会话 100 条 UI 记录，进程重启后清空。左右键切换会话，↑↓、PageUp/PageDown、Home/End 滚动。TUI 不会通过此页发送 QQ 消息。
+
+### 日志显示
+
+日志页只在 TUI 显示层合并连续且级别、中文格式化文本相同的记录，并标注重复次数。原始 logger、普通 `pnpm dev` 输出和原始日志缓冲不折叠。
+
+### 运行时热重载
+
+TUI 保存的 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Provider 凭据及 Base URL、BOT_LOG_LEVEL、BOT_LOOP_GUARD_MAX_CYCLES 和 AUTOMATED_PEER_IDS 会重建配置快照并立即应用。外部编辑器修改 `.env` 也会监听并热重载。GPT 与 DeepSeek Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQBOT_APP_ID 和 QQBOT_APP_SECRET 变化需要重启；TUI 不会自动重启进程。
 
 ### 鼠标操作
 
@@ -101,7 +116,7 @@ TUI 快捷键：
 
 正常运行时按 `Q` 或 `Ctrl+C` 会打开“退出 TenBot”确认框；按 Enter 才会优雅停止 QQ Runtime 并退出，Esc 取消。Runtime 启动失败或发生 fatal shutdown 时直接执行清理退出。
 
-TUI 与 QQ Runtime 在同一进程运行，通过 TenBotControl 读取可序列化状态、订阅日志和 Runtime event，并执行配置保存、重载与关闭。Prompt 和 Meme 仍由外部编辑器维护，TUI 负责查看、热加载和显示状态；当前不支持运行时切换 Provider。当前没有 HTTP API 或 WebSocket 服务。
+TUI 与 QQ Runtime 在同一进程运行，通过 TenBotControl 读取可序列化状态、订阅日志和 Runtime event，并执行配置保存、重载与关闭。Prompt 和 Meme 文件仍由外部编辑器编辑，TUI 负责查看、校验和热加载。当前没有 HTTP API 或 WebSocket 服务。
 
 如果当前 stdin 或 stdout 不是 TTY，`pnpm tui` 会显示中文提示并正常退出，请使用普通终端或运行 `pnpm dev`。
 

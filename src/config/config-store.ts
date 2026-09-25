@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { AutomatedPeerConfigResult, ConfigStore, ConfigUpdateResult, PublicConfig, PublicConfigPatch } from "./config-types.js";
+import type { AppConfig, AutomatedPeerConfigResult, ConfigStore, ConfigUpdateResult, PublicConfig, PublicConfigPatch } from "./config-types.js";
 import { loadAppConfig, parseAutomatedPeerIds, patchValueAsString, toPublicConfig, validateAutomatedPeerId, validatePublicConfigPatch } from "./config-validation.js";
 import { isMissingFile, parseEnvDocument, patchEnvDocument, readEnvDocument, writeFileAtomically } from "./env-document.js";
 
@@ -15,7 +15,7 @@ function readEnvSync(filePath: string): string {
         return readFileSync(filePath, "utf8");
     } catch (error) {
         if (isMissingFile(error)) return "";
-        return "";
+        throw error;
     }
 }
 
@@ -33,6 +33,11 @@ export function createConfigStore(options: CreateConfigStoreOptions = {}): Confi
     const envPath = resolve(options.envPath ?? ".env");
     const environment = options.environment ?? process.env;
     const write = options.writeFileAtomically ?? writeFileAtomically;
+    const initialFileEnv = parseEnvDocument(readEnvSync(envPath));
+    const baseEnvironment: NodeJS.ProcessEnv = { ...environment };
+    for (const [key, value] of Object.entries(initialFileEnv)) {
+        if (baseEnvironment[key] === value) delete baseEnvironment[key];
+    }
     let queue: Promise<void> = Promise.resolve();
 
     function serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -42,19 +47,23 @@ export function createConfigStore(options: CreateConfigStoreOptions = {}): Confi
     }
 
     const readCurrentEnvironment = (document: string): NodeJS.ProcessEnv => ({
-        ...environment,
+        ...baseEnvironment,
         ...parseEnvDocument(document),
     });
 
-    const getPublicConfig = (): PublicConfig => {
+    const getAppConfig = (): AppConfig => {
         const document = readEnvSync(envPath);
-        return toPublicConfig(loadAppConfig(readCurrentEnvironment(document)));
+        return loadAppConfig(readCurrentEnvironment(document));
+    };
+
+    const getPublicConfig = (): PublicConfig => {
+        return toPublicConfig(getAppConfig());
     };
 
     const getAutomatedPeerIds = (): string[] => {
         const document = readEnvSync(envPath);
         const fileValue = parseEnvDocument(document).AUTOMATED_PEER_IDS;
-        return [...parseAutomatedPeerIds(fileValue ?? environment.AUTOMATED_PEER_IDS)];
+        return [...parseAutomatedPeerIds(fileValue ?? baseEnvironment.AUTOMATED_PEER_IDS)];
     };
 
     const update = async (patch: PublicConfigPatch): Promise<ConfigUpdateResult> => {
@@ -77,9 +86,9 @@ export function createConfigStore(options: CreateConfigStoreOptions = {}): Confi
             await write(envPath, updated);
             return {
                 ok: true,
-                requiresRestart: true,
+                requiresRestart: false,
                 changedFields: [patch.field],
-                message: "配置已保存，将在重启 TenBot 后生效。",
+                message: "配置已保存。",
             };
         } catch (error) {
             const failure = safeFailure(error);
@@ -110,7 +119,7 @@ export function createConfigStore(options: CreateConfigStoreOptions = {}): Confi
         try {
             const document = await readEnvDocument(envPath);
             const fileValue = parseEnvDocument(document).AUTOMATED_PEER_IDS;
-            const current = [...parseAutomatedPeerIds(fileValue ?? environment.AUTOMATED_PEER_IDS)];
+            const current = [...parseAutomatedPeerIds(fileValue ?? baseEnvironment.AUTOMATED_PEER_IDS)];
             const exists = current.includes(id);
             if (action === "add" && exists) {
                 return { ok: true, changed: false, peerIds: current, message: "该账号已登记。" };
@@ -133,6 +142,8 @@ export function createConfigStore(options: CreateConfigStoreOptions = {}): Confi
     });
 
     return {
+        getAppConfig,
+        getEnvPath: () => envPath,
         getPublicConfig,
         updatePublicConfig: (patch) => serialize(() => update(patch)),
         getAutomatedPeerIds,

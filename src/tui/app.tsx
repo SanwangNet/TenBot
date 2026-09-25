@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useWindowSize } from "ink";
-import type { ConfigUpdateResult, PublicConfig, PublicConfigPatch } from "../config/config-types.js";
+import type { ConfigUpdateResult, ModelProviderId, PublicConfig, PublicConfigPatch } from "../config/config-types.js";
+import { cycleModelProvider, MODEL_PROVIDERS } from "../ai/model-registry.js";
 import { validatePublicConfigPatch } from "../config/config-validation.js";
 import type { RuntimeStatus } from "../control/runtime-status.js";
 import type { ReloadResult, TenBotControl } from "../control/tenbot-control.js";
 import type { ProviderErrorNotice } from "../control/provider-error.js";
 import type { RuntimeEvent } from "../control/runtime-event.js";
+import type { ConversationSummary } from "../control/conversation-timeline.js";
 import type { LogEntry } from "../shared/logger.js";
 import { MAX_TUI_LOG_ENTRIES } from "../control/tenbot-control.js";
 import { Footer } from "./components/footer.js";
@@ -21,10 +23,11 @@ import { PromptView } from "./views/prompt-view.js";
 import { SettingsView } from "./views/settings-view.js";
 import { AutomatedPeersView } from "./views/automated-peers-view.js";
 import { logLevelLabel, PAGE_LABELS, PAGES, providerLabel, reasoningLabel, settingsFieldLabel, verbosityLabel } from "./i18n.js";
-import { activateSidebarPage, handleLogsNavigation, initialTuiState, moveAutomatedPeerSelection, moveSettingsSelection, quitConfirmationAction, requestQuitConfirmation, SETTINGS_FIELDS, toggleTuiFocus, type ConfigOption, type ConfigSelectField, type ConfigTextField, type ModalState, type SettingsField, type TuiState } from "./state.js";
+import { activateSidebarPage, handleLogsNavigation, initialTuiState, moveAutomatedPeerSelection, moveSettingsSelection, quitConfirmationAction, requestQuitConfirmation, toggleTuiFocus, type ConfigOption, type ConfigSelectField, type ConfigTextField, type ModalState, type SettingsField, type TuiState } from "./state.js";
 import type { TuiPage } from "./types.js";
 import type { AutomatedPeerSummary } from "../control/automated-peers.js";
 import { ClickableRegionRegistry, isSgrMouseSequence, type TerminalMouseSession } from "./mouse-input.js";
+import { collapseAdjacentLogs } from "./log-collapse.js";
 
 export interface TenBotTuiProps {
     control: TenBotControl;
@@ -36,11 +39,15 @@ export interface TenBotTuiProps {
 export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }: TenBotTuiProps) {
     const [status, setStatus] = useState(() => control.getStatus());
     const [config, setConfig] = useState(() => control.getConfig());
-    const [pendingRestart, setPendingRestart] = useState(false);
+    const [viewedProvider, setViewedProvider] = useState<ModelProviderId>(() => control.getConfig().aiProvider);
     const [logs, setLogs] = useState<LogEntry[]>([]);
+    const logEntriesRef = useRef<LogEntry[]>([]);
     const [ui, setUi] = useState<TuiState>(initialTuiState);
     const [now, setNow] = useState(() => new Date());
     const [peerDirectory, setPeerDirectory] = useState(() => readPeerDirectory(control));
+    const [conversations, setConversations] = useState<ConversationSummary[]>(() => control.getConversations());
+    const [selectedConversationId, setSelectedConversationId] = useState<string>();
+    const [conversationOffset, setConversationOffset] = useState(0);
     const quitting = useRef(false);
     const reloadRunning = useRef(false);
     const regions = useRef(new ClickableRegionRegistry()).current;
@@ -48,6 +55,7 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const columns = rawColumns || 80;
     const rows = rawRows || 24;
     const visibleLogLines = Math.max(4, rows - 10);
+    const visibleConversationItems = Math.max(1, Math.floor(Math.max(3, rows - 12) / 3));
     const visiblePeerRows = Math.max(4, rows - 16);
     const size = useRef({ columns, rows });
     if (size.current.columns !== columns || size.current.rows !== rows) {
@@ -59,12 +67,17 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     useEffect(() => {
         const unsubscribeStatus = control.subscribeStatus(setStatus);
         const unsubscribeLogs = control.subscribeLogs((entry) => {
-            setLogs((current) => [...current, entry].slice(-MAX_TUI_LOG_ENTRIES));
-            setUi((current) => current.logOffset > 0 ? { ...current, logOffset: current.logOffset + 1 } : current);
+            const current = logEntriesRef.current;
+            const next = [...current, entry].slice(-MAX_TUI_LOG_ENTRIES);
+            logEntriesRef.current = next;
+            const delta = collapseAdjacentLogs(next).length - collapseAdjacentLogs(current).length;
+            setLogs(next);
+            setUi((state) => state.logOffset > 0 && delta > 0 ? { ...state, logOffset: state.logOffset + delta } : state);
         });
         const unsubscribeEvents = control.subscribeEvents((event: RuntimeEvent) => {
             if (event.type === "provider-error") setUi((current) => receiveProviderError(current, event.notice));
             else if (event.type === "recent-peers-updated") setPeerDirectory(readPeerDirectory(control));
+            else if (event.type === "conversation-item") setConversations(control.getConversations());
         });
         return () => {
             unsubscribeStatus();
@@ -74,8 +87,12 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     }, [control]);
 
     useEffect(() => {
-        if (ui.page === "settings") setConfig(control.getConfig());
-    }, [control, ui.page]);
+        if (ui.page === "settings") {
+            const current = control.getConfig();
+            setConfig(current);
+            setViewedProvider(current.aiProvider);
+        }
+    }, [control, status.hotReload?.revision, ui.page]);
 
     useEffect(() => {
         if (ui.page === "automated-peers") setPeerDirectory(readPeerDirectory(control));
@@ -104,6 +121,18 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const refreshPeerDirectory = () => setPeerDirectory(readPeerDirectory(control));
 
     const allPeers = [...peerDirectory.registered, ...peerDirectory.recent];
+    const requestedConversationIndex = selectedConversationId
+        ? conversations.findIndex((conversation) => conversation.conversationId === selectedConversationId)
+        : 0;
+    const safeConversationIndex = requestedConversationIndex < 0 ? 0 : Math.min(requestedConversationIndex, Math.max(0, conversations.length - 1));
+    const selectedConversation = conversations[safeConversationIndex];
+    const conversationItems = selectedConversation ? control.getConversationTimeline(selectedConversation.conversationId) : [];
+    const switchConversation = (delta: number) => {
+        if (conversations.length < 2) return;
+        const next = conversations[(safeConversationIndex + delta + conversations.length) % conversations.length];
+        if (next) setSelectedConversationId(next.conversationId);
+        setConversationOffset(0);
+    };
     const openPeerDetails = (index: number) => {
         const peer = allPeers[index];
         if (!peer) return;
@@ -126,11 +155,23 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         setUi((current) => ({ ...current, modal: { type: "automated-peer-result", action, peer, result } }));
     };
 
-    const editSetting = (index: number) => setUi((current) => ({
+    const editSetting = (field: SettingsField) => setUi((current) => ({
         ...current,
-        settingsIndex: index,
-        modal: openConfigModal(SETTINGS_FIELDS[index] ?? SETTINGS_FIELDS[0], config),
+        settingsIndex: settingsRowIndex(field, viewedProvider),
+        modal: openConfigModal(field, config),
     }));
+
+    const viewProvider = (delta: number) => {
+        setViewedProvider(cycleModelProvider(viewedProvider, delta));
+        setUi((current) => ({ ...current, settingsIndex: 0 }));
+    };
+
+    const applyViewedProvider = () => {
+        const patch: PublicConfigPatch = { field: "aiProvider", value: viewedProvider };
+        setUi((current) => ({ ...current, settingsIndex: settingsRows(viewedProvider).indexOf("apply"), modal: {
+            type: "config-confirm", patch, label: "模型提供商", from: providerLabel(config.aiProvider), to: providerLabel(viewedProvider),
+        } }));
+    };
 
     const advanceConfigText = () => {
         if (ui.modal.type !== "config-text") return;
@@ -208,7 +249,6 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
             result = { ok: false, requiresRestart: false, changedFields: [], message: "配置保存失败", details: "无法完成配置操作" };
         }
         setConfig(control.getConfig());
-        if (result.ok && result.requiresRestart) setPendingRestart(true);
         setUi((current) => ({ ...current, modal: { type: "config-result", result, label } }));
     };
 
@@ -336,16 +376,37 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
             return;
         }
         if (ui.page === "logs" && ui.focus === "main") {
-            const navigation = handleLogsNavigation(ui, key, logs.length, visibleLogLines);
+            const navigation = handleLogsNavigation(ui, key, collapseAdjacentLogs(logs).length, visibleLogLines);
             if (navigation.handled) {
                 setUi(navigation.state);
                 return;
             }
         }
+        if (ui.page === "conversations" && ui.focus === "main") {
+            if (key.leftArrow) switchConversation(-1);
+            else if (key.rightArrow) switchConversation(1);
+            else if (key.upArrow) setConversationOffset((current) => Math.min(Math.max(0, conversationItems.length - 1), current + 1));
+            else if (key.downArrow) setConversationOffset((current) => Math.max(0, current - 1));
+            else if (key.pageUp) setConversationOffset((current) => Math.min(Math.max(0, conversationItems.length - visibleConversationItems), current + visibleConversationItems));
+            else if (key.pageDown) setConversationOffset((current) => Math.max(0, current - visibleConversationItems));
+            else if (key.home) setConversationOffset(Math.max(0, conversationItems.length - visibleConversationItems));
+            else if (key.end) setConversationOffset(0);
+            return;
+        }
         if (ui.page === "settings" && ui.focus === "main") {
-            if (key.upArrow) setUi((current) => ({ ...current, settingsIndex: moveSettingsSelection(current.settingsIndex, -1) }));
-            else if (key.downArrow) setUi((current) => ({ ...current, settingsIndex: moveSettingsSelection(current.settingsIndex, 1) }));
-            else if (key.return) editSetting(ui.settingsIndex);
+            const fields = viewedProvider === "gpt"
+                ? ["gpt.model", "gpt.reasoningEffort", "gpt.verbosity"] as const
+                : ["deepseek.model", "deepseek.reasoningEffort"] as const;
+            const rowCount = 1 + fields.length + 1 + 2;
+            if (ui.settingsIndex === 0 && key.leftArrow) viewProvider(-1);
+            else if (ui.settingsIndex === 0 && key.rightArrow) viewProvider(1);
+            else if (key.upArrow) setUi((current) => ({ ...current, settingsIndex: moveSettingsSelection(current.settingsIndex, -1, rowCount) }));
+            else if (key.downArrow) setUi((current) => ({ ...current, settingsIndex: moveSettingsSelection(current.settingsIndex, 1, rowCount) }));
+            else if (key.return) {
+                const row = settingsRows(viewedProvider)[ui.settingsIndex];
+                if (row === "apply") applyViewedProvider();
+                else if (row && row !== "provider") editSetting(row);
+            }
             return;
         }
         if (ui.page === "automated-peers" && ui.focus === "main") {
@@ -368,10 +429,12 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         }
     });
 
-    const showPendingRestart = pendingRestart || hasPendingRestart(status, config);
+    const showPendingRestart = hasPendingRestart(status, config);
     const content = renderView(
         ui.page, status, config, logs, ui.logOffset, visibleLogLines, ui.settingsIndex, showPendingRestart,
         peerDirectory, ui.automatedPeerIndex, visiblePeerRows, regions, editSetting, openPeerDetails,
+        conversations, safeConversationIndex, conversationItems, conversationOffset, visibleConversationItems, columns, switchConversation, setConversationOffset,
+        viewedProvider, viewProvider, applyViewedProvider,
     );
     const closeCurrentModal = () => setUi(closeModal);
     const selectModalOption = (index: number) => setUi((current) => current.modal.type === "config-select"
@@ -390,11 +453,15 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         onProviderDetails: openProviderDetails,
         onAddPeer: (peer: AutomatedPeerSummary) => requestPeerMutation("add", peer),
         onRemovePeer: (peer: AutomatedPeerSummary) => requestPeerMutation("remove", peer),
+        maxCycles: status.runtimeConfig?.botLoopGuardMaxCycles ?? 4,
     };
     const footerProps = {
         focus: ui.focus,
         settings: ui.page === "settings" && ui.focus === "main",
         automatedPeers: ui.page === "automated-peers" && ui.focus === "main",
+        conversations: ui.page === "conversations" && ui.focus === "main",
+        logs: ui.page === "logs" && ui.focus === "main",
+        notice: status.hotReload?.lastFailure?.message,
     };
     const selectSidebarPage = (page: TuiPage) => setUi((current) => activateSidebarPage(current, page));
     if (columns < 60) {
@@ -482,17 +549,28 @@ function renderView(
     automatedPeerIndex: number,
     visiblePeerRows: number,
     regions: ClickableRegionRegistry,
-    onEditSetting: (index: number) => void,
+    onEditSetting: (field: SettingsField) => void,
     onOpenPeer: (index: number) => void,
+    conversations: readonly ConversationSummary[],
+    conversationIndex: number,
+    conversationItems: ReturnType<TenBotControl["getConversationTimeline"]>,
+    conversationOffset: number,
+    visibleConversationItems: number,
+    columns: number,
+    onSwitchConversation: (delta: number) => void,
+    onConversationScroll: (offset: number) => void,
+    viewedProvider: ModelProviderId,
+    onViewProvider: (delta: number) => void,
+    onApplyProvider: () => void,
 ): React.ReactNode {
     switch (page) {
         case "overview": return <OverviewView status={status} />;
         case "model": return <ModelView status={status} />;
         case "prompt": return <PromptView status={status} />;
         case "memes": return <MemesView status={status} />;
-        case "conversations": return <ConversationsView status={status} />;
+        case "conversations": return <ConversationsView conversations={conversations} selectedIndex={conversationIndex} items={conversationItems} offset={conversationOffset} visibleLines={visibleConversationItems} columns={columns - 24} registry={regions} onSwitch={onSwitchConversation} onScroll={onConversationScroll} />;
         case "logs": return <LogsView logs={logs} offset={offset} visibleLines={visibleLines} />;
-        case "settings": return <SettingsView status={status} config={config} selectedIndex={settingsIndex} pendingRestart={pendingRestart} registry={regions} onEdit={onEditSetting} />;
+        case "settings": return <SettingsView status={status} config={config} selectedIndex={settingsIndex} pendingRestart={pendingRestart} viewedProvider={viewedProvider} registry={regions} onEdit={onEditSetting} onViewProvider={onViewProvider} onApplyProvider={onApplyProvider} />;
         case "automated-peers": return <AutomatedPeersView registered={peerDirectory.registered} recent={peerDirectory.recent} selectedIndex={automatedPeerIndex} visibleCount={visiblePeerRows} registry={regions} onOpen={onOpenPeer} />;
     }
 }
@@ -517,15 +595,24 @@ const verbosityOptions: readonly ConfigOption[] = [
     { value: "medium", label: "标准" },
     { value: "high", label: "详细" },
 ];
-const providerOptions: readonly ConfigOption[] = [
-    { value: "gpt", label: "GPT" },
-    { value: "deepseek", label: "DeepSeek" },
-];
+const providerOptions: readonly ConfigOption[] = MODEL_PROVIDERS.map(({ id, label }) => ({ value: id, label }));
 const logLevelOptions: readonly ConfigOption[] = [
     { value: "debug", label: "调试" },
     { value: "info", label: "信息" },
     { value: "error", label: "错误" },
 ];
+
+type SettingsRow = SettingsField | "provider" | "apply";
+function settingsRows(provider: ModelProviderId): SettingsRow[] {
+    const modelFields: SettingsField[] = provider === "gpt"
+        ? ["gpt.model", "gpt.reasoningEffort", "gpt.verbosity"]
+        : ["deepseek.model", "deepseek.reasoningEffort"];
+    return ["provider", ...modelFields, "apply", "logLevel", "botLoopGuard.maxCycles"];
+}
+
+function settingsRowIndex(field: SettingsField, provider: ModelProviderId): number {
+    return settingsRows(provider).indexOf(field);
+}
 
 function configValue(config: PublicConfig, field: SettingsField): string {
     switch (field) {
@@ -599,11 +686,6 @@ function textConfigModal(field: ConfigTextField, value: string): ModalState {
 }
 
 export function hasPendingRestart(status: RuntimeStatus, config: PublicConfig): boolean {
-    if (status.provider.id !== config.aiProvider) return true;
-    const active = status.provider.id === "gpt" ? config.gpt : config.deepseek;
-    if (status.provider.model !== active.model) return true;
-    if (status.provider.reasoningEffort !== active.reasoningEffort) return true;
-    if (status.provider.id === "gpt" && status.provider.verbosity !== config.gpt.verbosity) return true;
-    if (status.runtimeConfig && (status.runtimeConfig.logLevel !== config.logLevel || status.runtimeConfig.botLoopGuardMaxCycles !== config.botLoopGuard.maxCycles)) return true;
-    return false;
+    void config;
+    return status.hotReload?.requiresRestart ?? false;
 }

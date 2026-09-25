@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 import { chat, runModelPlugin } from "../../ai/client.js";
 import { getModelPlugin } from "../../ai/model-registry.js";
+import { getPromptStore } from "../../ai/prompt-store.js";
 import type { ModelPlugin } from "../../ai/model-plugin.js";
 import type { AiResult } from "../../ai/reply-result.js";
 import type { MemeRuntimeSnapshot } from "../../skills/meme/store.js";
@@ -77,8 +78,42 @@ export interface ProviderErrorSignal {
     error: unknown;
 }
 
+export interface ReplyLifecycleSignal {
+    kind: "started" | "interrupted" | "completed" | "failed" | "reply-sent";
+    conversationKey: string;
+    displayName?: string;
+    cycleId: string;
+    attemptId: string;
+    attemptNumber: number;
+    timestamp: string;
+    content?: string;
+    failureStage?: "generation" | "send";
+}
+
 type ProviderErrorListener = (signal: ProviderErrorSignal) => void;
 const providerErrorListeners = new Set<ProviderErrorListener>();
+type ReplyLifecycleListener = (signal: ReplyLifecycleSignal) => void;
+const replyLifecycleListeners = new Set<ReplyLifecycleListener>();
+
+export function subscribeReplyLifecycle(listener: ReplyLifecycleListener): () => void {
+    replyLifecycleListeners.add(listener);
+    return () => replyLifecycleListeners.delete(listener);
+}
+
+function publishReplyLifecycle(cycle: Cycle, attempt: Attempt, signal: Pick<ReplyLifecycleSignal, "kind" | "content" | "failureStage">): void {
+    const event: ReplyLifecycleSignal = {
+        ...signal,
+        conversationKey: cycle.key,
+        displayName: cycle.latestRequest.message.authorName,
+        cycleId: cycle.cycleId,
+        attemptId: attempt.requestId,
+        attemptNumber: attempt.attemptNumber,
+        timestamp: new Date().toISOString(),
+    };
+    for (const listener of replyLifecycleListeners) {
+        try { listener(event); } catch { /* Observation must never change Reply Cycle behavior. */ }
+    }
+}
 
 export function subscribeProviderErrors(listener: ProviderErrorListener): () => void {
     providerErrorListeners.add(listener);
@@ -101,6 +136,7 @@ interface Attempt {
     deadlineAt: number;
     controller: AbortController;
     modelPlugin: ModelPlugin;
+    promptSnapshot: string;
     refs: Map<string, string>;
     hasUsedWebSearch: boolean;
     status: AttemptStatus;
@@ -360,6 +396,7 @@ function updateCycle(cycle: Cycle, request: ReplyRequest): void {
     }
     cycle.interruptionCount++;
     attempt.status = "interrupted";
+    publishReplyLifecycle(cycle, attempt, { kind: "interrupted" });
     clearAttemptTimer(attempt);
     logger.info("[AI] interrupted request=" + shortId(attempt.requestId) +
         " by revision=" + revision + " interrupt=" + cycle.interruptionCount + "/3");
@@ -378,10 +415,13 @@ function startAttempt(cycle: Cycle, revision: number, refs: Map<string, string>)
     const attempt: Attempt = {
         requestId: randomUUID(), attemptNumber: ++cycle.attemptNumber,
         snapshotRevision: revision, startedAt, deadlineAt,
-        controller: new AbortController(), modelPlugin, refs, hasUsedWebSearch: false,
+        controller: new AbortController(), modelPlugin,
+        promptSnapshot: getPromptStore().getForModel(modelPlugin.id)?.content ?? "",
+        refs, hasUsedWebSearch: false,
         status: "running", resolveStop: resolve, stop,
     };
     cycle.currentAttempt = attempt;
+    publishReplyLifecycle(cycle, attempt, { kind: "started" });
     cycle.lastAttemptSnapshotRevision = revision;
     cycle.trailingPriority = 0;
     cycle.trailingAtBot = false;
@@ -445,7 +485,7 @@ async function runAttempt(cycle: Cycle, request: ReplyRequest, input: AttemptInp
                 onWebSearchStart: webSearchCallback(request, cycle, attempt) };
             return cycle.deps.executeAi
                 ? cycle.deps.executeAi(input.aiInput, options)
-                : runModelPlugin(attempt.modelPlugin, input.aiInput, options);
+                : runModelPlugin(attempt.modelPlugin, input.aiInput, options, attempt.promptSnapshot);
         })
         .then((value): WorkResult => {
             if (attempt.status === "running") {
@@ -523,14 +563,23 @@ function quoteDecision(request: ReplyRequest, cycle: Cycle, attempt: Attempt, pr
 async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt, result: AiResult): Promise<void> {
     if (cycle.cancelled || cycle.currentAttempt !== attempt || attempt.status !== "completed") return;
     if (result.kind === "no_reply") {
-        if (!canNoReply(cycle)) { await sendFailureNotice(request); return; }
+        if (!canNoReply(cycle)) {
+            publishReplyLifecycle(cycle, attempt, { kind: "failed", failureStage: "generation" });
+            await sendFailureNotice(request);
+            return;
+        }
         logger.info("[AI] no reply");
+        publishReplyLifecycle(cycle, attempt, { kind: "completed" });
         if (cycle.effectiveTriggerKind === "active-soft" && cycle.engagementGeneration !== undefined &&
             cycles.get(cycle.key) === cycle) stopConversation(request.message, cycle.engagementGeneration);
         return;
     }
     const action = normalizeQQReplyAction(result.action);
-    if (!action) { await sendFailureNotice(request); return; }
+    if (!action) {
+        publishReplyLifecycle(cycle, attempt, { kind: "failed", failureStage: "generation" });
+        await sendFailureNotice(request);
+        return;
+    }
 
     attempt.status = "sending";
     clearAttemptTimer(attempt);
@@ -549,8 +598,9 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
             try {
                 const response = await sendAiReply(request.bot, request.message, rendered, quoteIds[index],
                     () => attempt.status === "sending" && !cycle.cancelled);
-                if (!response.sent) break;
+                if (!response.sent) { failed = true; break; }
                 sent++;
+                publishReplyLifecycle(cycle, attempt, { kind: "reply-sent", content: action.messages[index]?.content ?? "" });
                 rememberBotReply(request.message, rendered.contextText, response);
                 logger.info(action.messages.length === 1 ? "[Reply] sent" : "[Reply] sent " + sent + "/" + action.messages.length);
             } catch (error) {
@@ -562,6 +612,8 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
     } catch (error) { failed = true; logger.error("[Reply] render error", error); }
     finally {
         if (attempt.status === "sending") attempt.status = failed ? "failed" : "completed";
+        if (attempt.status === "failed") publishReplyLifecycle(cycle, attempt, { kind: "failed", failureStage: "send" });
+        else if (attempt.status === "completed") publishReplyLifecycle(cycle, attempt, { kind: "completed" });
         if (sent > 0 && request.isGroup && cycles.get(cycle.key) === cycle) markConversationActive(request.message);
     }
 }
@@ -623,6 +675,7 @@ async function executeCycle(cycle: Cycle): Promise<void> {
             if (outcome.kind === "cancelled" || cycle.cancelled) break;
             if (outcome.kind === "timeout") {
                 attempt.status = "timed_out";
+                publishReplyLifecycle(cycle, attempt, { kind: "failed", failureStage: "generation" });
                 clearAttemptTimer(attempt);
                 const currentRevision = getMessageRevision(cycle.latestRequest.message);
                 if (attempt.hasUsedWebSearch || cycle.webSearchTriggered) {
@@ -647,6 +700,7 @@ async function executeCycle(cycle: Cycle): Promise<void> {
             }
             if (outcome.kind === "error") {
                 attempt.status = "failed";
+                publishReplyLifecycle(cycle, attempt, { kind: "failed", failureStage: "generation" });
                 cycle.consumedRevision = attempt.snapshotRevision;
                 const upstream = classifyUpstreamFailure(outcome.error);
                 if (outcome.error instanceof ModelProviderError || upstream) {

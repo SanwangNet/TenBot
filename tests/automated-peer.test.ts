@@ -149,6 +149,22 @@ test("loop guard can replace registered IDs without clearing active conversation
     assert.equal(next.maxCycles, 3);
 });
 
+test("loop guard hot-updates the global limit without resetting conversation counters", () => {
+    const peer = createAutomatedPeerLoopGuard(["peer"], 4);
+    assert.equal(peer.beforeNewCycle("group:raise", "peer").cycle, 1);
+    assert.equal(peer.beforeNewCycle("group:raise", "peer").cycle, 2);
+    assert.equal(peer.beforeNewCycle("group:raise", "peer").cycle, 3);
+    peer.setMaxCycles(6);
+    assert.equal(peer.beforeNewCycle("group:raise", "peer").cycle, 4);
+
+    const lowered = createAutomatedPeerLoopGuard(["peer"], 4);
+    assert.equal(lowered.beforeNewCycle("group:lower", "peer").cycle, 1);
+    assert.equal(lowered.beforeNewCycle("group:lower", "peer").cycle, 2);
+    assert.equal(lowered.beforeNewCycle("group:lower", "peer").cycle, 3);
+    lowered.setMaxCycles(2);
+    assert.equal(lowered.beforeNewCycle("group:lower", "peer").allowed, false);
+});
+
 test("RecentPeerRegistry is bounded, refreshes order and stores only stable peer metadata", () => {
     let tick = 0;
     const registry = new RecentPeerRegistry(2, () => new Date(1_700_000_000_000 + tick++ * 1000));

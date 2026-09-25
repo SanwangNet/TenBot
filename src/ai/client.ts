@@ -18,10 +18,10 @@ export interface ChatOptions {
 
 const tenBotTools = [qqReplyTool, memeLookupTool] as const;
 
-function createRequest(plugin: ModelPlugin, input: string, options: ChatOptions): ModelRequest {
+function createRequest(plugin: ModelPlugin, input: string, options: ChatOptions, promptSnapshot?: string): ModelRequest {
     return {
         input,
-        systemPrompt: getPromptStore().getForModel(plugin.id)?.content ?? "",
+        systemPrompt: promptSnapshot ?? getPromptStore().getForModel(plugin.id)?.content ?? "",
         imageUrls: options.imageUrls,
         tools: tenBotTools,
         async executeTool(call) {
@@ -46,8 +46,9 @@ export async function runModelPlugin(
     plugin: ModelPlugin,
     input: string,
     options: ChatOptions,
+    promptSnapshot?: string,
 ): Promise<AiResult> {
-    return plugin.generate(createRequest(plugin, input, options), {
+    return plugin.generate(createRequest(plugin, input, options, promptSnapshot), {
         signal: options.signal,
         onEvent: async (event) => {
             if (event.type === "streamStarted") {

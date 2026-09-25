@@ -4,6 +4,7 @@ import type { LogEntry, LogListener } from "../shared/logger.js";
 import type { RuntimeEvent, RuntimeEventListener } from "./runtime-event.js";
 import type { RuntimeStatus } from "./runtime-status.js";
 import type { AutomatedPeerMutationResult, AutomatedPeerSummary } from "./automated-peers.js";
+import { ConversationTimelineStore, type ConversationSummary, type ConversationItem } from "./conversation-timeline.js";
 
 export const MAX_TUI_LOG_ENTRIES = 400;
 
@@ -19,6 +20,8 @@ export interface TenBotControl {
     updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
     getAutomatedPeers(): AutomatedPeerSummary[];
     getRecentPeers(): AutomatedPeerSummary[];
+    getConversations(): ConversationSummary[];
+    getConversationTimeline(conversationId: string): ConversationItem[];
     addAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
     removeAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
     subscribeStatus(listener: StatusListener): () => void;
@@ -50,6 +53,7 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
 } {
     const statusListeners = new Set<StatusListener>();
     const eventListeners = new Set<RuntimeEventListener>();
+    const conversations = new ConversationTimelineStore();
     const getStatus = (): RuntimeStatus => structuredClone(operations.getStatus());
 
     return {
@@ -58,6 +62,8 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
         updateConfig: (patch) => operations.updateConfig(patch),
         getAutomatedPeers: () => structuredClone(operations.getAutomatedPeers()),
         getRecentPeers: () => structuredClone(operations.getRecentPeers()),
+        getConversations: () => conversations.list(),
+        getConversationTimeline: (conversationId) => conversations.get(conversationId),
         addAutomatedPeer: (id) => operations.addAutomatedPeer(id),
         removeAutomatedPeer: (id) => operations.removeAutomatedPeer(id),
         subscribeStatus(listener) {
@@ -88,6 +94,7 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
             }
         },
         publishEvent(event: RuntimeEvent) {
+            if (event.type === "conversation-item") conversations.append(event);
             for (const listener of eventListeners) {
                 try { listener(structuredClone(event)); } catch { /* UI listeners cannot block Runtime work. */ }
             }

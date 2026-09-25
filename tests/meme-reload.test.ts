@@ -4,11 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { rankMemeMatches } from "../src/skills/meme/search.js";
-import { MemeStore } from "../src/skills/meme/store.js";
+import { MemeStore, sampleRecentMemeNames } from "../src/skills/meme/store.js";
 
 function entry(id: string, name: string) {
     return { id, name, aliases: [], summary: `${name} summary`, origin: "origin", meaning: "meaning", usage: "usage", examples: [] };
 }
+
+test("recent meme sample keeps source order with the newest entry at the bottom", () => {
+    assert.deepEqual(sampleRecentMemeNames(["A", "B", "C", "D", "E"].map((name, i) => entry(String(i), name)), 3), ["C", "D", "E"]);
+});
 
 test("MemeStore reload builds a new complete index while old snapshots stay usable", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tenbot-memes-"));

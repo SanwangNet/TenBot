@@ -2,6 +2,11 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createMemeSearchIndex, type MemeSearchIndex } from "./search.js";
 import type { MemeEntry } from "./types.js";
+
+export function sampleRecentMemeNames(entries: readonly MemeEntry[], limit = 5): string[] {
+    if (!Number.isSafeInteger(limit) || limit < 1) return [];
+    return entries.slice(-limit).map((entry) => entry.name);
+}
 import { validateMemeFile } from "./validation.js";
 
 export interface MemeRuntimeSnapshot {
@@ -21,6 +26,10 @@ export class MemeStore {
     private snapshot?: MemeRuntimeSnapshot;
 
     constructor(private readonly dataPath: URL | string = new URL("./data/memes.json", import.meta.url)) {}
+
+    getPath(): URL | string {
+        return this.dataPath;
+    }
 
     getSnapshot(): MemeRuntimeSnapshot {
         return this.snapshot ??= createSnapshot(JSON.parse(readFileSync(this.dataPath, "utf8")), 1);

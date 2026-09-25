@@ -17,7 +17,6 @@ export function MemesView({ status }: { status: RuntimeStatus }) {
             {status.memes.sampleNames?.length
                 ? status.memes.sampleNames.map((name) => <Text key={name}>› {name}</Text>)
                 : <Text dimColor>暂无条目预览</Text>}
-            <Text dimColor>完整 JSON 仍由外部编辑器维护。</Text>
         </Panel>
     </Box>;
 }

@@ -22,6 +22,7 @@ export interface BotLoopGuardDecision {
 export interface AutomatedPeerLoopGuard {
     isAutomatedPeer(authorId: string | undefined): boolean;
     replacePeers(peerIds: Iterable<string>): void;
+    setMaxCycles(maxCycles: number): void;
     observeAutomatedPeerMessage(conversationKey: string): void;
     resetByHumanMessage(conversationKey: string, authorName?: string): void;
     beforeNewCycle(conversationKey: string, authorId: string | undefined, authorName?: string): BotLoopGuardDecision;
@@ -40,16 +41,17 @@ function authorLabel(authorName?: string): string {
 
 export function createAutomatedPeerLoopGuard(
     peerIds: string | Iterable<string> | undefined,
-    maxCycles = DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES,
+    initialMaxCycles = DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES,
     now: () => number = Date.now,
     stateTtlMs = BOT_LOOP_GUARD_STATE_TTL_MS,
 ): AutomatedPeerLoopGuard {
-    if (!Number.isSafeInteger(maxCycles) || maxCycles < 1) {
+    if (!Number.isSafeInteger(initialMaxCycles) || initialMaxCycles < 1) {
         throw new Error("BOT_LOOP_GUARD_MAX_CYCLES 必须是大于等于 1 的整数");
     }
     let ids = typeof peerIds === "string" || peerIds === undefined
         ? new Set(parseAutomatedPeerIds(peerIds))
         : new Set([...peerIds].map((id) => id.trim()).filter(Boolean));
+    let maxCycles = initialMaxCycles;
     const states = new Map<string, ConversationGuardState>();
 
     function expireInactiveStates(currentTime: number): void {
@@ -64,6 +66,12 @@ export function createAutomatedPeerLoopGuard(
         },
         replacePeers(peerIds) {
             ids = new Set([...peerIds].map((id) => id.trim()).filter(Boolean));
+        },
+        setMaxCycles(nextMaxCycles) {
+            if (!Number.isSafeInteger(nextMaxCycles) || nextMaxCycles < 1) {
+                throw new Error("BOT_LOOP_GUARD_MAX_CYCLES 必须是大于等于 1 的整数");
+            }
+            maxCycles = nextMaxCycles;
         },
         observeAutomatedPeerMessage(conversationKey) {
             const currentTime = now();

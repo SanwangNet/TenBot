@@ -71,6 +71,10 @@ function parseProvider(value: string | undefined): ModelProviderId {
 export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     const provider = parseProvider(env.AI_PROVIDER);
     return {
+        qq: {
+            appId: env.QQBOT_APP_ID,
+            appSecret: env.QQBOT_APP_SECRET,
+        },
         ai: {
             provider,
             gpt: {
