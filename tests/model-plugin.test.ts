@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { runModelPlugin } from "../src/ai/client.js";
 import { createModelPlugin } from "../src/ai/model-registry.js";
 import { ModelAbortedError, type ModelRequest } from "../src/ai/model-plugin.js";
 import { createDeepSeekPlugin } from "../src/ai/plugins/deepseek/index.js";
-import { DEEPSEEK_SYSTEM_PROMPT } from "../src/ai/plugins/deepseek/prompt.js";
 import { createGptPlugin } from "../src/ai/plugins/gpt/index.js";
-import { GPT_SYSTEM_PROMPT } from "../src/ai/plugins/gpt/prompt.js";
+
+const GPT_SYSTEM_PROMPT = readFileSync(new URL("../src/ai/plugins/gpt/prompt.md", import.meta.url), "utf8");
+const DEEPSEEK_SYSTEM_PROMPT = readFileSync(new URL("../src/ai/plugins/deepseek/prompt.md", import.meta.url), "utf8");
 
 type ResponseEvent = Record<string, any>;
 function complete(output: unknown[]): ResponseEvent {
@@ -20,8 +22,8 @@ function sse(events: ResponseEvent[]): Response {
     const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n";
     return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
-function pluginRequest(input = "offline"): ModelRequest {
-    return { input, tools: [], executeTool: async () => ({ kind: "ignore" }) };
+function pluginRequest(input = "offline", systemPrompt = "offline provider prompt"): ModelRequest {
+    return { input, systemPrompt, tools: [], executeTool: async () => ({ kind: "ignore" }) };
 }
 function options(signal = new AbortController().signal) {
     return { signal };
@@ -57,9 +59,20 @@ test("GPT and DeepSeek use isolated provider prompts and keep the same persona",
     assert.match(DEEPSEEK_SYSTEM_PROMPT, /你叫“小尘”/);
     await withResponses([sse([messageText("收到")]), sse([messageText("收到")])], async (bodies) => {
         await createGptPlugin({ apiKey: "offline", baseURL: "https://example.invalid" })
-            .generate(pluginRequest(), options());
+            .generate(pluginRequest("offline", GPT_SYSTEM_PROMPT), options());
         await createDeepSeekPlugin({ apiKey: "offline" })
-            .generate(pluginRequest(), options());
+            .generate(pluginRequest("offline", DEEPSEEK_SYSTEM_PROMPT), options());
+        assert.equal(bodies[0].instructions, GPT_SYSTEM_PROMPT);
+        assert.equal(bodies[1].instructions, DEEPSEEK_SYSTEM_PROMPT);
+    });
+});
+
+test("Runtime ModelRequest captures the selected PromptStore snapshot", async () => {
+    const gpt = createGptPlugin({ apiKey: "offline", baseURL: "https://example.invalid" });
+    const deepseek = createDeepSeekPlugin({ apiKey: "offline" });
+    await withResponses([sse([messageText("GPT")]), sse([messageText("DeepSeek")])], async (bodies) => {
+        await runModelPlugin(gpt, "offline", { signal: new AbortController().signal });
+        await runModelPlugin(deepseek, "offline", { signal: new AbortController().signal });
         assert.equal(bodies[0].instructions, GPT_SYSTEM_PROMPT);
         assert.equal(bodies[1].instructions, DEEPSEEK_SYSTEM_PROMPT);
     });

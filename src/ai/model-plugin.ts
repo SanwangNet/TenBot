@@ -27,6 +27,8 @@ export type ModelToolExecution =
 /** The Runtime prepares the semantic input and owns the business-tool handlers. */
 export interface ModelRequest {
     input: string;
+    /** Immutable provider prompt captured when this Attempt starts. */
+    systemPrompt: string;
     imageUrls?: readonly string[];
     tools: readonly ModelToolDefinition[];
     executeTool(call: ModelToolCall): Promise<ModelToolExecution>;

@@ -4,6 +4,7 @@ import { chat, runModelPlugin } from "../../ai/client.js";
 import { getModelPlugin } from "../../ai/model-registry.js";
 import type { ModelPlugin } from "../../ai/model-plugin.js";
 import type { AiResult } from "../../ai/reply-result.js";
+import type { MemeRuntimeSnapshot } from "../../skills/meme/store.js";
 import { normalizeQQReplyAction, type QuotePreference } from "../../skills/qq-reply/skill.js";
 import { classifyUpstreamFailure } from "../../ai/upstream-error.js";
 import { logger, shortId } from "../../shared/logger.js";
@@ -32,7 +33,7 @@ const AI_ERROR_REPLY = "\u521a\u624d\u8111\u5b50\u77ed\u8def\u4e86\u4e00\u4e0b\u
 export type TriggerPriority = 0 | 1 | 2 | 3;
 export interface ReplyCycleAnchor { revision: number; message: NormalizedQqMessage }
 interface TrailingUpdate { anchor: ReplyCycleAnchor; priority: TriggerPriority }
-export interface AttemptInput { aiInput: string; imageUrls: string[]; refs?: Map<string, string> }
+export interface AttemptInput { aiInput: string; imageUrls: string[]; refs?: Map<string, string>; memeSnapshot?: MemeRuntimeSnapshot }
 export interface AttemptBuildContext {
     allowNoReply: boolean;
     triggerPriority: TriggerPriority;
@@ -125,6 +126,7 @@ interface Cycle {
 }
 const cycles = new Map<string, Cycle>();
 const triggerCycles = new Map<string, Set<string>>();
+let acceptingCycles = true;
 
 function addTrigger(cycle: Cycle, message: NormalizedQqMessage, priority: TriggerPriority): void {
     const id = getTriggerMessageId(message);
@@ -418,6 +420,7 @@ async function runAttempt(cycle: Cycle, request: ReplyRequest, input: AttemptInp
     const work: Promise<WorkResult> = Promise.resolve()
         .then(() => {
             const options = { signal: attempt.controller.signal, imageUrls: input.imageUrls,
+                memeSnapshot: input.memeSnapshot,
                 onWebSearchStart: webSearchCallback(request, cycle, attempt) };
             return cycle.deps.executeAi
                 ? cycle.deps.executeAi(input.aiInput, options)
@@ -652,6 +655,7 @@ async function executeCycle(cycle: Cycle): Promise<void> {
 }
 /** Submits committed messages to a per-conversation, single-flight reply cycle. */
 export function coordinateAiReply(request: ReplyRequest, dependencies: Dependencies = {}): Promise<void> {
+    if (!acceptingCycles) return Promise.resolve();
     const key = getConversationKey(request.message);
     const active = cycles.get(key);
     if (active) {
@@ -664,6 +668,7 @@ export function coordinateAiReply(request: ReplyRequest, dependencies: Dependenc
 
 function startNewCycle(request: ReplyRequest, dependencies: Dependencies, priority: TriggerPriority,
     trailingUpdates: readonly TrailingUpdate[] = [], isTrailing = false): Promise<void> {
+    if (!acceptingCycles) return Promise.resolve();
     const decision = (dependencies.botLoopGuard ?? automatedPeerLoopGuard).beforeNewCycle(
         getConversationKey(request.message), request.message.authorId, request.message.authorName,
     );
@@ -674,4 +679,23 @@ function startNewCycle(request: ReplyRequest, dependencies: Dependencies, priori
     if (isTrailing) logger.info("[Cycle] next id=" + shortId(cycle.cycleId));
     void executeCycle(cycle);
     return cycle.done;
+}
+
+export function getActiveReplyCycleCount(): number {
+    return cycles.size;
+}
+
+export async function shutdownReplyCoordinator(): Promise<void> {
+    acceptingCycles = false;
+    const active = [...cycles.values()];
+    for (const cycle of active) {
+        cycle.cancelled = true;
+        const attempt = cycle.currentAttempt;
+        if (!attempt) continue;
+        attempt.status = "cancelled";
+        clearAttemptTimer(attempt);
+        attempt.controller.abort();
+        resolveStop(attempt, "cancelled");
+    }
+    await Promise.all(active.map((cycle) => cycle.done));
 }

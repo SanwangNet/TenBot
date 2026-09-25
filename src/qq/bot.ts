@@ -4,7 +4,9 @@ import { logger, qqSdkLogger } from "../shared/logger.js";
 import { registerInteractionHandler } from "./handlers/interaction-handler.js";
 import { registerMessageHandler } from "./handlers/message-handler.js";
 
-export function createQqBot(): QQBot {
+export type QqConnectionState = "connecting" | "connected" | "disconnected" | "error";
+
+export function createQqBot(onConnectionState?: (state: QqConnectionState) => void): QQBot {
     const appId = process.env.QQBOT_APP_ID;
     const appSecret = process.env.QQBOT_APP_SECRET;
 
@@ -21,10 +23,12 @@ export function createQqBot(): QQBot {
     bot.use(quoteRef({ preferMsgElements: false }));
 
     bot.on("ready", () => {
+        onConnectionState?.("connected");
         logger.info("QQ Bot 已连接");
     });
 
     bot.on("error", (error) => {
+        onConnectionState?.("error");
         logger.error("[QQ] error", error);
     });
 

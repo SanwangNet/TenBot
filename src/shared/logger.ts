@@ -2,6 +2,14 @@ import type { Logger as QqSdkLogger } from "@tencent-connect/qqbot-nodejs";
 
 export type LogLevel = "info" | "debug" | "error";
 
+export interface LogEntry {
+    timestamp: string;
+    level: LogLevel;
+    text: string;
+}
+
+export type LogListener = (entry: LogEntry) => void;
+
 const configuredLevel = process.env.BOT_LOG_LEVEL?.toLowerCase();
 const logLevel: LogLevel = configuredLevel === "debug" || configuredLevel === "error"
     ? configuredLevel
@@ -12,6 +20,9 @@ const levels: Record<LogLevel, number> = {
     info: 1,
     error: 2,
 };
+
+const logListeners = new Set<LogListener>();
+let consoleOutputEnabled = true;
 
 function timestamp(): string {
     return new Date().toLocaleTimeString("en-GB", { hour12: false });
@@ -63,17 +74,27 @@ function formatValue(value: unknown): string {
     }
 }
 
-function write(level: LogLevel, values: unknown[]): void {
+function write(level: LogLevel, values: unknown[], preserveLastString = false): void {
     if (levels[level] < levels[logLevel]) {
         return;
     }
 
-    const text = values.filter((value) => value !== undefined).map(formatValue).join(" ");
+    const presentValues = values.filter((value) => value !== undefined);
+    const text = presentValues.map((value, index) =>
+        preserveLastString && index === presentValues.length - 1 && typeof value === "string"
+            ? value
+            : formatValue(value),
+    ).join(" ");
+    const entry: LogEntry = { timestamp: new Date().toISOString(), level, text };
+    for (const listener of logListeners) {
+        try { listener(entry); } catch { /* A log consumer must not break Runtime work. */ }
+    }
     const lines = text.split("\n");
     const output = lines.map((line, index) =>
         index === 0 ? `[${timestamp()}] ${line}` : line,
     ).join("\n");
 
+    if (!consoleOutputEnabled) return;
     if (level === "error") {
         console.error(output);
     } else {
@@ -88,6 +109,15 @@ export const logger = {
     error: (...values: unknown[]) => write("error", values),
 };
 
+export function subscribeLogs(listener: LogListener): () => void {
+    logListeners.add(listener);
+    return () => logListeners.delete(listener);
+}
+
+export function setConsoleLogOutputEnabled(enabled: boolean): void {
+    consoleOutputEnabled = enabled;
+}
+
 export function truncateLogText(value: string, maxLength = 160): string {
     const safe = sanitizeText(value).replace(/\s+/g, " ").trim();
     return safe.length > maxLength ? `${safe.slice(0, maxLength)}…` : safe;
@@ -97,7 +127,7 @@ export function truncateLogText(value: string, maxLength = 160): string {
 export function debugPeerIdentity(authorName: string | undefined, stableId: string | undefined): void {
     if (logLevel !== "debug" || !stableId) return;
     const id = stableId.length <= 256 ? JSON.stringify(stableId) : "[invalid-id]";
-    console.log(`[${timestamp()}] [Peer] author=${JSON.stringify(truncateLogText(authorName || "未知成员", 60))} id=${id}`);
+    write("debug", [`[Peer] author=${JSON.stringify(truncateLogText(authorName || "unknown member", 60))} id=${id}`], true);
 }
 
 export function shortId(value: string | undefined, length = 6): string {

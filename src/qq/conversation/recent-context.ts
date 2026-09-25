@@ -43,6 +43,14 @@ const memories =
         ConversationMemory
     >();
 
+export function getRecentContextConversationCount(): number {
+    const now = Date.now();
+    for (const [key, memory] of memories) {
+        if (now - memory.updatedAt > CONTEXT_TTL_MS) memories.delete(key);
+    }
+    return memories.size;
+}
+
 function getMessageTimestamp(
     message: NormalizedQqMessage,
 ): number {

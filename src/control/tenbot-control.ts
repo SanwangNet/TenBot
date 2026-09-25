@@ -1,0 +1,61 @@
+import type { PromptProvider } from "../ai/prompt-store.js";
+import type { LogEntry, LogListener } from "../shared/logger.js";
+import type { RuntimeStatus } from "./runtime-status.js";
+
+export const MAX_TUI_LOG_ENTRIES = 400;
+
+export type ReloadResult =
+    | { ok: true; message: string; loadedAt: string }
+    | { ok: false; message: string };
+
+export type StatusListener = (status: RuntimeStatus) => void;
+
+export interface TenBotControl {
+    getStatus(): RuntimeStatus;
+    subscribeStatus(listener: StatusListener): () => void;
+    subscribeLogs(listener: LogListener): () => void;
+    reloadPrompt(provider?: PromptProvider): Promise<ReloadResult>;
+    reloadMemes(): Promise<ReloadResult>;
+    shutdown(): Promise<void>;
+}
+
+export interface TenBotControlOperations {
+    getStatus(): RuntimeStatus;
+    reloadPrompt(provider?: PromptProvider): Promise<ReloadResult>;
+    reloadMemes(): Promise<ReloadResult>;
+    shutdown(): Promise<void>;
+    subscribeLogs(listener: LogListener): () => void;
+}
+
+/** Keeps UI-facing data and operations separate from Runtime implementation objects. */
+export function createTenBotControl(operations: TenBotControlOperations): TenBotControl & { publishStatus(): void } {
+    const statusListeners = new Set<StatusListener>();
+    const getStatus = (): RuntimeStatus => structuredClone(operations.getStatus());
+
+    return {
+        getStatus,
+        subscribeStatus(listener) {
+            statusListeners.add(listener);
+            listener(getStatus());
+            return () => statusListeners.delete(listener);
+        },
+        subscribeLogs: (listener) => operations.subscribeLogs(listener),
+        async reloadPrompt(provider) {
+            const result = await operations.reloadPrompt(provider);
+            this.publishStatus();
+            return result;
+        },
+        async reloadMemes() {
+            const result = await operations.reloadMemes();
+            this.publishStatus();
+            return result;
+        },
+        shutdown: () => operations.shutdown(),
+        publishStatus() {
+            const status = getStatus();
+            for (const listener of statusListeners) {
+                try { listener(status); } catch { /* UI listeners cannot block Runtime work. */ }
+            }
+        },
+    };
+}

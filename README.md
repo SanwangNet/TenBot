@@ -154,3 +154,9 @@ pnpm test
 旧版 `data/known-members.json` 不会自动导入 SQLite。本仓库当前没有该文件；旧数据可以保留作备份，让 Bot 在群消息中重新学习成员。不要把旧 JSON、SQLite 数据库或成员标识提交到 Git。
 
 当前安装的 QQ SDK 1.0.4 没有普通群消息撤回的入站事件，因此真实撤回暂时无法自动取消 AI 请求；内部已支持按触发消息 ID 取消并删除最近上下文。QQ 平台可用的消息类型和交互能力受官方 API 权限限制。AI 聊天依赖外部 Responses API 兼容后端。
+
+## TenBot TUI
+
+Run `pnpm tui` to start TenBot with its local terminal control surface. It shows QQ connection, the selected model, runtime counts, and recent logs. Press `p` to reload the active provider prompt, `m` to reload `memes.json`, `r` to reload both, or `q` / Ctrl+C for graceful shutdown.
+
+The TUI and Runtime run in the same process and communicate through the serializable `TenBotControl` interface. This release adds no HTTP or WebSocket API; a future web control surface can reuse the same Control Layer.

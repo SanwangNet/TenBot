@@ -23,7 +23,6 @@ export interface ResponsesPluginConfig {
     model: string;
     apiKey?: string;
     baseURL?: string;
-    prompt: string;
     capabilities: ModelCapabilities;
     reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
     verbosity?: "low" | "medium" | "high";
@@ -85,7 +84,7 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                     ];
                     stream = await getClient().responses.create({
                         model: config.model,
-                        instructions: config.prompt,
+                        instructions: request.systemPrompt,
                         input: requestInput,
                         ...(config.reasoningEffort ? { reasoning: { effort: config.reasoningEffort } } : {}),
                         ...(config.verbosity ? { text: { verbosity: config.verbosity } } : {}),

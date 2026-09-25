@@ -6,7 +6,7 @@ import type {
 import { buildAiInput, buildReplyPolicy } from "../../ai/input-builder.js";
 import { routeCommand } from "../../commands/router.js";
 import { projectMemeCandidates } from "../../skills/meme/projection.js";
-import { searchAutoMemeCandidates } from "../../skills/meme/skill.js";
+import { getMemeRuntimeSnapshot, searchAutoMemeCandidates } from "../../skills/meme/skill.js";
 import type { MemeSearchQuery } from "../../skills/meme/search.js";
 import { debugPeerIdentity, logger, shortId, truncateLogText } from "../../shared/logger.js";
 import {
@@ -145,6 +145,7 @@ export function registerMessageHandler(bot: QQBot, loopGuard: AutomatedPeerLoopG
                 await bot.sendText(latestMessage.replyTarget, randomSearchNotice());
             },
             buildAttempt: async (attemptMessage, context) => {
+                const memeSnapshot = getMemeRuntimeSnapshot();
                 const snapshot = buildReplyCycleSnapshot(attemptMessage);
                 const knownMembersContext = trigger.isGroup
                     ? await buildKnownMembersContext(attemptMessage)
@@ -162,7 +163,7 @@ export function registerMessageHandler(bot: QQBot, loopGuard: AutomatedPeerLoopG
                     const text = item.anchor.message.displayContent.trim();
                     if (text) memeQueries.push({ text, source: item.source });
                 }
-                const memeCandidates = searchAutoMemeCandidates(memeQueries);
+                const memeCandidates = searchAutoMemeCandidates(memeQueries, undefined, memeSnapshot);
                 const memeContext = projectMemeCandidates(memeCandidates);
                 if (memeCandidates.length) {
                     const top = truncateLogText(memeCandidates[0].entry.name, 64);
@@ -182,7 +183,7 @@ export function registerMessageHandler(bot: QQBot, loopGuard: AutomatedPeerLoopG
                     context.mentionedByName,
                     recentImageUrls.length > 0,
                 );
-                return { aiInput, imageUrls: useVision ? recentImageUrls : [], refs: snapshot.refs };
+                return { aiInput, imageUrls: useVision ? recentImageUrls : [], refs: snapshot.refs, memeSnapshot };
             },
         }, { botLoopGuard: loopGuard });
     });

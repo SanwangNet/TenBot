@@ -5,24 +5,28 @@ import type { ModelRequest } from "./model-plugin.js";
 import { lookupMeme, memeLookupTool } from "../skills/meme/skill.js";
 import { normalizeReplyMessages, parseQqReplyArguments, qqReplyTool } from "../skills/qq-reply/skill.js";
 import { logger } from "../shared/logger.js";
+import { getPromptStore } from "./prompt-store.js";
+import type { MemeRuntimeSnapshot } from "../skills/meme/store.js";
 
 export interface ChatOptions {
     signal: AbortSignal;
     onWebSearchStart?: () => void | Promise<void>;
     /** Images are sent only for the existing explicit vision path. */
     imageUrls?: string[];
+    memeSnapshot?: MemeRuntimeSnapshot;
 }
 
 const tenBotTools = [qqReplyTool, memeLookupTool] as const;
 
-function createRequest(input: string, options: ChatOptions): ModelRequest {
+function createRequest(plugin: ModelPlugin, input: string, options: ChatOptions): ModelRequest {
     return {
         input,
+        systemPrompt: getPromptStore().getForModel(plugin.id)?.content ?? "",
         imageUrls: options.imageUrls,
         tools: tenBotTools,
         async executeTool(call) {
             if (call.name === "meme_lookup") {
-                return { kind: "continue", output: lookupMeme(call.arguments) };
+                return { kind: "continue", output: lookupMeme(call.arguments, options.memeSnapshot) };
             }
             if (call.name === "qq_reply") {
                 const action = parseQqReplyArguments(call.arguments);
@@ -43,7 +47,7 @@ export async function runModelPlugin(
     input: string,
     options: ChatOptions,
 ): Promise<AiResult> {
-    return plugin.generate(createRequest(input, options), {
+    return plugin.generate(createRequest(plugin, input, options), {
         signal: options.signal,
         onEvent: async (event) => {
             if (event.type === "streamStarted") {

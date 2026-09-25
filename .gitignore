@@ -18,6 +18,7 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
+.idea/
 
 # Runtime member cache
 /data/known-members.json
