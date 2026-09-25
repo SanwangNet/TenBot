@@ -7,7 +7,7 @@
 - `/xxx` 命令由本地路由执行，未知命令由本地回复。
 - Minecraft 服务器状态查询、状态卡和刷新按钮共用同一查询能力。
 - 群聊和私聊中的 AI 回复支持最近 20 条群聊上下文、已见群成员、按需识图与网页搜索。
-- 普通 Reply Cycle 最长 30 秒；实际触发 Web Search 后最长 120 秒，超时会 abort 生成。
+- 普通 AI Attempt 最长 30 秒；无新消息时普通超时会在同一 Reply Cycle 内重试一次，因此最多约 60 秒。实际触发 Web Search 后仍以 Cycle 开始后 120 秒为上限，超时不重试。
 - 每个 conversation 同时只运行一个 AI Attempt；生成中最多被新消息打断 3 次，每次都基于最新上下文重试，剩余消息进入下一 Cycle。
 - 结构化 `qq_reply` 支持 Markdown 和已知成员 @；生成完成后进入 QQ 发送阶段，新消息不会中止已完成的回复。
 - 自然聊天时，AI 可通过结构化 `qq_reply` 一次发送最多三条连续 QQ 消息；Node 不按标点自动拆分。
@@ -46,7 +46,7 @@ flowchart TD
 
 ### Conversation Reply Cycle
 
-每个 conversation 同时最多一个生成中的 AI Attempt。生成中的新消息会 abort 当前 Attempt 并重建最新上下文，每个 Cycle 最多三次中断；达到上限后新消息缓存到下一 Cycle。正常硬截止从 Cycle 开始计 30 秒；当 Responses 流实际发出 Web Search 事件时，该 Cycle 的截止时间升至同一起点后 120 秒。
+每个 conversation 同时最多一个生成中的 AI Attempt。生成中的新消息会 abort 当前 Attempt 并重建最新上下文，每个 Cycle 最多三次中断；达到上限后新消息缓存到下一 Cycle。普通 Attempt 30 秒内无新信息而超时，会在同一 Cycle 中重建 snapshot 并重试一次；第二次普通超时沿用 soft 静默或 hard fallback。Responses 流实际发出 Web Search 事件时，继续使用 Cycle 开始后 120 秒的绝对上限，超时不重试。
 
 QQ Reply Skill 每次可发送 1～3 条消息，每条独立选择 `auto`、`none` 或当前 Attempt 的临时 `[mN]` 引用目标；Node 在发送时映射到真实 QQ message reference，真实消息 ID 只由 Node 管理，不进入模型输入。`mentions` 仍只在第一条实际消息发送。用户主动引用的 QQ 消息会尽量通过 SDK 的引用索引或事件中的引用内容显示给 AI；内容不可用时安全降级，不影响当前消息。
 

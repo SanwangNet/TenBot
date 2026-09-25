@@ -15,6 +15,7 @@ import { getTriggerMessageId, sendAiReply, sendTimeoutReply } from "./sender.js"
 export const AI_REQUEST_TIMEOUT_MS = 30_000;
 export const AI_WEB_SEARCH_TIMEOUT_MS = 120_000;
 export const MAX_GENERATION_INTERRUPTS = 3;
+export const MAX_TIMEOUT_RETRIES = 1;
 export const MULTI_MESSAGE_DELAY_MS = 450;
 export const AI_TIMEOUT_REPLY = "\u540e\u7aef\u5361\u4f4f\u4e86\uff0c\u7b49\u4f1a\u518d\u53eb\u6211\u4e00\u4e0b";
 export const AI_WEB_SEARCH_TIMEOUT_REPLY = "\u56de\u590d\u65f6\u95f4\u8fc7\u957f\uff0c\u5df2\u88ab\u4e2d\u6b62";
@@ -62,13 +63,17 @@ type AttemptStatus = "running" | "interrupted" | "completed" | "sending" | "time
 type StopReason = "interrupted" | "timeout" | "cancelled";
 interface Attempt {
     requestId: string;
+    attemptNumber: number;
     snapshotRevision: number;
     startedAt: number;
+    deadlineAt: number;
     controller: AbortController;
     refs: Map<string, string>;
+    hasUsedWebSearch: boolean;
     status: AttemptStatus;
     resolveStop: (reason: StopReason) => void;
     stop: Promise<StopReason>;
+    timer?: ReturnType<typeof setTimeout>;
 }
 interface Cycle {
     cycleId: string;
@@ -76,6 +81,8 @@ interface Cycle {
     anchorMessageId?: string;
     anchorRevision: number;
     interruptionCount: number;
+    timeoutRetryCount: number;
+    attemptNumber: number;
     cycleStartedAt: number;
     deadlineAt: number;
     webSearchTriggered: boolean;
@@ -99,13 +106,9 @@ interface Cycle {
     triggerIds: Set<string>;
     seenMessageIds: Set<string>;
     deps: Dependencies;
-    timedOut: boolean;
     cancelled: boolean;
     finalizing: boolean;
     budgetLogged: boolean;
-    timer?: ReturnType<typeof setTimeout>;
-    timeout: Promise<void>;
-    resolveTimeout: () => void;
     done: Promise<void>;
     resolveDone: () => void;
 }
@@ -121,7 +124,7 @@ function addTrigger(cycle: Cycle, message: NormalizedQqMessage, priority: Trigge
     ids.add(cycle.cycleId);
 }
 function clearCycle(cycle: Cycle): void {
-    if (cycle.timer) clearTimeout(cycle.timer);
+    if (cycle.currentAttempt?.timer) clearTimeout(cycle.currentAttempt.timer);
     if (cycles.get(cycle.key) === cycle) cycles.delete(cycle.key);
     for (const id of cycle.triggerIds) {
         const ids = triggerCycles.get(id);
@@ -145,34 +148,37 @@ function waitBetweenMessages(ms: number, signal: AbortSignal): Promise<boolean> 
     });
 }
 function resolveStop(attempt: Attempt, reason: StopReason): void { attempt.resolveStop(reason); }
-function expireCycle(cycle: Cycle): void {
-    if (cycle.finalizing || cycle.cancelled || cycle.timedOut) return;
-    cycle.timedOut = true;
-    const attempt = cycle.currentAttempt;
-    if (attempt?.status === "running") {
-        attempt.status = "timed_out";
-        attempt.controller.abort();
-        resolveStop(attempt, "timeout");
-    }
-    cycle.resolveTimeout();
-    logger.error("[Cycle] deadline exceeded id=" + shortId(cycle.cycleId));
+function clearAttemptTimer(attempt: Attempt): void {
+    if (attempt.timer) clearTimeout(attempt.timer);
+    attempt.timer = undefined;
 }
-function armDeadline(cycle: Cycle): void {
-    if (cycle.timer) clearTimeout(cycle.timer);
-    cycle.timer = setTimeout(() => expireCycle(cycle), Math.max(0, cycle.deadlineAt - Date.now()));
+function expireAttempt(cycle: Cycle, attempt: Attempt): void {
+    if (cycle.currentAttempt !== attempt || cycle.finalizing || cycle.cancelled || attempt.status !== "running") return;
+    attempt.status = "timed_out";
+    clearAttemptTimer(attempt);
+    attempt.controller.abort();
+    resolveStop(attempt, "timeout");
+    logger.info("[AI] timeout request=" + shortId(attempt.requestId) + " attempt=" + attempt.attemptNumber +
+        " revision=" + attempt.snapshotRevision);
+}
+function armAttemptDeadline(cycle: Cycle, attempt: Attempt): void {
+    clearAttemptTimer(attempt);
+    attempt.timer = setTimeout(() => expireAttempt(cycle, attempt), Math.max(0, attempt.deadlineAt - Date.now()));
 }
 function extendForWebSearch(cycle: Cycle): void {
-    if (cycle.webSearchTriggered || cycle.finalizing || cycle.timedOut) return;
+    const attempt = cycle.currentAttempt;
+    if (!attempt || attempt.status !== "running" || cycle.webSearchTriggered || cycle.finalizing || cycle.cancelled) return;
     if (Date.now() >= cycle.deadlineAt) {
-        expireCycle(cycle);
+        expireAttempt(cycle, attempt);
         return;
     }
     cycle.webSearchTriggered = true;
-    const ordinary = cycle.deps.timeoutMs ?? AI_REQUEST_TIMEOUT_MS;
     const extended = cycle.deps.webSearchTimeoutMs ?? AI_WEB_SEARCH_TIMEOUT_MS;
     cycle.deadlineAt = cycle.cycleStartedAt + extended;
-    armDeadline(cycle);
-    logger.info("[Cycle] deadline extended " + Math.round(ordinary / 1000) + "s -> " + Math.round(extended / 1000) + "s");
+    attempt.hasUsedWebSearch = true;
+    attempt.deadlineAt = cycle.deadlineAt;
+    armAttemptDeadline(cycle, attempt);
+    logger.info("[Cycle] Web Search deadline=" + Math.round(extended / 1000) + "s from cycle start");
 }
 function priorityOf(request: ReplyRequest): TriggerPriority {
     if (request.triggerKind) return request.triggerKind === "hard-mention" ? 3
@@ -241,8 +247,6 @@ export function buildReplyCycleMemeQuery(context: AttemptBuildContext): string {
 }
 function createCycle(request: ReplyRequest, deps: Dependencies, priority: TriggerPriority,
     trailingUpdates: readonly TrailingUpdate[] = []): Cycle {
-    let resolveTimeout!: () => void;
-    const timeout = new Promise<void>((resolve) => { resolveTimeout = resolve; });
     let resolveDone!: () => void;
     const done = new Promise<void>((resolve) => { resolveDone = resolve; });
     const started = Date.now();
@@ -260,7 +264,7 @@ function createCycle(request: ReplyRequest, deps: Dependencies, priority: Trigge
     const cycle: Cycle = {
         cycleId: randomUUID(), key: getConversationKey(request.message),
         anchorMessageId: getTriggerMessageId(request.message), anchorRevision: revision,
-        interruptionCount: 0, cycleStartedAt: started,
+        interruptionCount: 0, timeoutRetryCount: 0, attemptNumber: 0, cycleStartedAt: started,
         deadlineAt: started + (deps.timeoutMs ?? AI_REQUEST_TIMEOUT_MS),
         webSearchTriggered: false, consumedRevision: revision - 1,
         latestRequest: request, priority, originTriggerKind: kindOf(originPriority, request.isGroup),
@@ -272,8 +276,8 @@ function createCycle(request: ReplyRequest, deps: Dependencies, priority: Trigge
         hasName: request.mentionedByName === true, trailingPriority: 0,
         trailingAtBot: false, trailingName: false, trailingUpdates: [],
         triggerIds: new Set(), seenMessageIds: new Set(),
-        deps, timedOut: false, cancelled: false, finalizing: false, budgetLogged: false,
-        timeout, resolveTimeout, done, resolveDone,
+        deps, cancelled: false, finalizing: false, budgetLogged: false,
+        done, resolveDone,
     };
     const anchorId = getTriggerMessageId(request.message);
     if (anchorId) cycle.seenMessageIds.add(anchorId);
@@ -322,6 +326,7 @@ function updateCycle(cycle: Cycle, request: ReplyRequest): void {
     }
     cycle.interruptionCount++;
     attempt.status = "interrupted";
+    clearAttemptTimer(attempt);
     logger.info("[AI] interrupted request=" + shortId(attempt.requestId) +
         " by revision=" + revision + " interrupt=" + cycle.interruptionCount + "/3");
     attempt.controller.abort();
@@ -330,9 +335,16 @@ function updateCycle(cycle: Cycle, request: ReplyRequest): void {
 function startAttempt(cycle: Cycle, revision: number, refs: Map<string, string>): Attempt {
     let resolve!: (reason: StopReason) => void;
     const stop = new Promise<StopReason>((done) => { resolve = done; });
+    const startedAt = Date.now();
+    const deadlineAt = cycle.webSearchTriggered
+        ? cycle.cycleStartedAt + (cycle.deps.webSearchTimeoutMs ?? AI_WEB_SEARCH_TIMEOUT_MS)
+        : startedAt + (cycle.deps.timeoutMs ?? AI_REQUEST_TIMEOUT_MS);
+    cycle.deadlineAt = deadlineAt;
     const attempt: Attempt = {
-        requestId: randomUUID(), snapshotRevision: revision, startedAt: Date.now(),
-        controller: new AbortController(), refs, status: "running", resolveStop: resolve, stop,
+        requestId: randomUUID(), attemptNumber: ++cycle.attemptNumber,
+        snapshotRevision: revision, startedAt, deadlineAt,
+        controller: new AbortController(), refs, hasUsedWebSearch: false,
+        status: "running", resolveStop: resolve, stop,
     };
     cycle.currentAttempt = attempt;
     cycle.lastAttemptSnapshotRevision = revision;
@@ -341,12 +353,14 @@ function startAttempt(cycle: Cycle, revision: number, refs: Map<string, string>)
     cycle.trailingName = false;
     cycle.trailingUpdates = [];
     cycle.budgetLogged = false;
+    armAttemptDeadline(cycle, attempt);
     logger.info("[AI] start request=" + shortId(attempt.requestId) + " model=" + AI_MODEL +
-        " attempt=" + (cycle.interruptionCount + 1) + " snapshot=" + revision +
+        " attempt=" + attempt.attemptNumber + " snapshot=" + revision +
         " anchor=" + cycle.effectiveAnchor.revision);
     return attempt;
 }
 function clearAttempt(cycle: Cycle, attempt: Attempt): void {
+    clearAttemptTimer(attempt);
     if (cycle.currentAttempt === attempt) cycle.currentAttempt = undefined;
 }
 async function sendFailureNotice(request: ReplyRequest): Promise<void> {
@@ -370,7 +384,7 @@ function webSearchCallback(request: ReplyRequest, cycle: Cycle, attempt: Attempt
         if (cycle.currentAttempt !== attempt || attempt.status !== "running") return;
         if (!cycle.webSearchTriggered) {
             extendForWebSearch(cycle);
-            if (cycle.timedOut || !cycle.webSearchTriggered) return;
+            if (attempt.status !== "running" || !cycle.webSearchTriggered) return;
             logger.info("[AI] web search");
             await request.onWebSearchStart();
         }
@@ -384,28 +398,27 @@ async function runAttempt(cycle: Cycle, request: ReplyRequest, input: AttemptInp
         .then(() => execute(input.aiInput, { signal: attempt.controller.signal, imageUrls: input.imageUrls,
             onWebSearchStart: webSearchCallback(request, cycle, attempt) }))
         .then((value): WorkResult => {
-            if (attempt.status === "running") attempt.status = "completed";
+            if (attempt.status === "running") {
+                attempt.status = "completed";
+                clearAttemptTimer(attempt);
+            }
             return { kind: "result", value };
         }, (error: unknown): WorkResult => {
-            if (attempt.status === "running") attempt.status = "failed";
+            if (attempt.status === "running") {
+                attempt.status = "failed";
+                clearAttemptTimer(attempt);
+            }
             return { kind: "error", error };
         });
     const outcome = await Promise.race([
         work,
         attempt.stop.then((kind): AttemptResult => ({ kind })),
-        cycle.timeout.then((): AttemptResult => ({ kind: "timeout" })),
     ]);
-    if (outcome.kind === "interrupted") {
-        // Let an aborted stream settle before restarting, but never keep the cycle
-        // alive past its deadline when an upstream promise ignores abort.
-        await Promise.race([work, cycle.timeout]);
-        return cycle.timedOut ? { kind: "timeout" } : outcome;
-    }
+    if (outcome.kind === "interrupted") return outcome;
     if (outcome.kind === "cancelled" || outcome.kind === "timeout") return outcome;
-    if (Date.now() >= cycle.deadlineAt && cycle.deadlineAt <= Date.now() && !cycle.timedOut) {
-        cycle.timedOut = true;
-        attempt.controller.abort();
-        cycle.resolveTimeout();
+    if (Date.now() >= attempt.deadlineAt && attempt.status === "completed") {
+        attempt.status = "running";
+        expireAttempt(cycle, attempt);
         return { kind: "timeout" };
     }
     return outcome;
@@ -415,6 +428,7 @@ function cancelCycle(cycle: Cycle): boolean {
     if (!attempt || (attempt.status !== "running" && attempt.status !== "sending")) return false;
     cycle.cancelled = true;
     attempt.status = "cancelled";
+    clearAttemptTimer(attempt);
     attempt.controller.abort();
     resolveStop(attempt, "cancelled");
     return true;
@@ -469,8 +483,7 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
     if (!action) { await sendFailureNotice(request); return; }
 
     attempt.status = "sending";
-    if (cycle.timer) clearTimeout(cycle.timer);
-    cycle.timer = undefined;
+    clearAttemptTimer(attempt);
     // Freeze every transport target before the first send or 450ms delay.
     const quoteIds = action.messages.map((message) => quoteDecision(request, cycle, attempt, message.quote));
     let sent = 0;
@@ -530,8 +543,7 @@ function finishCycle(cycle: Cycle): void {
 }
 async function executeCycle(cycle: Cycle): Promise<void> {
     try {
-        armDeadline(cycle);
-        while (!cycle.cancelled && !cycle.timedOut) {
+        while (!cycle.cancelled) {
             let request!: ReplyRequest;
             let input!: AttemptInput;
             let revision = 0;
@@ -544,7 +556,7 @@ async function executeCycle(cycle: Cycle): Promise<void> {
                     : { aiInput: request.aiInput, imageUrls: request.imageUrls };
                 if (request.isGroup) input = { ...input,
                     aiInput: input.aiInput + "\n" + semanticAnchorText(context, input.refs) };
-                if (cycle.cancelled || cycle.timedOut) return;
+                if (cycle.cancelled) return;
                 if (cycle.latestRequest === request && getMessageRevision(request.message) === revision) break;
             }
             cycle.trailingPriority = 0;
@@ -553,16 +565,31 @@ async function executeCycle(cycle: Cycle): Promise<void> {
             cycle.trailingUpdates = [];
             const attempt = startAttempt(cycle, revision, input.refs ?? new Map());
             const outcome = await runAttempt(cycle, request, input, attempt);
-            if (outcome.kind === "interrupted" && !cycle.timedOut && !cycle.cancelled) {
+            if (outcome.kind === "interrupted" && !cycle.cancelled && cycle.currentAttempt === attempt) {
                 clearAttempt(cycle, attempt);
-                logger.info("[AI] restart attempt=" + (cycle.interruptionCount + 1) +
+                logger.info("[AI] restart attempt=" + (cycle.attemptNumber + 1) +
                     " interrupt=" + cycle.interruptionCount + "/3 anchor=" + cycle.effectiveAnchor.revision +
                     " snapshot=" + getMessageRevision(cycle.latestRequest.message));
                 continue;
             }
             if (outcome.kind === "cancelled" || cycle.cancelled) break;
-            if (outcome.kind === "timeout" || cycle.timedOut) {
+            if (outcome.kind === "timeout") {
                 attempt.status = "timed_out";
+                clearAttemptTimer(attempt);
+                const currentRevision = getMessageRevision(cycle.latestRequest.message);
+                if (attempt.hasUsedWebSearch || cycle.webSearchTriggered) {
+                    logger.info("[AI] timeout retry skipped reason=web-search");
+                } else if (currentRevision > attempt.snapshotRevision) {
+                    logger.info("[AI] timeout retry skipped revision=" + attempt.snapshotRevision + "->" + currentRevision);
+                } else if (cycle.timeoutRetryCount < MAX_TIMEOUT_RETRIES) {
+                    cycle.timeoutRetryCount++;
+                    clearAttempt(cycle, attempt);
+                    logger.info("[AI] timeout retry " + cycle.timeoutRetryCount + "/" + MAX_TIMEOUT_RETRIES);
+                    logger.info("[AI] restart attempt=" + (cycle.attemptNumber + 1) + " reason=timeout");
+                    continue;
+                } else {
+                    logger.info("[AI] timeout retry exhausted");
+                }
                 cycle.consumedRevision = attempt.snapshotRevision;
                 if (cycle.webSearchTriggered || !canNoReply(cycle)) {
                     await sendFallback(request, cycle,
@@ -585,8 +612,7 @@ async function executeCycle(cycle: Cycle): Promise<void> {
             }
             if (attempt.status !== "completed" || cycle.cancelled) break;
             cycle.consumedRevision = attempt.snapshotRevision;
-            if (cycle.timer) clearTimeout(cycle.timer);
-            cycle.timer = undefined;
+            clearAttemptTimer(attempt);
             if (outcome.kind !== "result") break;
             await sendResult(cycle, request, attempt, outcome.value);
             break;
@@ -596,8 +622,7 @@ async function executeCycle(cycle: Cycle): Promise<void> {
         logger.error("[Cycle] error id=" + shortId(cycle.cycleId), error);
     }
     finally {
-        if (cycle.timer) clearTimeout(cycle.timer);
-        cycle.timer = undefined;
+        if (cycle.currentAttempt) clearAttemptTimer(cycle.currentAttempt);
         finishCycle(cycle);
     }
 }

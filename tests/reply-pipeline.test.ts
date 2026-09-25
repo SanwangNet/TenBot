@@ -352,16 +352,17 @@ test("quote none suppresses a delayed trigger reference", async () => {
     assert.deepEqual(calls.map((call) => call.method), ["markdown"]);
 });
 
-test("timeout records local notice, leaves engagement inactive, and discards late AI result", async () => {
+test("two timeout attempts keep the explicit fallback and discard the late AI result", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
     const trigger = message();
     recordIncomingMessageRevision(trigger);
     const { bot, calls } = fakeBot();
     let resolveAi!: (value: AiResult) => void;
     const ai = new Promise<AiResult>((resolve) => { resolveAi = resolve; });
-    let signal!: AbortSignal;
+    const signals: AbortSignal[] = [];
     const pending = coordinateAiReply(request(bot, trigger), {
         executeAi: async (_input, options) => {
-            signal = options.signal;
+            signals.push(options.signal);
             return new Promise<AiResult>((resolve, reject) => {
                 options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
                 ai.then(resolve, reject);
@@ -369,17 +370,23 @@ test("timeout records local notice, leaves engagement inactive, and discards lat
         },
         timeoutMs: 10,
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await Promise.resolve();
+    await Promise.resolve();
+    t.mock.timers.tick(10);
+    await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(10);
     await pending;
-    assert.equal(signal.aborted, true);
+    assert.equal(signals.length, 2);
+    assert.deepEqual(signals.map((signal) => signal.aborted), [true, true]);
     assert.deepEqual(calls.map((call) => call.method), ["text"]);
     assert.equal(calls[0].args[1], AI_TIMEOUT_REPLY);
     assert.match(buildChatInput(trigger, "next"), new RegExp(AI_TIMEOUT_REPLY));
     assert.equal(isConversationActive(trigger), false);
 
     resolveAi(reply("too late"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(calls.length, 1);
+    t.mock.timers.reset();
     assert.equal(cancelPendingRequestByMessageId(trigger.id!), 0);
 });
 
@@ -397,17 +404,19 @@ test("NO_REPLY sends nothing, exits engagement, and clears the deadline", async 
     t.mock.timers.reset();
 });
 
-test("hard deadline aborts an unfinished request at exactly 30 seconds", async (t) => {
+test("two ordinary attempts each get their full 30-second deadline", async (t) => {
     let now = 1_000;
     t.mock.method(Date, "now", () => now);
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const trigger = message();
     recordIncomingMessageRevision(trigger);
     const { bot, calls } = fakeBot();
-    let signal!: AbortSignal;
+    const signals: AbortSignal[] = [];
+    let attempts = 0;
     const pending = coordinateAiReply(request(bot, trigger), {
         executeAi: async (_input, options) => {
-            signal = options.signal;
+            attempts++;
+            signals.push(options.signal);
             return new Promise<AiResult>((_resolve, reject) => {
                 options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
             });
@@ -416,18 +425,27 @@ test("hard deadline aborts an unfinished request at exactly 30 seconds", async (
     await Promise.resolve();
     now += 29_999;
     t.mock.timers.tick(29_999);
-    assert.equal(signal.aborted, false);
+    assert.equal(signals[0].aborted, false);
     assert.equal(calls.length, 0);
     now += 1;
     t.mock.timers.tick(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(attempts, 2);
+    assert.equal(signals[0].aborted, true);
+    assert.equal(signals[1].aborted, false);
+    now += 29_999;
+    t.mock.timers.tick(29_999);
+    assert.equal(signals[1].aborted, false);
+    now += 1;
+    t.mock.timers.tick(1);
     await pending;
-    assert.equal(signal.aborted, true);
+    assert.deepEqual(signals.map((signal) => signal.aborted), [true, true]);
     assert.deepEqual(calls.map((call) => call.method), ["text"]);
     assert.equal(calls[0].args[1], AI_TIMEOUT_REPLY);
     t.mock.timers.reset();
 });
 
-test("an overdue result is discarded even before a delayed timer callback runs", async (t) => {
+test("an overdue result is discarded and the retry gets a fresh deadline", async (t) => {
     let now = 1_000;
     t.mock.method(Date, "now", () => now);
     t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -435,19 +453,28 @@ test("an overdue result is discarded even before a delayed timer callback runs",
     recordIncomingMessageRevision(trigger);
     const { bot, calls } = fakeBot();
     let resolveAi!: (value: AiResult) => void;
-    let signal!: AbortSignal;
+    const signals: AbortSignal[] = [];
     const ai = new Promise<AiResult>((resolve) => { resolveAi = resolve; });
+    let attempts = 0;
     const pending = coordinateAiReply(request(bot, trigger), {
         executeAi: async (_input, options) => {
-            signal = options.signal;
-            return ai;
+            signals.push(options.signal);
+            attempts++;
+            if (attempts === 1) return ai;
+            return new Promise<AiResult>((_resolve, reject) => {
+                options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
         },
     });
     await Promise.resolve();
     now += 30_001;
     resolveAi(reply("too late"));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(attempts, 2);
+    now += 30_000;
+    t.mock.timers.tick(30_000);
     await pending;
-    assert.equal(signal.aborted, true);
+    assert.deepEqual(signals.map((signal) => signal.aborted), [true, true]);
     assert.deepEqual(calls.map((call) => call.args[1]), [AI_TIMEOUT_REPLY]);
     t.mock.timers.reset();
 });

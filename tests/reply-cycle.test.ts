@@ -480,7 +480,7 @@ test("hard trigger arriving during soft generation upgrades no-reply policy", as
     await first;
 });
 
-test("ordinary deadline is shared by restarted attempts", async () => {
+test("each restarted attempt gets an ordinary deadline, while timeout retry stays limited to one", async () => {
     const group = randomUUID();
     const a = message(group, "question");
     const b = message(group, "more");
@@ -489,18 +489,195 @@ test("ordinary deadline is shared by restarted attempts", async () => {
     const attempts: RecordedAttempt[] = [];
     const started = Date.now();
     const pending = coordinateAiReply(requestFor(bot, a), {
-        executeAi: controlledAttempts(attempts), timeoutMs: 90,
+        executeAi: controlledAttempts(attempts), timeoutMs: 55,
     });
     await waitFor(() => attempts.length === 1);
     await new Promise((resolve) => setTimeout(resolve, 35));
     commit(b);
     coordinateAiReply(requestFor(bot, b, 0));
-    await waitFor(() => attempts.length === 2);
+    await waitFor(() => attempts.length === 3);
     await pending;
     const elapsed = Date.now() - started;
     assert.equal(attempts[1].signal.aborted, true);
-    assert.ok(elapsed < 250, "cycle should keep the original 90 ms budget");
+    assert.equal(attempts[2].signal.aborted, true);
+    assert.ok(elapsed >= 90 && elapsed < 350, "the post-interruption timeout retry gets its own ordinary deadline");
     assert.ok(calls.some((call) => call.content === AI_TIMEOUT_REPLY || (call.payload as any)?.markdown?.content === AI_TIMEOUT_REPLY));
+});
+
+test("ordinary timeout retries once with a fresh snapshot and keeps engagement and anchor", async () => {
+    const value = message(randomUUID(), "active conversation");
+    commit(value);
+    markConversationActive(value);
+    const generation = getConversationGeneration(value);
+    const { bot, calls } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const refMaps: Map<string, string>[] = [];
+    const anchorIds: string[][] = [];
+    const request = requestFor(bot, value, 1);
+    request.buildAttempt = async (_current, context) => {
+        const refs = new Map([["m1", "real-m1"]]);
+        refMaps.push(refs);
+        anchorIds.push([context.originAnchor.message.id!, context.effectiveAnchor.message.id!]);
+        return { aiInput: buildReplyCycleContext(value), imageUrls: [], refs };
+    };
+    let finishSecond!: (result: AiResult) => void;
+    const pending = coordinateAiReply(request, {
+        timeoutMs: 100,
+        executeAi: async (input, options) => {
+            attempts.push({ input, signal: options.signal, resolve: () => {} });
+            if (attempts.length === 1) return await new Promise<AiResult>(() => {});
+            return await new Promise<AiResult>((resolve) => { finishSecond = resolve; });
+        },
+    });
+    await waitFor(() => attempts.length === 2);
+    assert.equal(attempts[0].signal.aborted, true);
+    assert.equal(attempts[1].signal.aborted, false);
+    assert.equal(refMaps.length, 2);
+    assert.notStrictEqual(refMaps[0], refMaps[1]);
+    assert.deepEqual(anchorIds, [[value.id, value.id], [value.id, value.id]]);
+    assert.equal(isConversationActive(value), true);
+    assert.equal(getConversationGeneration(value), generation);
+    assert.equal(calls.length, 0);
+    finishSecond(reply("recovered"));
+    await pending;
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].content, "recovered");
+});
+
+test("timeout retry does not consume revision or interruption budget", async () => {
+    const group = randomUUID();
+    const values = ["A", "B", "C", "D", "E"].map((text) => message(group, text));
+    commit(values[0]);
+    const { bot } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const pending = coordinateAiReply(requestFor(bot, values[0], 1), {
+        timeoutMs: 15,
+        executeAi: async (input, options) => {
+            return await new Promise<AiResult>((resolve, reject) => {
+                attempts.push({ input, signal: options.signal, resolve });
+                options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+        },
+    });
+    await waitFor(() => attempts.length === 2); // Attempt 1 timed out; Attempt 2 is its retry.
+    for (const index of [1, 2, 3]) {
+        commit(values[index]);
+        coordinateAiReply(requestFor(bot, values[index], 0));
+        await waitFor(() => attempts.length === index + 2);
+    }
+    assert.equal(attempts.length, 5); // Timeout retry plus all three interruption restarts.
+    assert.deepEqual(attempts.slice(0, 4).map((attempt) => attempt.signal.aborted), [true, true, true, true]);
+    commit(values[4]);
+    coordinateAiReply(requestFor(bot, values[4], 0));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(attempts.length, 5); // Fourth new message trails after the separate interrupt budget is spent.
+    // Settle the current request so this test does not leave an active Cycle behind.
+    attempts[4].resolve({ kind: "no_reply" });
+    await pending;
+});
+
+test("second timeout keeps soft silence and hard fallback", async () => {
+    for (const [priority, expectedFallback] of [[1, false], [3, true]] as const) {
+        const value = message(randomUUID(), "stalled");
+        commit(value);
+        const { bot, calls } = fakeBot();
+        let attempts = 0;
+        await coordinateAiReply(requestFor(bot, value, priority), {
+            timeoutMs: 12,
+            executeAi: async () => {
+                attempts++;
+                return await new Promise<AiResult>(() => {});
+            },
+        });
+        assert.equal(attempts, 2);
+        assert.equal(calls.some((call) => call.content === AI_TIMEOUT_REPLY ||
+            (call.payload as any)?.markdown?.content === AI_TIMEOUT_REPLY), expectedFallback);
+    }
+});
+
+test("a newer revision skips timeout retry", async () => {
+    const group = randomUUID();
+    const a = message(group, "A");
+    const b = message(group, "B");
+    commit(a);
+    const { bot, calls } = fakeBot();
+    let attempts = 0;
+    const pending = coordinateAiReply(requestFor(bot, a), {
+        timeoutMs: 15,
+        executeAi: async () => {
+            attempts++;
+            return await new Promise<AiResult>(() => {});
+        },
+    });
+    await waitFor(() => attempts === 1);
+    commit(b); // This revision reaches context before its handler updates the Cycle.
+    await pending;
+    assert.equal(attempts, 1);
+    assert.ok(calls.some((call) => call.content === AI_TIMEOUT_REPLY ||
+        (call.payload as any)?.markdown?.content === AI_TIMEOUT_REPLY));
+});
+
+test("web-search timeout does not retry and keeps the search timeout fallback", async () => {
+    const value = message(randomUUID(), "search");
+    commit(value);
+    const { bot, calls } = fakeBot();
+    let attempts = 0;
+    await coordinateAiReply(requestFor(bot, value), {
+        timeoutMs: 15,
+        webSearchTimeoutMs: 45,
+        executeAi: async (_input, options) => {
+            attempts++;
+            await options.onWebSearchStart?.();
+            return await new Promise<AiResult>(() => {});
+        },
+    });
+    assert.equal(attempts, 1);
+    assert.ok(calls.some((call) => call.content === AI_WEB_SEARCH_TIMEOUT_REPLY ||
+        (call.payload as any)?.markdown?.content === AI_WEB_SEARCH_TIMEOUT_REPLY));
+});
+
+test("late result from timed-out Attempt cannot replace the successful retry", async () => {
+    const value = message(randomUUID(), "stale result");
+    commit(value);
+    const { bot, calls } = fakeBot();
+    let resolveFirst!: (result: AiResult) => void;
+    let attempts = 0;
+    const pending = coordinateAiReply(requestFor(bot, value), {
+        timeoutMs: 15,
+        executeAi: async () => {
+            attempts++;
+            if (attempts === 1) return await new Promise<AiResult>((resolve) => { resolveFirst = resolve; });
+            return reply("retry result");
+        },
+    });
+    await pending;
+    resolveFirst(reply("stale result"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(attempts, 2);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].content, "retry result");
+});
+
+test("a new Cycle gets its own timeout retry", async () => {
+    const group = randomUUID();
+    const a = message(group, "first Cycle");
+    const b = message(group, "second Cycle");
+    commit(a);
+    const { bot, calls } = fakeBot();
+    let attempts = 0;
+    const deps = {
+        timeoutMs: 12,
+        executeAi: async (): Promise<AiResult> => {
+            attempts++;
+            return await new Promise<AiResult>(() => {});
+        },
+    };
+    await coordinateAiReply(requestFor(bot, a), deps);
+    commit(b);
+    await coordinateAiReply(requestFor(bot, b), deps);
+    assert.equal(attempts, 4);
+    assert.equal(calls.filter((call) => call.content === AI_TIMEOUT_REPLY ||
+        (call.payload as any)?.markdown?.content === AI_TIMEOUT_REPLY).length, 2);
 });
 
 test("web search extends one cycle to its original 120-second budget and uses the exact timeout notice", async () => {
