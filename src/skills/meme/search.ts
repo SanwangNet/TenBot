@@ -2,6 +2,12 @@ import { pinyin } from "pinyin-pro";
 import type { MemeEntry } from "./types.js";
 
 export type MatchStrength = "STRONG" | "WEAK";
+export type MemeMatchSource = "anchor" | "new-message";
+
+export interface MemeSearchQuery {
+    text: string;
+    source: MemeMatchSource;
+}
 
 interface SearchVariant {
     normalized: string;
@@ -19,6 +25,7 @@ export interface MemeMatch {
     entry: MemeEntry;
     score: number;
     strength: MatchStrength;
+    matchedBy?: readonly MemeMatchSource[];
 }
 
 export interface MemeSearchIndex {
@@ -125,7 +132,7 @@ function queryVariants(query: string): SearchVariant[] {
     return variants;
 }
 
-export function rankMemeMatches(index: MemeSearchIndex, query: string, limit = 3): MemeMatch[] {
+function rankAllMemeMatches(index: MemeSearchIndex, query: string): (MemeMatch & { order: number })[] {
     const variants = queryVariants(query);
     if (!variants.some((variant) => variant.normalized)) return [];
     return index.items.map(({ entry, index: order, terms }) => {
@@ -137,9 +144,57 @@ export function rankMemeMatches(index: MemeSearchIndex, query: string, limit = 3
         }
         return { entry, order, score, strength: score >= 400 ? "STRONG" as const : "WEAK" as const };
     }).filter((match) => match.score > 0)
-        .sort((a, b) => b.score - a.score || a.order - b.order)
+        .sort((a, b) => b.score - a.score || a.order - b.order);
+}
+
+export function rankMemeMatches(index: MemeSearchIndex, query: string, limit = 3): MemeMatch[] {
+    return rankAllMemeMatches(index, query)
         .slice(0, Math.max(0, Math.min(limit, 3)))
         .map(({ entry, score, strength }) => ({ entry, score, strength }));
+}
+
+function compareText(a: string, b: string): number {
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+
+export function mergeMemeMatchGroups(
+    groups: readonly { source: MemeMatchSource; matches: readonly MemeMatch[] }[],
+    limit: number,
+): MemeMatch[] {
+    const byId = new Map<string, MemeMatch>();
+    for (const group of groups) {
+        for (const match of group.matches) {
+            const current = byId.get(match.entry.id);
+            if (!current) {
+                byId.set(match.entry.id, { ...match, matchedBy: [group.source] });
+                continue;
+            }
+            const matchedBy = [...(current.matchedBy ?? [])];
+            if (!matchedBy.includes(group.source)) matchedBy.push(group.source);
+            if (match.score > current.score ||
+                (match.score === current.score && match.strength === "STRONG" && current.strength !== "STRONG")) {
+                byId.set(match.entry.id, { ...match, matchedBy });
+            } else {
+                byId.set(match.entry.id, { ...current, matchedBy });
+            }
+        }
+    }
+    return [...byId.values()]
+        .sort((a, b) => b.score - a.score ||
+            Number(b.strength === "STRONG") - Number(a.strength === "STRONG") ||
+            compareText(a.entry.name, b.entry.name) || compareText(a.entry.id, b.entry.id))
+        .slice(0, Math.max(0, Math.floor(limit)));
+}
+
+export function rankMemeCandidates(
+    index: MemeSearchIndex,
+    queries: readonly MemeSearchQuery[],
+    limit: number,
+): MemeMatch[] {
+    return mergeMemeMatchGroups(queries.map(({ text, source }) => ({
+        source,
+        matches: rankAllMemeMatches(index, text),
+    })), limit);
 }
 
 export function searchMemes(entries: readonly MemeEntry[], query: string, limit = 3): MemeEntry[] {

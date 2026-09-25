@@ -15,40 +15,32 @@ export function projectMemeDetail(entry: MemeEntry) {
     };
 }
 
-export function projectMemeMatches(matches: readonly MemeMatch[], text: string): string {
+/** Keep automatic candidates concise and never expose search/debug metadata. */
+export function projectMemeCandidates(matches: readonly MemeMatch[]): string {
     if (!matches.length) return "";
-    const asksDetail = /出处|来源|怎么来|怎么火|起源|谁先|什么意思|什么梗|怎么用|解释|背景/iu.test(text);
-    return matches.map(({ entry, strength }) => {
-        if (asksDetail) return [
-            `name: ${entry.name}`,
-            `confidence: ${strength}`,
-            `aliases: ${entry.aliases.slice(0, 4).join("、")}`,
-            `summary: ${entry.summary}`,
-            `origin: ${entry.origin}`,
-            `meaning: ${entry.meaning}`,
-            `usage: ${entry.usage}`,
-            `examples: ${entry.examples.join(" / ")}`,
-            ...(entry.interactions?.length ? ["common interactions:", ...entry.interactions.slice(0, 5).map((item) =>
-                `- "${item.input}" → ${item.responses.slice(0, 3).map((response) => `"${response}"`).join(" / ")}`)] : []),
-            "guidance: 用户在询问含义或出处，请按问题解释。",
-        ].join("\n");
+    const candidates = matches.map(({ entry, strength }, index) => {
+        const heading = [
+            `\u5019\u9009 ${index + 1}: ${entry.name}`,
+            `\u5339\u914d\u5f3a\u5ea6: ${strength === "STRONG" ? "strong" : "weak"}`,
+        ];
         if (strength === "WEAK") return [
-            `name: ${entry.name}`,
-            "confidence: WEAK",
-            `meaning: ${entry.meaning.slice(0, 80)}`,
+            ...heading,
             `summary: ${entry.summary.slice(0, 100)}`,
-            "guidance: 这只是低置信字符串候选，可能完全无关；不相关就忽略，不要强行玩梗。",
+            `meaning: ${entry.meaning.slice(0, 80)}`,
+            "\u8fd9\u53ea\u662f\u53ef\u80fd\u76f8\u5173\u7684\u5f31\u5019\u9009\uff0c\u4e5f\u53ef\u80fd\u53ea\u662f\u5b57\u9762\u91cd\u5408\uff0c\u4e0d\u76f8\u5173\u65f6\u53ef\u5ffd\u7565\u3002",
         ].join("\n");
         return [
-            `name: ${entry.name}`,
-            "confidence: STRONG",
+            ...heading,
             `summary: ${entry.summary.slice(0, 100)}`,
             `meaning: ${entry.meaning.slice(0, 120)}`,
             `usage: ${entry.usage.slice(0, 120)}`,
-            ...(entry.interactions?.length ? ["common interactions:", ...entry.interactions.slice(0, 5).map((item) =>
-                `- "${item.input}" → ${item.responses.slice(0, 3).map((response) => `"${response}"`).join(" / ")}`)] : []),
             ...(entry.examples.length ? [`examples: ${entry.examples.slice(0, 2).join(" / ")}`] : []),
-            "guidance: 这是高度相关的本地 Meme；如果当前聊天在玩梗，自然参与并参考常见接法，不要默认解释梗本身。",
+            ...(entry.interactions?.length ? [
+                "common interactions:",
+                ...entry.interactions.slice(0, 5).map((item) =>
+                    `- "${item.input}" \u2192 ${item.responses.slice(0, 3).map((response) => `"${response}"`).join(" / ")}`),
+            ] : []),
         ].join("\n");
-    }).join("\n\n");
+    });
+    return candidates.join("\n\n");
 }

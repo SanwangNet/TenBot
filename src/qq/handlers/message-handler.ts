@@ -5,7 +5,9 @@ import type {
 
 import { buildAiInput, buildReplyPolicy } from "../../ai/input-builder.js";
 import { routeCommand } from "../../commands/router.js";
-import { buildAutoMemeContext } from "../../skills/meme/skill.js";
+import { projectMemeCandidates } from "../../skills/meme/projection.js";
+import { searchAutoMemeCandidates } from "../../skills/meme/skill.js";
+import type { MemeSearchQuery } from "../../skills/meme/search.js";
 import { logger, shortId, truncateLogText } from "../../shared/logger.js";
 import {
     buildReplyCycleSnapshot,
@@ -17,7 +19,7 @@ import { isConversationActive } from "../conversation/engagement.js";
 import { buildKnownMembersContext, rememberKnownMember } from "../conversation/known-members.js";
 import { normalizeQqMessage } from "../message/normalize-message.js";
 import { decideMessageTrigger, isOnlyQQFace, wantsVision } from "../message/trigger.js";
-import { buildReplyCycleMemeQuery, coordinateAiReply } from "../reply/coordinator.js";
+import { coordinateAiReply } from "../reply/coordinator.js";
 
 const SEARCH_NOTICES = [
     "\u7a0d\u7b49\uff0c\u6211\u67e5\u4e00\u4e0b\u3002",
@@ -136,11 +138,29 @@ export function registerMessageHandler(bot: QQBot): void {
                 const knownMembersContext = trigger.isGroup
                     ? await buildKnownMembersContext(attemptMessage)
                     : "";
-                const memeContext = buildAutoMemeContext(buildReplyCycleMemeQuery(context));
-                if (memeContext) {
-                    const first = memeContext.match(/name: ([^\n]+)/)?.[1] ?? "matched entry";
-                    logger.info("[Meme] auto hit anchor=" + context.effectiveAnchor.revision +
-                        " -> " + truncateLogText(first, 64));
+                const memeQueries: MemeSearchQuery[] = [];
+                const seenMemeRevisions = new Set<number>();
+                for (const item of [
+                    { anchor: context.effectiveAnchor, source: "anchor" as const },
+                    ...context.newerMessages
+                        .filter((item) => item.revision !== context.effectiveAnchor.revision)
+                        .map((anchor) => ({ anchor, source: "new-message" as const })),
+                ]) {
+                    if (seenMemeRevisions.has(item.anchor.revision)) continue;
+                    seenMemeRevisions.add(item.anchor.revision);
+                    const text = item.anchor.message.displayContent.trim();
+                    if (text) memeQueries.push({ text, source: item.source });
+                }
+                const memeCandidates = searchAutoMemeCandidates(memeQueries);
+                const memeContext = projectMemeCandidates(memeCandidates);
+                if (memeCandidates.length) {
+                    const top = truncateLogText(memeCandidates[0].entry.name, 64);
+                    logger.info(`[Meme] candidates=${memeCandidates.length} top=${JSON.stringify(top)}`);
+                    memeCandidates.forEach((candidate, index) => {
+                        logger.debug(`[Meme] #${index + 1} name=${JSON.stringify(truncateLogText(candidate.entry.name, 64))}` +
+                            ` score=${candidate.score} strength=${candidate.strength.toLowerCase()}` +
+                            ` source=${(candidate.matchedBy ?? []).join(",")}`);
+                    });
                 }
                 const replyPolicy = buildReplyPolicy(context.allowNoReply);
                 const aiInput = buildAiInput(snapshot.text, knownMembersContext, replyPolicy, memeContext);

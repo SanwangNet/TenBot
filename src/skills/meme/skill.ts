@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { logger } from "../../shared/logger.js";
-import { createMemeSearchIndex, rankMemeMatches } from "./search.js";
-import { projectMemeDetail, projectMemeMatches } from "./projection.js";
+import {
+    createMemeSearchIndex, rankMemeCandidates, rankMemeMatches, type MemeMatch, type MemeSearchQuery,
+} from "./search.js";
+import { projectMemeCandidates, projectMemeDetail } from "./projection.js";
 import { validateMemeFile } from "./validation.js";
 
 const entries = validateMemeFile(JSON.parse(readFileSync(new URL("./data/memes.json", import.meta.url), "utf8")));
@@ -21,19 +23,22 @@ export const memeLookupTool = {
 
 
 const runtimeIndex = createMemeSearchIndex(entries);
+export const AUTO_MEME_TOP_K = 3;
 
-function candidateMatches(text: string, limit: number) {
-    const ranked = rankMemeMatches(runtimeIndex, text, limit);
-    return ranked.some((match) => match.strength === "STRONG")
-        ? ranked.filter((match) => match.strength === "STRONG") : ranked;
+export function searchAutoMemeCandidates(
+    queries: readonly MemeSearchQuery[],
+    limit = AUTO_MEME_TOP_K,
+): MemeMatch[] {
+    return rankMemeCandidates(runtimeIndex, queries, Math.min(limit, AUTO_MEME_TOP_K));
 }
 
-export function matchMemesInMessage(text: string, limit = 3): (typeof entries)[number][] {
-    return candidateMatches(text, limit).map(({ entry }) => entry);
+export function matchMemesInMessage(text: string, limit = AUTO_MEME_TOP_K): (typeof entries)[number][] {
+    return searchAutoMemeCandidates([{ text, source: "anchor" }], limit).map(({ entry }) => entry);
 }
 
-export function buildAutoMemeContext(text: string): string {
-    return projectMemeMatches(candidateMatches(text, 3), text);
+export function buildAutoMemeContext(input: string | readonly MemeSearchQuery[]): string {
+    const queries = typeof input === "string" ? [{ text: input, source: "anchor" as const }] : input;
+    return projectMemeCandidates(searchAutoMemeCandidates(queries));
 }
 
 export function lookupMeme(argumentsJson: string): string {

@@ -361,7 +361,7 @@ test("same-level hard mention replaces the effective anchor without changing the
 test("Meme retrieval on restart considers the anchor and only newer valid messages", async () => {
     const group = randomUUID();
     const anchor = message(group, "kskbl？");
-    const unrelated = message(group, "今天天气普通");
+    const unrelated = message(group, "雪山救狐狸");
     markConversationActive(anchor);
     commit(anchor);
     const { bot } = fakeBot();
@@ -371,7 +371,13 @@ test("Meme retrieval on restart considers the anchor and only newer valid messag
     const buildAttempt = async (current: NormalizedQqMessage, context: AttemptBuildContext) => {
         const query = buildReplyCycleMemeQuery(context);
         queries.push(query);
-        memeContexts.push(buildAutoMemeContext(query));
+        const memeQueries = [
+            { text: context.effectiveAnchor.message.displayContent, source: "anchor" as const },
+            ...context.newerMessages
+                .filter((item) => item.revision !== context.effectiveAnchor.revision)
+                .map((item) => ({ text: item.message.displayContent, source: "new-message" as const })),
+        ];
+        memeContexts.push(buildAutoMemeContext(memeQueries));
         return { aiInput: buildReplyCycleContext(current), imageUrls: [] };
     };
     const first = coordinateAiReply({ ...requestFor(bot, anchor, 1), buildAttempt },
@@ -381,8 +387,9 @@ test("Meme retrieval on restart considers the anchor and only newer valid messag
     coordinateAiReply({ ...requestFor(bot, unrelated, 1), buildAttempt });
     await waitFor(() => attempts.length === 2);
     assert.equal(queries[0], "kskbl？");
-    assert.equal(queries[1], "kskbl？\n今天天气普通");
-    assert.match(memeContexts[1], /name: kskbl\nconfidence: STRONG/);
+    assert.equal(queries[1], "kskbl？\n雪山救狐狸");
+    assert.match(memeContexts[1], /候选 1: kskbl\n匹配强度: strong/);
+    assert.match(memeContexts[1], /雪山救狐狸/);
     attempts[1].resolve({ kind: "no_reply" });
     await first;
 });

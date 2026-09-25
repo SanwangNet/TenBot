@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMemeSearchIndex, rankMemeMatches } from "../src/skills/meme/search.js";
-import { projectMemeDetail, projectMemeMatches } from "../src/skills/meme/projection.js";
+import {
+    createMemeSearchIndex, mergeMemeMatchGroups, rankMemeCandidates, rankMemeMatches,
+} from "../src/skills/meme/search.js";
+import { projectMemeCandidates, projectMemeDetail } from "../src/skills/meme/projection.js";
 import type { MemeEntry } from "../src/skills/meme/types.js";
 
 function meme(name: string, aliases: string[] = []): MemeEntry {
@@ -65,31 +67,121 @@ test("runtime search keys do not mutate entries or aliases", () => {
     assert.equal(JSON.stringify(kskbl).includes("kskbl"), false);
 });
 
-test("strong projection prioritizes interactions and natural participation without derived keys", () => {
+test("automatic candidate merge returns only the top three by score", () => {
+    const entries = [meme("A"), meme("B"), meme("C"), meme("D")];
+    const matches = entries.map((entry, index) => ({
+        entry, score: [0.95, 0.8, 0.7, 0.6][index] * 1000,
+        strength: index < 2 ? "STRONG" as const : "WEAK" as const,
+    }));
+    assert.deepEqual(mergeMemeMatchGroups([{ source: "anchor", matches }], 3).map((item) => item.entry.name),
+        ["A", "B", "C"]);
+});
+
+test("automatic candidate merge returns fewer than three when only two match", () => {
+    const matches = [meme("A"), meme("B")].map((entry, index) => ({
+        entry, score: 900 - index * 100, strength: "STRONG" as const,
+    }));
+    assert.deepEqual(mergeMemeMatchGroups([{ source: "anchor", matches }], 3).map((item) => item.entry.name), ["A", "B"]);
+});
+
+test("matches across anchor and new messages deduplicate by id and retain all sources", () => {
+    const a = meme("康神开播了", ["kskbl"]);
+    const b = meme("Meme B");
+    const index = createMemeSearchIndex([a, b]);
+    const candidates = rankMemeCandidates(index, [
+        { text: "kskbl", source: "anchor" },
+        { text: "康神开播了？", source: "new-message" },
+    ], 3);
+    const target = candidates.find((item) => item.entry.id === a.id);
+    assert.ok(target);
+    assert.equal(candidates.filter((item) => item.entry.id === a.id).length, 1);
+    assert.deepEqual(target.matchedBy, ["anchor", "new-message"]);
+});
+
+test("same Meme keeps its highest score across query sources", () => {
+    const a = meme("A");
+    const merged = mergeMemeMatchGroups([
+        { source: "anchor", matches: [{ entry: a, score: 0.71, strength: "WEAK" }] },
+        { source: "new-message", matches: [{ entry: a, score: 0.93, strength: "STRONG" }] },
+    ], 3);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].score, 0.93);
+    assert.equal(merged[0].strength, "STRONG");
+    assert.deepEqual(merged[0].matchedBy, ["anchor", "new-message"]);
+});
+
+test("same-score candidates have stable name order and strong precedes weak", () => {
+    const alpha = meme("Alpha");
+    const zulu = meme("Zulu");
+    const matches = [
+        { entry: alpha, score: 500, strength: "WEAK" as const },
+        { entry: zulu, score: 500, strength: "STRONG" as const },
+    ];
+    for (let run = 0; run < 20; run++) {
+        assert.deepEqual(mergeMemeMatchGroups([{ source: "anchor", matches }], 3)
+            .map(({ entry }) => entry.name), ["Zulu", "Alpha"]);
+    }
+    const sameStrength = [
+        { entry: zulu, score: 500, strength: "STRONG" as const },
+        { entry: alpha, score: 500, strength: "STRONG" as const },
+    ];
+    assert.deepEqual(mergeMemeMatchGroups([{ source: "anchor", matches: sameStrength }], 3)
+        .map(({ entry }) => entry.name), ["Alpha", "Zulu"]);
+});
+
+test("strong and weak candidates can coexist in the automatic top three", () => {
+    const matches = [
+        { entry: meme("A"), score: 900, strength: "STRONG" as const },
+        { entry: meme("B"), score: 300, strength: "WEAK" as const },
+        { entry: meme("C"), score: 200, strength: "WEAK" as const },
+    ];
+    assert.deepEqual(mergeMemeMatchGroups([{ source: "anchor", matches }], 3)
+        .map(({ entry }) => entry.name), ["A", "B", "C"]);
+});
+
+test("strong projection keeps useful fields and hides ids and retrieval metadata", () => {
     const withInteractions = { ...kskbl, interactions: [
         { input: "kskbl？", responses: ["zdjd？"] },
         { input: "zdjd？", responses: ["wkzkbl！"] },
     ] };
     const matches = rankMemeMatches(createMemeSearchIndex([withInteractions]), "kskbl？");
-    const context = projectMemeMatches(matches, "kskbl？");
-    assert.match(context, /confidence: STRONG/);
+    const context = projectMemeCandidates(matches);
+    assert.match(context, /匹配强度: strong/);
+    assert.match(context, /summary: 摘要/);
+    assert.match(context, /meaning: 含义/);
+    assert.match(context, /usage: 用法/);
+    assert.match(context, /examples:/);
     assert.match(context, /"kskbl？" → "zdjd？"/);
-    assert.match(context, /自然参与/);
     assert.doesNotMatch(context, /aliases:|origin:|id:|sources:|fullPinyin|pinyinInitials|score:/);
     assert.deepEqual(kskbl.aliases, []);
 });
 
-test("weak projection stays cautious and omits interactions; explanation intent includes origin", () => {
+test("weak projection stays lightweight and omits background and interactions", () => {
     const withInteractions = { ...chovy, interactions: [{ input: "我Chovy", responses: ["接梗"] }] };
     const search = createMemeSearchIndex([withInteractions]);
-    const weak = projectMemeMatches(rankMemeMatches(search, "我今天吃饭"), "我今天吃饭");
-    assert.match(weak, /confidence: WEAK/);
-    assert.match(weak, /可能完全无关/);
-    assert.doesNotMatch(weak, /common interactions:/);
-    const strong = projectMemeMatches(rankMemeMatches(search, "我Chovy是什么意思"), "我Chovy是什么意思");
+    const weak = projectMemeCandidates(rankMemeMatches(search, "我今天吃饭"));
+    assert.match(weak, /匹配强度: weak/);
+    assert.match(weak, /可能相关|字面重合/);
+    assert.doesNotMatch(weak, /common interactions:|origin:|examples:|usage:/);
+    const strong = projectMemeCandidates(rankMemeMatches(search, "我Chovy是什么意思"));
     assert.match(strong, /summary:/);
-    assert.match(strong, /origin:/);
-    assert.match(strong, /请按问题解释/);
+    assert.match(strong, /meaning:/);
+    assert.match(strong, /usage:/);
+});
+
+test("anchor and new-message searches can contribute distinct candidates", () => {
+    const anchor = meme("康神开播了");
+    const added = meme("真的假的");
+    const candidates = rankMemeCandidates(createMemeSearchIndex([anchor, added]), [
+        { text: "kskbl", source: "anchor" },
+        { text: "真的假的", source: "new-message" },
+    ], 3);
+    assert.ok(candidates.some((item) => item.entry.id === anchor.id));
+    assert.ok(candidates.some((item) => item.entry.id === added.id));
+});
+
+test("empty candidates project to an empty context", () => {
+    assert.equal(projectMemeCandidates([]), "");
 });
 
 test("detailed projection selects knowledge fields without ids or removed metadata", () => {
