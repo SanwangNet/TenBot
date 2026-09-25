@@ -4,6 +4,7 @@ import { createTenBotRuntime, type TenBotRuntime } from "../runtime.js";
 import { StartupFailure, TenBotTui } from "./app.js";
 import { supportsInteractiveTui } from "./terminal-check.js";
 import { TerminalMouseSession } from "./mouse-input.js";
+import { exitTuiProcess } from "./process-exit.js";
 
 function StartupFailureScreen({ message, onQuit }: { message: string; onQuit(): void }) {
     useInput((input, key) => {
@@ -79,3 +80,4 @@ async function main(): Promise<void> {
 }
 
 await main();
+if (supportsInteractiveTui()) await exitTuiProcess();

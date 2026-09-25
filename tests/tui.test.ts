@@ -13,6 +13,7 @@ import { ClickableRegionRegistry, SgrMouseParser, TerminalMouseSession } from ".
 import { splitDisplayPath } from "../src/tui/path-display.js";
 import { collapseAdjacentLogs } from "../src/tui/log-collapse.js";
 import { cycleModelProvider } from "../src/ai/model-registry.js";
+import { exitTuiProcess } from "../src/tui/process-exit.js";
 
 function fakeControl(calls: string[], result: ReloadResult = { ok: true, message: "reloaded", loadedAt: "now" }): TenBotControl {
     const status: RuntimeStatus = {
@@ -285,4 +286,13 @@ test("TUI refuses non-TTY streams before rendering", () => {
     assert.equal(supportsInteractiveTui({ isTTY: true }, { isTTY: true }), true);
     assert.equal(supportsInteractiveTui({ isTTY: false }, { isTTY: true }), false);
     assert.equal(supportsInteractiveTui({ isTTY: true }, { isTTY: false }), false);
+});
+
+test("TUI process exits only after terminal cleanup output has flushed", async () => {
+    const order: string[] = [];
+    await exitTuiProcess({ write(_value, callback) { order.push("write"); callback?.(); } }, (code) => {
+        assert.equal(code, 0);
+        order.push("exit");
+    });
+    assert.deepEqual(order, ["write", "exit"]);
 });
