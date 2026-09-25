@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { runModelPlugin } from "../src/ai/client.js";
+import { runModelPlugin as runModelPluginWithSnapshot, type ChatOptions } from "../src/ai/client.js";
 import { createModelPlugin } from "../src/ai/model-registry.js";
 import { ModelAbortedError, type ModelRequest } from "../src/ai/model-plugin.js";
 import { createDeepSeekPlugin } from "../src/ai/plugins/deepseek/index.js";
 import { createGptPlugin } from "../src/ai/plugins/gpt/index.js";
+import { getPromptStore } from "../src/ai/prompt-store.js";
 import { isToolProtocolLeak } from "../src/ai/tool-protocol.js";
 
 const GPT_SYSTEM_PROMPT = readFileSync(new URL("../src/ai/plugins/gpt/prompt.md", import.meta.url), "utf8");
@@ -28,6 +29,15 @@ function pluginRequest(input = "offline", systemPrompt = "offline provider promp
 }
 function options(signal = new AbortController().signal) {
     return { signal };
+}
+function runModelPlugin(
+    plugin: ReturnType<typeof createGptPlugin> | ReturnType<typeof createDeepSeekPlugin>,
+    input: string,
+    generateOptions: ChatOptions,
+    promptSnapshot = getPromptStore().getForModel(plugin.id),
+) {
+    assert.ok(promptSnapshot, `missing Prompt snapshot for ${plugin.id}`);
+    return runModelPluginWithSnapshot(plugin, input, generateOptions, promptSnapshot);
 }
 async function withResponses(responses: Response[], run: (bodies: Record<string, any>[]) => Promise<void>): Promise<void> {
     const originalFetch = globalThis.fetch;
@@ -77,9 +87,11 @@ test("GPT and DeepSeek use isolated provider prompts and keep the same persona",
 test("Runtime ModelRequest captures the selected PromptStore snapshot", async () => {
     const gpt = createGptPlugin({ apiKey: "offline", baseURL: "https://example.invalid" });
     const deepseek = createDeepSeekPlugin({ apiKey: "offline" });
+    const gptPrompt = getPromptStore().get("gpt");
+    const deepseekPrompt = getPromptStore().get("deepseek");
     await withResponses([sse([messageText("GPT")]), sse([messageText("DeepSeek")])], async (bodies) => {
-        await runModelPlugin(gpt, "offline", { signal: new AbortController().signal });
-        await runModelPlugin(deepseek, "offline", { signal: new AbortController().signal });
+        await runModelPlugin(gpt, "offline", { signal: new AbortController().signal }, gptPrompt);
+        await runModelPlugin(deepseek, "offline", { signal: new AbortController().signal }, deepseekPrompt);
         assert.equal(bodies[0].instructions, GPT_SYSTEM_PROMPT);
         assert.equal(bodies[1].instructions, DEEPSEEK_SYSTEM_PROMPT);
     });

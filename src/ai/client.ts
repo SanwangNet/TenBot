@@ -4,10 +4,10 @@ import type { ModelGenerateOptions, ModelPlugin, ModelRequest } from "./model-pl
 import { lookupMeme, memeLookupTool } from "../skills/meme/skill.js";
 import { normalizeReplyMessages, parseQqReplyArguments, qqReplyTool } from "../skills/qq-reply/skill.js";
 import { logger } from "../shared/logger.js";
-import { getPromptStore } from "./prompt-store.js";
 import type { MemeRuntimeSnapshot } from "../skills/meme/store.js";
 import { isToolProtocolLeakError } from "./tool-protocol.js";
 import type { AttemptPromptSnapshot } from "./attempt-snapshot.js";
+import { captureAttemptRuntimeSnapshot } from "./attempt-snapshot.js";
 
 export interface ChatOptions {
     signal: AbortSignal;
@@ -19,10 +19,10 @@ export interface ChatOptions {
 
 const tenBotTools = [qqReplyTool, memeLookupTool] as const;
 
-function createRequest(plugin: ModelPlugin, input: string, options: ChatOptions, promptSnapshot?: AttemptPromptSnapshot): ModelRequest {
+function createRequest(plugin: ModelPlugin, input: string, options: ChatOptions, promptSnapshot: AttemptPromptSnapshot): ModelRequest {
     return {
         input,
-        systemPrompt: promptSnapshot?.content ?? getPromptStore().getForModel(plugin.id)?.content ?? "",
+        systemPrompt: promptSnapshot.content,
         imageUrls: options.imageUrls,
         tools: tenBotTools,
         async executeTool(call) {
@@ -47,7 +47,7 @@ export async function runModelPlugin(
     plugin: ModelPlugin,
     input: string,
     options: ChatOptions,
-    promptSnapshot?: AttemptPromptSnapshot,
+    promptSnapshot: AttemptPromptSnapshot,
 ): Promise<AiResult> {
     const request = createRequest(plugin, input, options, promptSnapshot);
     let currentRequest = request;
@@ -80,5 +80,7 @@ export async function runModelPlugin(
 }
 
 export function chat(input: string, options: ChatOptions): Promise<AiResult> {
-    return runModelPlugin(getModelPlugin(), input, options);
+    const plugin = getModelPlugin();
+    const snapshot = captureAttemptRuntimeSnapshot(plugin);
+    return runModelPlugin(plugin, input, options, snapshot.prompt);
 }
