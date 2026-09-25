@@ -52,6 +52,51 @@ test("ConfigStore rereads the file before saving and preserves external changes"
     });
 });
 
+test("ConfigStore adds and removes automated peer IDs while preserving other env content", async () => {
+    const original = "# private config\nCODEX_API_KEY=TOP_SECRET\nUNKNOWN_OPTION=keep\n\nAUTOMATED_PEER_IDS=a,b\n";
+    await withTempEnv(original, async (envPath) => {
+        const store = createConfigStore({ envPath, environment: {} });
+        const added = await store.addAutomatedPeer(" c ");
+        assert.deepEqual(added, { ok: true, changed: true, peerIds: ["a", "b", "c"], message: "自动账号已添加。" });
+        assert.deepEqual((await store.addAutomatedPeer("b")).peerIds, ["a", "b", "c"]);
+        const removed = await store.removeAutomatedPeer("b");
+        assert.deepEqual(removed.peerIds, ["a", "c"]);
+        const missing = await store.removeAutomatedPeer("not-registered");
+        assert.equal(missing.ok, true);
+        assert.equal(missing.changed, false);
+        const saved = await readFile(envPath, "utf8");
+        assert.match(saved, /# private config/);
+        assert.match(saved, /CODEX_API_KEY=TOP_SECRET/);
+        assert.match(saved, /UNKNOWN_OPTION=keep/);
+        assert.match(saved, /AUTOMATED_PEER_IDS=a,c/);
+        assert.deepEqual(store.getAutomatedPeerIds(), ["a", "c"]);
+    });
+});
+
+test("ConfigStore automated peer mutations serialize concurrent updates and reject unsafe IDs", async () => {
+    await withTempEnv("AUTOMATED_PEER_IDS=a\n", async (envPath) => {
+        const store = createConfigStore({ envPath, environment: {} });
+        const [first, second] = await Promise.all([store.addAutomatedPeer("b"), store.addAutomatedPeer("c")]);
+        assert.equal(first.ok, true);
+        assert.deepEqual(second.peerIds, ["a", "b", "c"]);
+        const invalid = await store.addAutomatedPeer("bad,id");
+        assert.equal(invalid.ok, false);
+        assert.equal(invalid.peerIds.length, 3);
+        assert.deepEqual(store.getAutomatedPeerIds(), ["a", "b", "c"]);
+    });
+});
+
+test("ConfigStore automated peer mutations re-read external changes before saving", async () => {
+    await withTempEnv("AUTOMATED_PEER_IDS=a\n", async (envPath) => {
+        const store = createConfigStore({ envPath, environment: {} });
+        await writeFile(envPath, "AUTOMATED_PEER_IDS=a\nEXTERNAL_VALUE=yes\n", "utf8");
+        const result = await store.addAutomatedPeer("b");
+        assert.equal(result.ok, true);
+        assert.match(await readFile(envPath, "utf8"), /EXTERNAL_VALUE=yes/);
+        assert.deepEqual(result.peerIds, ["a", "b"]);
+    });
+});
+
 test("ConfigStore appends new managed keys and serializes concurrent writes", async () => {
     await withTempEnv("AI_PROVIDER=gpt\n", async (envPath) => {
         const store = createConfigStore({ envPath, environment: {} });

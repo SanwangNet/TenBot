@@ -15,6 +15,7 @@ import { buildChatInput, getMessageRevision, recordIncomingMessageRevision, reme
 import { registerMessageHandler } from "../src/qq/handlers/message-handler.js";
 import { normalizeQqMessage, type NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 import { coordinateAiReply, type ReplyRequest } from "../src/qq/reply/coordinator.js";
+import { RecentPeerRegistry } from "../src/qq/conversation/recent-peers.js";
 
 interface SentMessage { method: "text" | "markdown"; content: string; target: unknown }
 
@@ -135,6 +136,38 @@ test("registry matches only exact stable IDs and validates the default cycle lim
     assert.equal(expiring.beforeNewCycle("group:ttl", "A").allowed, false);
     currentTime = 10;
     assert.equal(expiring.beforeNewCycle("group:ttl", "A").cycle, 1);
+});
+
+test("loop guard can replace registered IDs without clearing active conversation counts", () => {
+    const guard = createAutomatedPeerLoopGuard(["old-id"], 3);
+    assert.equal(guard.beforeNewCycle("group:replace", "old-id").cycle, 1);
+    guard.replacePeers(["new-id"]);
+    assert.equal(guard.isAutomatedPeer("old-id"), false);
+    assert.equal(guard.isAutomatedPeer("new-id"), true);
+    const next = guard.beforeNewCycle("group:replace", "new-id");
+    assert.equal(next.cycle, 2);
+    assert.equal(next.maxCycles, 3);
+});
+
+test("RecentPeerRegistry is bounded, refreshes order and stores only stable peer metadata", () => {
+    let tick = 0;
+    const registry = new RecentPeerRegistry(2, () => new Date(1_700_000_000_000 + tick++ * 1000));
+    const first = message("g", "peer-A", "message text must not be saved", "小鲸鱼");
+    const bot = message("g", "peer-B", "private body", "测试 Bot", true);
+    const refreshed = message("g", "peer-A", "another body", "新名字");
+    const last = message("g", "peer-C", "secret content", "第三人");
+    registry.observe(first);
+    registry.observe(bot);
+    registry.observe(refreshed);
+    assert.deepEqual(registry.list().map((peer) => peer.id), ["peer-A", "peer-B"]);
+    assert.equal(registry.get("peer-A")?.displayName, "新名字");
+    assert.equal(registry.get("peer-B")?.platformBotHint, true);
+    registry.observe(last);
+    assert.deepEqual(registry.list().map((peer) => peer.id), ["peer-C", "peer-A"]);
+    registry.observe(message("g", "peer-D", "", "恶意\u001b[2J 名称"));
+    assert.deepEqual(registry.list().map((peer) => peer.id), ["peer-D", "peer-C"]);
+    assert.equal(registry.get("peer-D")?.displayName, "恶意 [2J 名称");
+    assert.doesNotMatch(JSON.stringify(registry.list()), /message text|private body|secret content/);
 });
 
 test("group normalization prefers member_openid and fails open without a stable group ID", async () => {

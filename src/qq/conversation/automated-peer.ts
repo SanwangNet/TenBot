@@ -21,6 +21,7 @@ export interface BotLoopGuardDecision {
 
 export interface AutomatedPeerLoopGuard {
     isAutomatedPeer(authorId: string | undefined): boolean;
+    replacePeers(peerIds: Iterable<string>): void;
     observeAutomatedPeerMessage(conversationKey: string): void;
     resetByHumanMessage(conversationKey: string, authorName?: string): void;
     beforeNewCycle(conversationKey: string, authorId: string | undefined, authorName?: string): BotLoopGuardDecision;
@@ -46,7 +47,7 @@ export function createAutomatedPeerLoopGuard(
     if (!Number.isSafeInteger(maxCycles) || maxCycles < 1) {
         throw new Error("BOT_LOOP_GUARD_MAX_CYCLES 必须是大于等于 1 的整数");
     }
-    const ids = typeof peerIds === "string" || peerIds === undefined
+    let ids = typeof peerIds === "string" || peerIds === undefined
         ? new Set(parseAutomatedPeerIds(peerIds))
         : new Set([...peerIds].map((id) => id.trim()).filter(Boolean));
     const states = new Map<string, ConversationGuardState>();
@@ -60,6 +61,9 @@ export function createAutomatedPeerLoopGuard(
     return {
         isAutomatedPeer(authorId) {
             return typeof authorId === "string" && authorId.length > 0 && ids.has(authorId);
+        },
+        replacePeers(peerIds) {
+            ids = new Set([...peerIds].map((id) => id.trim()).filter(Boolean));
         },
         observeAutomatedPeerMessage(conversationKey) {
             const currentTime = now();

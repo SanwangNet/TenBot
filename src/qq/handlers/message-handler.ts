@@ -25,6 +25,7 @@ import { buildKnownMembersContext, rememberKnownMember } from "../conversation/k
 import { normalizeQqMessage } from "../message/normalize-message.js";
 import { decideMessageTrigger, isOnlyQQFace, wantsVision } from "../message/trigger.js";
 import { coordinateAiReply } from "../reply/coordinator.js";
+import type { NormalizedQqMessage } from "../message/normalize-message.js";
 
 const SEARCH_NOTICES = [
     "\u7a0d\u7b49\uff0c\u6211\u67e5\u4e00\u4e0b\u3002",
@@ -49,9 +50,15 @@ function summarizeMessage(input: string, imageAttachments: any[]): string {
     return "[\u56fe\u7247 x" + imageAttachments.length + "]";
 }
 
-export function registerMessageHandler(bot: QQBot, loopGuard: AutomatedPeerLoopGuard = automatedPeerLoopGuard): void {
+export function registerMessageHandler(
+    bot: QQBot,
+    loopGuard: AutomatedPeerLoopGuard = automatedPeerLoopGuard,
+    observePeer?: (message: NormalizedQqMessage) => void,
+): void {
     bot.on("message", async (context, message: QQBotInboundMessage) => {
         const normalized = await normalizeQqMessage(context, message);
+        try { observePeer?.(normalized); }
+        catch { /* The local TUI directory must not change message handling behavior. */ }
         debugPeerIdentity(normalized.authorName, normalized.authorId);
         const isAutomatedPeer = loopGuard.isAutomatedPeer(normalized.authorId);
         // QQ's bot flag is not reliable membership policy; unregistered IDs fail open as human activity.

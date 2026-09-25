@@ -11,7 +11,7 @@ TenBot 是 SanWang 内部使用的 QQ Bot，使用 TypeScript、Node.js 和 QQ �
 - **网络梗知识**：本地 memes.json 支持中文、别名、拼音和首字母模糊检索。自动检索最多提供 3 个候选，由模型结合聊天上下文判断是否使用；模型也可调用只读 meme_lookup 查询详情。
 - **自动账号防循环**：可按稳定群成员 ID 登记自动化账号。每个会话连续由登记账号启动的 AI Cycle 默认最多 4 次；达到限制后暂停 AI 调用，收到未登记成员的消息后重置。
 - **Minecraft 状态**：/mc 命令、状态卡刷新按钮和 AI 的 Minecraft 状态查询共用同一查询能力。
-- **本地全屏 TUI**：以 alternate screen 接管终端，查看运行状态、模型、Prompt、Meme、对话和日志；退出后恢复原来的终端内容。
+- **本地全屏 TUI**：以 alternate screen 接管终端，查看运行状态、模型、Prompt、Meme、对话、自动账号和日志；退出后恢复原来的终端内容。
 
 ## 安装与配置
 
@@ -46,7 +46,7 @@ DEEPSEEK_BASE_URL 可选，默认值为 https://api.deepseek.com；DEEPSEEK_MODE
 
 也可以复制 [.env.example](.env.example) 作为配置模板。`.env` 仍是配置持久化来源，TUI 只通过 ConfigStore 修改公开的普通配置；secret 只用于判断“已配置”，不会显示原文或掩码。
 
-不要把 .env 或真实凭据提交到 Git。AUTOMATED_PEER_IDS 使用 QQ 事件中的稳定成员 ID（member_openid），不使用昵称，也不会推测账号是否自动化。需要查看 ID 时，可临时将 BOT_LOG_LEVEL 设为 debug，从 [Peer] 日志获取后恢复为 info；完整 ID 属于敏感信息，不要公开粘贴。
+不要把 .env 或真实凭据提交到 Git。AUTOMATED_PEER_IDS 使用 QQ 事件中的稳定成员 ID（member_openid），不使用昵称，也不会推测账号是否自动化。可在 TUI 的自动账号页查看稳定 ID；完整 ID 属于敏感信息，不要公开粘贴。
 
 ## 运行
 
@@ -58,7 +58,7 @@ DEEPSEEK_BASE_URL 可选，默认值为 https://api.deepseek.com；DEEPSEEK_MODE
 
     pnpm tui
 
-TUI 是纯键盘的中文全屏控制台，支持 PowerShell 和 WebStorm Terminal。进入后使用左侧导航和右侧主内容区；退出时会恢复普通终端和光标。
+TUI 是中文全屏控制台，支持 PowerShell 和 WebStorm Terminal。进入后使用左侧导航和右侧主内容区；退出时会恢复普通终端、光标和鼠标模式。
 
 进入“设置”页后可以编辑：
 
@@ -68,25 +68,40 @@ TUI 是纯键盘的中文全屏控制台，支持 PowerShell 和 WebStorm Termin
 - GPT 输出详细度
 - 日志级别
 - 自动账号连续交互上限
+- 自动账号的添加和删除
 
-修改会先经过确认，再只更新 `.env` 中对应的变量；未知变量、secret、注释、空行和原有换行风格会保留。大部分模型配置、日志级别和互聊保护配置需要重启 TenBot 后生效，当前不支持运行时 Provider 热切换或自动重启。保存后请按 `Q` 退出，再重新运行 `pnpm tui`。`AUTOMATED_PEER_IDS` 本轮只显示数量，仍需在 `.env` 中维护。
+修改会先经过确认，再只更新 `.env` 中对应的变量；未知变量、secret、注释、空行和原有换行风格会保留。模型、日志级别和连续交互上限需要重启 TenBot 后生效，当前不支持运行时 Provider 热切换或自动重启。保存后请按 `Q` 退出，再重新运行 `pnpm tui`。自动账号添加和删除会立即更新当前运行时的 ID allowlist，不会清空已有会话计数或改变正在执行的 Cycle。
 
 TUI 快捷键：
 
 | 按键 | 操作 |
 | --- | --- |
-| ↑ / ↓ | 移动侧栏或设置项；日志页中逐行查看 |
+| ↑ / ↓ | 移动侧栏、设置项或自动账号；日志页中逐行查看 |
 | Enter | 打开页面；在设置页修改配置；确认弹窗操作 |
-| Esc | 返回侧栏；关闭或返回弹窗 |
+| Esc | 从主区返回侧栏；关闭或返回弹窗 |
+| Tab | 在侧栏和主内容区之间切换焦点 |
+| A / Delete | 添加最近发现的自动账号 / 删除已登记账号 |
 | P | 重载当前模型提供商的 Prompt |
 | M | 重载 memes.json |
 | R | 弹出确认后同时重载 Prompt 和 Meme 数据 |
 | ? | 打开帮助 |
 | PageUp / PageDown | 日志翻页 |
 | Home / End | 日志跳到最早 / 最新 |
-| Q 或 Ctrl+C | 优雅关闭 TenBot |
+| Q 或 Ctrl+C | 打开退出确认；在确认框按 Enter 后优雅关闭 |
 
-TUI 与 QQ Runtime 在同一进程运行，通过 TenBotControl 读取可序列化状态、订阅日志和 Runtime event，并执行配置保存、重载与关闭。Prompt 和 Meme 仍由外部编辑器维护，TUI 只负责查看、热加载和显示状态；当前不支持鼠标，也不支持运行时切换 Provider。当前没有 HTTP API 或 WebSocket 服务。
+### 自动账号
+
+自动账号使用 QQ 群消息中的稳定成员 ID 登记，身份判断不依据昵称、消息内容或平台 Bot 标记。自动账号页展示已登记账号和最近出现的群成员；最近成员只保存在内存中，最多保留 100 个，重启后清空。选择最近成员后可以查看完整稳定 ID 并确认添加；已登记账号可确认删除。平台的 Bot 标记只作提示，必须由用户主动登记。添加或删除后，Guard 对后续新消息立即使用更新后的 ID 列表；已有会话计数保持不变。
+
+### 鼠标操作
+
+键盘操作始终可用。支持左键点击侧栏页面、设置项、自动账号列表行、选择项和弹窗按钮；鼠标不可用时自动退回键盘操作。暂不支持右键、拖拽、文本选择或滚轮手势。
+
+### 退出
+
+正常运行时按 `Q` 或 `Ctrl+C` 会打开“退出 TenBot”确认框；按 Enter 才会优雅停止 QQ Runtime 并退出，Esc 取消。Runtime 启动失败或发生 fatal shutdown 时直接执行清理退出。
+
+TUI 与 QQ Runtime 在同一进程运行，通过 TenBotControl 读取可序列化状态、订阅日志和 Runtime event，并执行配置保存、重载与关闭。Prompt 和 Meme 仍由外部编辑器维护，TUI 负责查看、热加载和显示状态；当前不支持运行时切换 Provider。当前没有 HTTP API 或 WebSocket 服务。
 
 如果当前 stdin 或 stdout 不是 TTY，`pnpm tui` 会显示中文提示并正常退出，请使用普通终端或运行 `pnpm dev`。
 

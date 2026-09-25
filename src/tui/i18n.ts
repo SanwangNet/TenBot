@@ -10,6 +10,7 @@ export const PAGE_LABELS = {
     prompt: "提示词",
     memes: "梗数据",
     conversations: "对话",
+    "automated-peers": "自动账号",
     logs: "日志",
     settings: "设置",
 } as const;

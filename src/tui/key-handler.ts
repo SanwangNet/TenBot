@@ -12,9 +12,7 @@ export async function handleTuiKey(
     quit: () => void,
 ): Promise<void> {
     if (input === "q" || (key.ctrl && input.toLowerCase() === "c")) {
-        try { await control.shutdown(); }
-        catch { report("关闭时发生异常"); }
-        finally { quit(); }
+        quit();
         return;
     }
     try {

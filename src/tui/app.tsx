@@ -19,28 +19,42 @@ import { ModelView } from "./views/model-view.js";
 import { OverviewView } from "./views/overview-view.js";
 import { PromptView } from "./views/prompt-view.js";
 import { SettingsView } from "./views/settings-view.js";
+import { AutomatedPeersView } from "./views/automated-peers-view.js";
 import { logLevelLabel, PAGE_LABELS, PAGES, providerLabel, reasoningLabel, settingsFieldLabel, verbosityLabel } from "./i18n.js";
-import { clampLogOffset, initialTuiState, moveSettingsSelection, SETTINGS_FIELDS, type ConfigOption, type ConfigSelectField, type ConfigTextField, type ModalState, type SettingsField, type TuiState } from "./state.js";
+import { activateSidebarPage, handleLogsNavigation, initialTuiState, moveAutomatedPeerSelection, moveSettingsSelection, quitConfirmationAction, requestQuitConfirmation, SETTINGS_FIELDS, toggleTuiFocus, type ConfigOption, type ConfigSelectField, type ConfigTextField, type ModalState, type SettingsField, type TuiState } from "./state.js";
 import type { TuiPage } from "./types.js";
+import type { AutomatedPeerSummary } from "../control/automated-peers.js";
+import { ClickableRegionRegistry, isSgrMouseSequence, type TerminalMouseSession } from "./mouse-input.js";
 
 export interface TenBotTuiProps {
     control: TenBotControl;
     onQuit(): void | Promise<void>;
+    mouseSession?: TerminalMouseSession;
+    registerQuitRequest?(handler: () => void): () => void;
 }
 
-export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
+export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }: TenBotTuiProps) {
     const [status, setStatus] = useState(() => control.getStatus());
     const [config, setConfig] = useState(() => control.getConfig());
     const [pendingRestart, setPendingRestart] = useState(false);
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [ui, setUi] = useState<TuiState>(initialTuiState);
     const [now, setNow] = useState(() => new Date());
+    const [peerDirectory, setPeerDirectory] = useState(() => readPeerDirectory(control));
     const quitting = useRef(false);
     const reloadRunning = useRef(false);
+    const regions = useRef(new ClickableRegionRegistry()).current;
     const { columns: rawColumns, rows: rawRows } = useWindowSize();
     const columns = rawColumns || 80;
     const rows = rawRows || 24;
     const visibleLogLines = Math.max(4, rows - 10);
+    const visiblePeerRows = Math.max(4, rows - 16);
+    const size = useRef({ columns, rows });
+    if (size.current.columns !== columns || size.current.rows !== rows) {
+        regions.clear();
+        size.current = { columns, rows };
+    }
+    regions.setModalActive(ui.modal.type !== "none");
 
     useEffect(() => {
         const unsubscribeStatus = control.subscribeStatus(setStatus);
@@ -50,6 +64,7 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
         });
         const unsubscribeEvents = control.subscribeEvents((event: RuntimeEvent) => {
             if (event.type === "provider-error") setUi((current) => receiveProviderError(current, event.notice));
+            else if (event.type === "recent-peers-updated") setPeerDirectory(readPeerDirectory(control));
         });
         return () => {
             unsubscribeStatus();
@@ -63,6 +78,15 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
     }, [control, ui.page]);
 
     useEffect(() => {
+        if (ui.page === "automated-peers") setPeerDirectory(readPeerDirectory(control));
+    }, [control, ui.page]);
+
+    useEffect(() => mouseSession?.subscribe((click) => {
+        if (!quitting.current) regions.dispatch(click);
+    }), [mouseSession, regions]);
+    useEffect(() => () => mouseSession?.leave(), [mouseSession]);
+
+    useEffect(() => {
         const timer = setInterval(() => setNow(new Date()), 1000);
         return () => clearInterval(timer);
     }, []);
@@ -71,6 +95,71 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
         if (quitting.current) return;
         quitting.current = true;
         void onQuit();
+    };
+
+    useEffect(() => registerQuitRequest?.(() => {
+        setUi((current) => requestQuitConfirmation(current));
+    }), [registerQuitRequest]);
+
+    const refreshPeerDirectory = () => setPeerDirectory(readPeerDirectory(control));
+
+    const allPeers = [...peerDirectory.registered, ...peerDirectory.recent];
+    const openPeerDetails = (index: number) => {
+        const peer = allPeers[index];
+        if (!peer) return;
+        const registered = index < peerDirectory.registered.length;
+        setUi((current) => ({ ...current, automatedPeerIndex: index, modal: { type: "automated-peer-details", peer, registered } }));
+    };
+
+    const requestPeerMutation = (action: "add" | "remove", peer: AutomatedPeerSummary) => {
+        setUi((current) => ({ ...current, modal: { type: "automated-peer-confirm", action, peer } }));
+    };
+
+    const mutatePeer = async (action: "add" | "remove", peer: AutomatedPeerSummary) => {
+        let result;
+        try {
+            result = action === "add" ? await control.addAutomatedPeer(peer.id) : await control.removeAutomatedPeer(peer.id);
+        } catch {
+            result = { ok: false, changed: false, message: "无法完成自动账号配置操作。", details: "配置文件操作失败" };
+        }
+        refreshPeerDirectory();
+        setUi((current) => ({ ...current, modal: { type: "automated-peer-result", action, peer, result } }));
+    };
+
+    const editSetting = (index: number) => setUi((current) => ({
+        ...current,
+        settingsIndex: index,
+        modal: openConfigModal(SETTINGS_FIELDS[index] ?? SETTINGS_FIELDS[0], config),
+    }));
+
+    const advanceConfigText = () => {
+        if (ui.modal.type !== "config-text") return;
+        const current = ui.modal;
+        const patch = textPatch(current.field, current.value);
+        if (patch.error) setUi((state) => ({ ...state, modal: { type: "config-invalid", message: patch.error } }));
+        else if (patch.value) setUi((state) => ({ ...state, modal: { type: "config-confirm", patch: patch.value, label: settingsFieldLabel(current.field), from: configValue(config, current.field), to: displayPatchValue(patch.value) } }));
+    };
+
+    const confirmModal = () => {
+        const modal = ui.modal;
+        if (modal.type === "quit-confirm") { requestQuit(); return; }
+        if (modal.type === "reload-confirm") {
+            setUi((current) => ({ ...current, modal: { type: "none" } }));
+            void reload("all");
+            return;
+        }
+        if (modal.type === "config-text") { advanceConfigText(); return; }
+        if (modal.type === "config-select") {
+            const option = modal.options[modal.index];
+            if (!option) return;
+            const patch = optionPatch(modal.field, option.value);
+            setUi((state) => ({ ...state, modal: { type: "config-confirm", patch, label: settingsFieldLabel(modal.field), from: configValue(config, modal.field), to: displayPatchValue(patch) } }));
+            return;
+        }
+        if (modal.type === "config-confirm") { void saveConfig(modal.patch, modal.label); return; }
+        if (modal.type === "automated-peer-confirm") { void mutatePeer(modal.action, modal.peer); return; }
+        if (modal.type === "provider-error-details") { setUi((current) => providerDetailsToSummary(current)); return; }
+        setUi(closeModal);
     };
 
     const showReloadResult = (target: "all" | "prompt" | "memes", prompt: ReloadResult | undefined, memes: ReloadResult | undefined) => {
@@ -124,6 +213,9 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
     };
 
     useInput((input, key) => {
+        if (quitting.current) return;
+        if (mouseSession?.handleInput(input)) return;
+        if (isSgrMouseSequence(input)) return;
         const lower = input.toLowerCase();
         if (ui.modal.type === "config-text") {
             if (key.escape) {
@@ -131,10 +223,7 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
                 return;
             }
             if (key.return) {
-                const current = ui.modal;
-                const patch = textPatch(current.field, current.value);
-                if (patch.error) setUi((state) => ({ ...state, modal: { type: "config-invalid", message: patch.error } }));
-                else if (patch.value) setUi((state) => ({ ...state, modal: { type: "config-confirm", patch: patch.value, label: settingsFieldLabel(current.field), from: configValue(config, current.field), to: displayPatchValue(patch.value) } }));
+                advanceConfigText();
                 return;
             }
             if (key.backspace || input === "\b") {
@@ -184,28 +273,31 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
                     setUi((current) => current.modal.type === "config-select"
                         ? { ...current, modal: { ...current.modal, index: Math.min(current.modal.options.length - 1, Math.max(0, current.modal.index + delta)) } }
                         : current);
-                } else if (key.return) {
-                    const current = ui.modal;
-                    const option = current.options[current.index];
-                    if (!option) return;
-                    const patch = optionPatch(current.field, option.value);
-                    setUi((state) => ({ ...state, modal: { type: "config-confirm", patch, label: settingsFieldLabel(current.field), from: configValue(config, current.field), to: displayPatchValue(patch) } }));
-                }
+                } else if (key.return) confirmModal();
                 return;
             }
             if (ui.modal.type === "config-confirm") {
-                if (key.return) {
-                    const current = ui.modal;
-                    void saveConfig(current.patch, current.label);
-                }
+                if (key.return) confirmModal();
+                return;
+            }
+            if (ui.modal.type === "quit-confirm") {
+                const action = quitConfirmationAction(ui, key);
+                if (action === "confirm") confirmModal();
+                else if (action === "cancel") setUi(closeModal);
+                return;
+            }
+            if (ui.modal.type === "automated-peer-confirm") {
+                if (key.return) confirmModal();
+                return;
+            }
+            if (ui.modal.type === "automated-peer-details") {
+                if (lower === "a" && !ui.modal.registered) requestPeerMutation("add", ui.modal.peer);
+                else if ((key.delete || input === "\u007f") && ui.modal.registered) requestPeerMutation("remove", ui.modal.peer);
                 return;
             }
             if (key.return) {
-                if (ui.modal.type === "reload-confirm") {
-                    setUi((current) => ({ ...current, modal: { type: "none" } }));
-                    void reload("all");
-                } else if (ui.modal.type === "provider-error-details") setUi((current) => providerDetailsToSummary(current));
-                else setUi(closeModal);
+                if (ui.modal.type === "provider-error-details") setUi((current) => providerDetailsToSummary(current));
+                else confirmModal();
                 return;
             }
             if (lower === "d" && ui.modal.type === "provider-error") {
@@ -216,7 +308,7 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
             return;
         }
         if (lower === "q" || (key.ctrl && lower === "c")) {
-            requestQuit();
+            setUi((current) => requestQuitConfirmation(current));
             return;
         }
         if (input === "?") {
@@ -235,44 +327,82 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
             setUi((current) => ({ ...current, modal: { type: "reload-confirm" } }));
             return;
         }
-        if (ui.page === "logs" && ui.focus === "main") {
-            if (key.pageUp) setUi((current) => ({ ...current, logOffset: clampLogOffset(current.logOffset + visibleLogLines, logs.length, visibleLogLines) }));
-            else if (key.pageDown) setUi((current) => ({ ...current, logOffset: clampLogOffset(current.logOffset - visibleLogLines, logs.length, visibleLogLines) }));
-            else if (key.home) setUi((current) => ({ ...current, logOffset: clampLogOffset(logs.length, logs.length, visibleLogLines) }));
-            else if (key.end) setUi((current) => ({ ...current, logOffset: 0 }));
-            else if (key.upArrow) setUi((current) => ({ ...current, logOffset: clampLogOffset(current.logOffset + 1, logs.length, visibleLogLines) }));
-            else if (key.downArrow) setUi((current) => ({ ...current, logOffset: clampLogOffset(current.logOffset - 1, logs.length, visibleLogLines) }));
-            return;
-        }
-        if (ui.page === "settings" && ui.focus === "main") {
-            if (key.upArrow) setUi((current) => ({ ...current, settingsIndex: moveSettingsSelection(current.settingsIndex, -1) }));
-            else if (key.downArrow) setUi((current) => ({ ...current, settingsIndex: moveSettingsSelection(current.settingsIndex, 1) }));
-            else if (key.return) setUi((current) => ({ ...current, modal: openConfigModal(SETTINGS_FIELDS[current.settingsIndex] ?? SETTINGS_FIELDS[0], config) }));
-            return;
-        }
         if (key.tab) {
-            setUi((current) => ({ ...current, focus: current.focus === "sidebar" ? "main" : "sidebar" }));
+            setUi((current) => toggleTuiFocus(current));
             return;
         }
         if (key.escape) {
             setUi((current) => ({ ...current, focus: "sidebar" }));
             return;
         }
+        if (ui.page === "logs" && ui.focus === "main") {
+            const navigation = handleLogsNavigation(ui, key, logs.length, visibleLogLines);
+            if (navigation.handled) {
+                setUi(navigation.state);
+                return;
+            }
+        }
+        if (ui.page === "settings" && ui.focus === "main") {
+            if (key.upArrow) setUi((current) => ({ ...current, settingsIndex: moveSettingsSelection(current.settingsIndex, -1) }));
+            else if (key.downArrow) setUi((current) => ({ ...current, settingsIndex: moveSettingsSelection(current.settingsIndex, 1) }));
+            else if (key.return) editSetting(ui.settingsIndex);
+            return;
+        }
+        if (ui.page === "automated-peers" && ui.focus === "main") {
+            if (key.upArrow) setUi((current) => ({ ...current, automatedPeerIndex: moveAutomatedPeerSelection(current.automatedPeerIndex, -1, allPeers.length) }));
+            else if (key.downArrow) setUi((current) => ({ ...current, automatedPeerIndex: moveAutomatedPeerSelection(current.automatedPeerIndex, 1, allPeers.length) }));
+            else if (key.return) openPeerDetails(ui.automatedPeerIndex);
+            else if (lower === "a") {
+                const peer = allPeers[ui.automatedPeerIndex];
+                if (peer && ui.automatedPeerIndex >= peerDirectory.registered.length) requestPeerMutation("add", peer);
+            } else if (key.delete || input === "\u007f") {
+                const peer = peerDirectory.registered[ui.automatedPeerIndex];
+                if (peer) requestPeerMutation("remove", peer);
+            }
+            return;
+        }
         if (ui.focus === "sidebar") {
             if (key.upArrow) setUi((current) => ({ ...current, selectedPage: movePage(current.selectedPage, -1) }));
             else if (key.downArrow) setUi((current) => ({ ...current, selectedPage: movePage(current.selectedPage, 1) }));
-            else if (key.return) setUi((current) => ({ ...current, page: current.selectedPage, focus: "main", settingsIndex: current.selectedPage === "settings" ? 0 : current.settingsIndex }));
+            else if (key.return) setUi((current) => activateSidebarPage(current));
         }
     });
 
     const showPendingRestart = pendingRestart || hasPendingRestart(status, config);
-    const content = renderView(ui.page, status, config, logs, ui.logOffset, visibleLogLines, ui.settingsIndex, showPendingRestart);
+    const content = renderView(
+        ui.page, status, config, logs, ui.logOffset, visibleLogLines, ui.settingsIndex, showPendingRestart,
+        peerDirectory, ui.automatedPeerIndex, visiblePeerRows, regions, editSetting, openPeerDetails,
+    );
+    const closeCurrentModal = () => setUi(closeModal);
+    const selectModalOption = (index: number) => setUi((current) => current.modal.type === "config-select"
+        ? { ...current, modal: { ...current.modal, index } }
+        : current);
+    const openProviderDetails = () => setUi((current) => current.modal.type === "provider-error"
+        ? { ...current, modal: { type: "provider-error-details", notice: current.modal.notice, count: current.modal.count } }
+        : current);
+    const modalProps = {
+        modal: ui.modal,
+        columns,
+        registry: regions,
+        onClose: closeCurrentModal,
+        onConfirm: confirmModal,
+        onOption: selectModalOption,
+        onProviderDetails: openProviderDetails,
+        onAddPeer: (peer: AutomatedPeerSummary) => requestPeerMutation("add", peer),
+        onRemovePeer: (peer: AutomatedPeerSummary) => requestPeerMutation("remove", peer),
+    };
+    const footerProps = {
+        focus: ui.focus,
+        settings: ui.page === "settings" && ui.focus === "main",
+        automatedPeers: ui.page === "automated-peers" && ui.focus === "main",
+    };
+    const selectSidebarPage = (page: TuiPage) => setUi((current) => activateSidebarPage(current, page));
     if (columns < 60) {
         return <Box flexDirection="column" width={columns} height={rows}>
             <TopBar status={status} now={now} compact />
             <Box flexGrow={1} padding={2}><Text color="yellow">终端窗口过窄，请扩大窗口。</Text></Box>
-            <Footer focus={ui.focus} settings={ui.page === "settings" && ui.focus === "main"} />
-            <ModalLayer modal={ui.modal} columns={columns} />
+            <Footer {...footerProps} />
+            <ModalLayer {...modalProps} />
         </Box>;
     }
     if (rows < 12) {
@@ -283,21 +413,21 @@ export function TenBotTui({ control, onQuit }: TenBotTuiProps) {
                 <Text dimColor>窗口高度不足，已启用简化显示。</Text>
                 <Text>{status.provider.model} · {status.activeCycles} 个活动周期 · {status.contextConversations} 个会话</Text>
             </Box>
-            <Footer focus={ui.focus} settings={ui.page === "settings" && ui.focus === "main"} />
-            <ModalLayer modal={ui.modal} columns={columns} />
+            <Footer {...footerProps} />
+            <ModalLayer {...modalProps} />
         </Box>;
     }
     return <Box flexDirection="column" width={columns} height={rows}>
         <TopBar status={status} now={now} />
         <Box flexDirection="row" flexGrow={1} minHeight={0}>
-            <Sidebar selectedPage={ui.selectedPage} activePage={ui.page} focused={ui.focus === "sidebar"} />
+            <Sidebar selectedPage={ui.selectedPage} activePage={ui.page} focused={ui.focus === "sidebar"} registry={regions} onSelectPage={selectSidebarPage} />
             <Box flexDirection="column" flexGrow={1} minWidth={0} paddingX={1}>
                 <Text bold color="cyan">{PAGE_LABELS[ui.page]}</Text>
                 <Box flexGrow={1} minHeight={0}>{content}</Box>
             </Box>
         </Box>
-        <Footer focus={ui.focus} settings={ui.page === "settings" && ui.focus === "main"} />
-        <ModalLayer modal={ui.modal} columns={columns} />
+        <Footer {...footerProps} />
+        <ModalLayer {...modalProps} />
     </Box>;
 }
 
@@ -339,7 +469,22 @@ export function receiveProviderError(current: TuiState, notice: ProviderErrorNot
     return { ...current, queuedProviderError: { notice, count } };
 }
 
-function renderView(page: TuiPage, status: RuntimeStatus, config: PublicConfig, logs: readonly LogEntry[], offset: number, visibleLines: number, settingsIndex: number, pendingRestart: boolean): React.ReactNode {
+function renderView(
+    page: TuiPage,
+    status: RuntimeStatus,
+    config: PublicConfig,
+    logs: readonly LogEntry[],
+    offset: number,
+    visibleLines: number,
+    settingsIndex: number,
+    pendingRestart: boolean,
+    peerDirectory: { registered: AutomatedPeerSummary[]; recent: AutomatedPeerSummary[] },
+    automatedPeerIndex: number,
+    visiblePeerRows: number,
+    regions: ClickableRegionRegistry,
+    onEditSetting: (index: number) => void,
+    onOpenPeer: (index: number) => void,
+): React.ReactNode {
     switch (page) {
         case "overview": return <OverviewView status={status} />;
         case "model": return <ModelView status={status} />;
@@ -347,7 +492,16 @@ function renderView(page: TuiPage, status: RuntimeStatus, config: PublicConfig, 
         case "memes": return <MemesView status={status} />;
         case "conversations": return <ConversationsView status={status} />;
         case "logs": return <LogsView logs={logs} offset={offset} visibleLines={visibleLines} />;
-        case "settings": return <SettingsView status={status} config={config} selectedIndex={settingsIndex} pendingRestart={pendingRestart} />;
+        case "settings": return <SettingsView status={status} config={config} selectedIndex={settingsIndex} pendingRestart={pendingRestart} registry={regions} onEdit={onEditSetting} />;
+        case "automated-peers": return <AutomatedPeersView registered={peerDirectory.registered} recent={peerDirectory.recent} selectedIndex={automatedPeerIndex} visibleCount={visiblePeerRows} registry={regions} onOpen={onOpenPeer} />;
+    }
+}
+
+function readPeerDirectory(control: TenBotControl): { registered: AutomatedPeerSummary[]; recent: AutomatedPeerSummary[] } {
+    try {
+        return { registered: control.getAutomatedPeers(), recent: control.getRecentPeers() };
+    } catch {
+        return { registered: [], recent: [] };
     }
 }
 

@@ -3,6 +3,7 @@ import type { ConfigUpdateResult, PublicConfig, PublicConfigPatch } from "../con
 import type { LogEntry, LogListener } from "../shared/logger.js";
 import type { RuntimeEvent, RuntimeEventListener } from "./runtime-event.js";
 import type { RuntimeStatus } from "./runtime-status.js";
+import type { AutomatedPeerMutationResult, AutomatedPeerSummary } from "./automated-peers.js";
 
 export const MAX_TUI_LOG_ENTRIES = 400;
 
@@ -16,6 +17,10 @@ export interface TenBotControl {
     getStatus(): RuntimeStatus;
     getConfig(): PublicConfig;
     updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
+    getAutomatedPeers(): AutomatedPeerSummary[];
+    getRecentPeers(): AutomatedPeerSummary[];
+    addAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
+    removeAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
     subscribeStatus(listener: StatusListener): () => void;
     subscribeLogs(listener: LogListener): () => void;
     subscribeEvents(listener: RuntimeEventListener): () => void;
@@ -28,6 +33,10 @@ export interface TenBotControlOperations {
     getStatus(): RuntimeStatus;
     getConfig(): PublicConfig;
     updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
+    getAutomatedPeers(): AutomatedPeerSummary[];
+    getRecentPeers(): AutomatedPeerSummary[];
+    addAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
+    removeAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
     reloadPrompt(provider?: PromptProvider): Promise<ReloadResult>;
     reloadMemes(): Promise<ReloadResult>;
     shutdown(): Promise<void>;
@@ -47,6 +56,10 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
         getStatus,
         getConfig: () => structuredClone(operations.getConfig()),
         updateConfig: (patch) => operations.updateConfig(patch),
+        getAutomatedPeers: () => structuredClone(operations.getAutomatedPeers()),
+        getRecentPeers: () => structuredClone(operations.getRecentPeers()),
+        addAutomatedPeer: (id) => operations.addAutomatedPeer(id),
+        removeAutomatedPeer: (id) => operations.removeAutomatedPeer(id),
         subscribeStatus(listener) {
             statusListeners.add(listener);
             listener(getStatus());

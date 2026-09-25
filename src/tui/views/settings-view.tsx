@@ -6,12 +6,16 @@ import { logLevelLabel, providerLabel, reasoningLabel, settingsFieldLabel, verbo
 import { Panel } from "../components/panel.js";
 import { StatusRow } from "../components/status-row.js";
 import { SETTINGS_FIELDS, type SettingsField } from "../state.js";
+import { ClickableRegion } from "../components/clickable-region.js";
+import type { ClickableRegionRegistry } from "../mouse-input.js";
 
-export function SettingsView({ status, config, selectedIndex, pendingRestart }: {
+export function SettingsView({ status, config, selectedIndex, pendingRestart, registry, onEdit }: {
     status: RuntimeStatus;
     config: PublicConfig;
     selectedIndex: number;
     pendingRestart: boolean;
+    registry: ClickableRegionRegistry;
+    onEdit(index: number): void;
 }) {
     const valueFor = (field: SettingsField): string => {
         switch (field) {
@@ -26,11 +30,13 @@ export function SettingsView({ status, config, selectedIndex, pendingRestart }: 
         }
     };
 
-    const editableRow = (field: SettingsField, index: number) => <Box key={field} flexShrink={0}>
-        <Text color={selectedIndex === index ? "cyan" : undefined}>{selectedIndex === index ? "› " : "  "}</Text>
-        <Box width={23}><Text dimColor={selectedIndex !== index}>{settingsFieldLabel(field)}</Text></Box>
-        <Text>{valueFor(field)}</Text>
-    </Box>;
+    const editableRow = (field: SettingsField, index: number) => <ClickableRegion key={field} id={`settings:${field}`} registry={registry} width="100%" flexShrink={0} onClick={() => onEdit(index)}>
+        <Box flexDirection="row">
+            <Text color={selectedIndex === index ? "cyan" : undefined}>{selectedIndex === index ? "› " : "  "}</Text>
+            <Box width={23}><Text dimColor={selectedIndex !== index}>{settingsFieldLabel(field)}</Text></Box>
+            <Text>{valueFor(field)}</Text>
+        </Box>
+    </ClickableRegion>;
 
     return <Panel>
         {pendingRestart ? <Text color="yellow">! 部分配置将在下次启动后生效。</Text> : null}

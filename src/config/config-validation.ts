@@ -18,6 +18,14 @@ export function parseAutomatedPeerIds(value: string | undefined): readonly strin
     return [...new Set((value ?? "").split(",").map((id) => id.trim()).filter(Boolean))];
 }
 
+export function validateAutomatedPeerId(value: string): string {
+    const id = value.trim();
+    if (!id || id.length > 256 || /[,\u0000-\u001f\u007f-\u009f]/.test(id)) {
+        throw new Error("稳定 ID 不能为空、不能包含逗号或换行，且长度不能超过 256 个字符");
+    }
+    return id;
+}
+
 export function parseBotLoopGuardMaxCycles(value: string | undefined): number {
     if (value === undefined || value.trim() === "") return DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES;
     if (!/^\d+$/.test(value.trim())) {

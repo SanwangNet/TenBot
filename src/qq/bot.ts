@@ -3,10 +3,14 @@ import { QQBot, quoteRef } from "@tencent-connect/qqbot-nodejs";
 import { logger, qqSdkLogger } from "../shared/logger.js";
 import { registerInteractionHandler } from "./handlers/interaction-handler.js";
 import { registerMessageHandler } from "./handlers/message-handler.js";
+import type { NormalizedQqMessage } from "./message/normalize-message.js";
 
 export type QqConnectionState = "connecting" | "connected" | "disconnected" | "error";
 
-export function createQqBot(onConnectionState?: (state: QqConnectionState) => void): QQBot {
+export function createQqBot(
+    onConnectionState?: (state: QqConnectionState) => void,
+    observePeer?: (message: NormalizedQqMessage) => void,
+): QQBot {
     const appId = process.env.QQBOT_APP_ID;
     const appSecret = process.env.QQBOT_APP_SECRET;
 
@@ -41,7 +45,7 @@ export function createQqBot(onConnectionState?: (state: QqConnectionState) => vo
         }
     });
 
-    registerMessageHandler(bot);
+    registerMessageHandler(bot, undefined, observePeer);
     registerInteractionHandler(bot);
 
     return bot;

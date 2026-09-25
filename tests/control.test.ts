@@ -31,6 +31,10 @@ test("Control exposes only serializable Runtime status and supports subscription
         getStatus: () => current,
         getConfig: () => config,
         async updateConfig() { return { ok: true, requiresRestart: true, changedFields: ["aiProvider"], message: "saved" }; },
+        getAutomatedPeers: () => [],
+        getRecentPeers: () => [],
+        async addAutomatedPeer() { return { ok: true, changed: true, message: "added" }; },
+        async removeAutomatedPeer() { return { ok: true, changed: true, message: "removed" }; },
         async reloadPrompt() { return { ok: true, message: "Prompt reloaded", loadedAt: "2026-01-01T00:00:00.000Z" }; },
         async reloadMemes() { return { ok: true, message: "Memes reloaded", loadedAt: "2026-01-01T00:00:00.000Z" }; },
         async shutdown() { shutdowns++; },
@@ -50,7 +54,7 @@ test("Control exposes only serializable Runtime status and supports subscription
     control.publishStatus();
     assert.deepEqual(observed, ["connected", "disconnected"]);
     const events: string[] = [];
-    const unsubscribeEvent = control.subscribeEvents((event) => events.push(event.notice.provider));
+    const unsubscribeEvent = control.subscribeEvents((event) => { if (event.type === "provider-error") events.push(event.notice.provider); });
     control.publishEvent({
         type: "provider-error",
         notice: { provider: "deepseek", model: "deepseek-flash", status: 503, retryable: true, message: "暂时不可用", timestamp: "now" },

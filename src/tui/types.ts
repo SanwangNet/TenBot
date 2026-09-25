@@ -1,1 +1,1 @@
-export type TuiPage = "overview" | "model" | "prompt" | "memes" | "conversations" | "logs" | "settings";
+export type TuiPage = "overview" | "model" | "prompt" | "memes" | "conversations" | "automated-peers" | "logs" | "settings";

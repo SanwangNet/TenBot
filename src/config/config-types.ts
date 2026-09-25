@@ -74,7 +74,14 @@ export type ConfigUpdateResult =
         details?: string;
     };
 
+export type AutomatedPeerConfigResult =
+    | { ok: true; changed: boolean; peerIds: string[]; message: string }
+    | { ok: false; changed: false; peerIds: string[]; message: string; details?: string };
+
 export interface ConfigStore {
     getPublicConfig(): PublicConfig;
     updatePublicConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
+    getAutomatedPeerIds(): string[];
+    addAutomatedPeer(id: string): Promise<AutomatedPeerConfigResult>;
+    removeAutomatedPeer(id: string): Promise<AutomatedPeerConfigResult>;
 }

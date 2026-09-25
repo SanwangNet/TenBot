@@ -1,11 +1,16 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useWindowSize } from "ink";
 
-export function Footer({ focus, settings, notice }: { focus: "sidebar" | "main"; settings?: boolean; notice?: string }) {
+export function Footer({ focus, settings, automatedPeers, notice }: { focus: "sidebar" | "main"; settings?: boolean; automatedPeers?: boolean; notice?: string }) {
+    const { columns } = useWindowSize();
+    const navigation = automatedPeers
+        ? "↑↓ 选择  Enter 详情  A 添加  Del 删除"
+        : focus === "sidebar" ? "↑↓ 选择  Enter 打开" : settings ? "↑↓ 选择  Enter 修改  Esc 返回" : "↑↓ 查看  Esc 返回";
+    const shortcuts = "Tab 切换  P 提示词  M 梗数据  R 重载  ? 帮助  Q 退出";
     return <Box flexDirection="column" borderStyle="single" borderTop flexShrink={0} paddingX={1}>
-        <Box>
-            <Text dimColor>{focus === "sidebar" ? "↑↓ 选择  Enter 打开" : settings ? "↑↓ 选择  Enter 修改  Esc 返回" : "↑↓ 查看  Esc 返回"}</Text>
-            <Text dimColor>  P 提示词  M 梗数据  R 重载  ? 帮助  Q 退出</Text>
+        <Box flexDirection={columns < 96 ? "column" : "row"}>
+            <Text dimColor wrap="truncate">{navigation}</Text>
+            <Text dimColor wrap="truncate">{columns < 96 ? shortcuts : `  ${shortcuts}`}</Text>
         </Box>
         {notice ? <Text color="yellow">! {notice}</Text> : null}
     </Box>;

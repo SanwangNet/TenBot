@@ -8,16 +8,19 @@ import { loadAppConfig } from "./config/config-validation.js";
 import type { AppConfig } from "./config/config-types.js";
 import { createTenBotControl, type ReloadResult, type TenBotControl } from "./control/tenbot-control.js";
 import { createProviderErrorNotice } from "./control/provider-error.js";
+import type { AutomatedPeerSummary } from "./control/automated-peers.js";
 import type { RuntimeStatus } from "./control/runtime-status.js";
 import { LogBuffer } from "./control/log-buffer.js";
 import { SqliteMemberRepository } from "./members/sqlite-repository.js";
 import { MemoryMemberRepository } from "./members/memory-repository.js";
 import { createQqBot, type QqConnectionState } from "./qq/bot.js";
 import { configureMemberRepository } from "./qq/conversation/known-members.js";
+import { automatedPeerLoopGuard } from "./qq/conversation/automated-peer.js";
+import { RecentPeerRegistry } from "./qq/conversation/recent-peers.js";
 import { getRecentContextConversationCount } from "./qq/conversation/recent-context.js";
 import { getActiveReplyCycleCount, shutdownReplyCoordinator, subscribeProviderErrors } from "./qq/reply/coordinator.js";
 import { getMemeRuntimeSnapshot, loadMemeRuntime, reloadMemes as reloadMemeData } from "./skills/meme/skill.js";
-import { logger, setConsoleLogOutputEnabled } from "./shared/logger.js";
+import { logger, setConsoleLogOutputEnabled, shortId } from "./shared/logger.js";
 
 export interface TenBotRuntime {
     control: TenBotControl;
@@ -32,12 +35,14 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     setConsoleLogOutputEnabled(options.consoleLogs ?? true);
     const logs = new LogBuffer();
     const configStore = createConfigStore();
+    const recentPeers = new RecentPeerRegistry();
     let appConfig: AppConfig;
     const promptStore = getPromptStore();
     let model: ModelPlugin;
     let provider: PromptProvider;
     try {
         appConfig = loadAppConfig(process.env);
+        automatedPeerLoopGuard.replacePeers(configStore.getAutomatedPeerIds());
         model = getModelPlugin();
         if (model.id !== "gpt" && model.id !== "deepseek") throw new Error(`Unsupported model id: ${model.id}`);
         provider = model.id;
@@ -62,6 +67,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         bot = createQqBot((state) => {
             qqState = state;
             control?.publishStatus();
+        }, (message) => {
+            if (recentPeers.observe(message)) control?.publishEvent({ type: "recent-peers-updated" });
         });
     } catch (error) {
         logs.dispose();
@@ -119,10 +126,42 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         };
     };
 
+    const toPeerSummary = (id: string): AutomatedPeerSummary => {
+        const recent = recentPeers.get(id);
+        return {
+            id,
+            displayId: shortId(id),
+            displayName: recent?.displayName || "未知账号",
+            platformBotHint: recent?.platformBotHint ?? false,
+            ...(recent ? { lastSeenAt: recent.lastSeenAt } : {}),
+        };
+    };
+
     control = createTenBotControl({
         getStatus: status,
         getConfig: () => configStore.getPublicConfig(),
         updateConfig: (patch) => configStore.updatePublicConfig(patch),
+        getAutomatedPeers: () => configStore.getAutomatedPeerIds().map(toPeerSummary),
+        getRecentPeers: () => {
+            const registered = new Set(configStore.getAutomatedPeerIds());
+            return recentPeers.list().filter((peer) => !registered.has(peer.id)).map((peer) => toPeerSummary(peer.id));
+        },
+        async addAutomatedPeer(id) {
+            const result = await configStore.addAutomatedPeer(id);
+            if (result.ok) {
+                automatedPeerLoopGuard.replacePeers(result.peerIds);
+                control?.publishStatus();
+            }
+            return { ok: result.ok, changed: result.changed, message: result.message, ...("details" in result && result.details ? { details: result.details } : {}) };
+        },
+        async removeAutomatedPeer(id) {
+            const result = await configStore.removeAutomatedPeer(id);
+            if (result.ok) {
+                automatedPeerLoopGuard.replacePeers(result.peerIds);
+                control?.publishStatus();
+            }
+            return { ok: result.ok, changed: result.changed, message: result.message, ...("details" in result && result.details ? { details: result.details } : {}) };
+        },
         subscribeLogs: (listener) => logs.subscribe(listener),
         async reloadPrompt(requestedProvider): Promise<ReloadResult> {
             const target = requestedProvider ?? provider;
