@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PromptStore } from "../src/ai/prompt-store.js";
+import { runModelPlugin } from "../src/ai/client.js";
+import type { ModelPlugin } from "../src/ai/model-plugin.js";
+import { FileChangeWatcher } from "../src/shared/file-change-watcher.js";
 
 test("PromptStore loads provider files independently and preserves old Attempt snapshots", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tenbot-prompts-"));
@@ -48,6 +51,57 @@ test("PromptStore reload failure keeps the previously active snapshot", async ()
         await rm(gptPath, { force: true });
         await rm(deepseekPath, { force: true });
         await rmdir(directory);
+    }
+});
+
+test("Prompt watcher updates the next ModelRequest while an in-flight request keeps its captured prompt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tenbot-prompt-watch-"));
+    const gptPath = join(directory, "gpt.md");
+    const deepseekPath = join(directory, "deepseek.md");
+    const tempPath = join(directory, "gpt.next");
+    let releaseFirst!: () => void;
+    const requests: string[] = [];
+    const plugin: ModelPlugin = {
+        id: "gpt", model: "offline", capabilities: { webSearch: false },
+        async generate(request) {
+            requests.push(request.systemPrompt);
+            if (requests.length === 1) return await new Promise((resolve) => {
+                releaseFirst = () => resolve({ kind: "no_reply" });
+            });
+            return { kind: "no_reply" };
+        },
+    };
+    let watcher: FileChangeWatcher | undefined;
+    const waitFor = async (predicate: () => boolean) => {
+        const started = Date.now();
+        while (!predicate()) {
+            if (Date.now() - started > 2000) throw new Error("condition timed out");
+            await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+    };
+    try {
+        await writeFile(gptPath, "TEST_PROMPT_VERSION_A", "utf8");
+        await writeFile(deepseekPath, "DEEPSEEK_PROMPT_INDEPENDENT", "utf8");
+        const store = new PromptStore({ gpt: gptPath, deepseek: deepseekPath });
+        const promptA = await store.load("gpt");
+        watcher = new FileChangeWatcher(gptPath, async () => { await store.reload("gpt"); }, 35);
+        await watcher.start();
+
+        const firstAttempt = runModelPlugin(plugin, "offline", { signal: new AbortController().signal }, promptA);
+        await waitFor(() => requests.length === 1);
+        await writeFile(tempPath, "TEST_PROMPT_VERSION_B", "utf8");
+        await rename(tempPath, gptPath);
+        await waitFor(() => store.get("gpt").revision === promptA.revision + 1);
+        const promptB = store.get("gpt");
+        await runModelPlugin(plugin, "offline", { signal: new AbortController().signal }, promptB);
+        assert.deepEqual(requests, ["TEST_PROMPT_VERSION_A", "TEST_PROMPT_VERSION_B"]);
+        assert.equal(store.get("deepseek").content, "DEEPSEEK_PROMPT_INDEPENDENT");
+
+        releaseFirst();
+        await firstAttempt;
+    } finally {
+        watcher?.close();
+        await rm(directory, { recursive: true, force: true });
     }
 });
 

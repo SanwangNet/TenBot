@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 import { chat, runModelPlugin } from "../../ai/client.js";
-import { getModelPlugin } from "../../ai/model-registry.js";
-import { getPromptStore } from "../../ai/prompt-store.js";
 import type { ModelPlugin } from "../../ai/model-plugin.js";
+import { captureAttemptRuntimeSnapshot, type AttemptRuntimeSnapshot } from "../../ai/attempt-snapshot.js";
+import { ToolProtocolLeakError } from "../../ai/tool-protocol.js";
 import type { AiResult } from "../../ai/reply-result.js";
 import type { MemeRuntimeSnapshot } from "../../skills/meme/store.js";
 import { normalizeQQReplyAction, type QuotePreference } from "../../skills/qq-reply/skill.js";
@@ -37,6 +37,7 @@ export interface ReplyCycleAnchor { revision: number; message: NormalizedQqMessa
 interface TrailingUpdate { anchor: ReplyCycleAnchor; priority: TriggerPriority }
 export interface AttemptInput { aiInput: string; imageUrls: string[]; refs?: Map<string, string>; memeSnapshot?: MemeRuntimeSnapshot }
 export interface AttemptBuildContext {
+    snapshotRevision: number;
     allowNoReply: boolean;
     triggerPriority: TriggerPriority;
     originTriggerKind?: TriggerKind;
@@ -70,6 +71,8 @@ export interface ReplyCoordinatorDependencies {
     webSearchTimeoutMs?: number;
     multiMessageDelayMs?: number;
     botLoopGuard?: AutomatedPeerLoopGuard;
+    /** Injectable snapshot source for deterministic offline runtime tests. */
+    captureAttemptSnapshot?: () => AttemptRuntimeSnapshot;
 }
 
 export interface ProviderErrorSignal {
@@ -136,7 +139,7 @@ interface Attempt {
     deadlineAt: number;
     controller: AbortController;
     modelPlugin: ModelPlugin;
-    promptSnapshot: string;
+    runtimeSnapshot: AttemptRuntimeSnapshot;
     refs: Map<string, string>;
     hasUsedWebSearch: boolean;
     status: AttemptStatus;
@@ -281,7 +284,7 @@ function upgradeTrigger(cycle: Cycle, request: ReplyRequest, priority: TriggerPr
 }
 function canNoReply(cycle: Cycle): boolean { return cycle.latestRequest.isGroup && cycle.effectiveTriggerKind !== "hard-mention"; }
 function buildAttemptContext(cycle: Cycle, revision: number): AttemptBuildContext {
-    return { allowNoReply: canNoReply(cycle), triggerPriority: cycle.priority,
+    return { snapshotRevision: revision, allowNoReply: canNoReply(cycle), triggerPriority: cycle.priority,
         originTriggerKind: cycle.originTriggerKind, effectiveTriggerKind: cycle.effectiveTriggerKind,
         originAnchor: cycle.originAnchor, effectiveAnchor: cycle.effectiveAnchor,
         newerMessages: cycle.updates.filter((item) =>
@@ -411,12 +414,13 @@ function startAttempt(cycle: Cycle, revision: number, refs: Map<string, string>)
         ? cycle.cycleStartedAt + (cycle.deps.webSearchTimeoutMs ?? AI_WEB_SEARCH_TIMEOUT_MS)
         : startedAt + (cycle.deps.timeoutMs ?? AI_REQUEST_TIMEOUT_MS);
     cycle.deadlineAt = deadlineAt;
-    const modelPlugin = cycle.deps.modelPlugin ?? getModelPlugin();
+    const runtimeSnapshot = cycle.deps.captureAttemptSnapshot?.() ?? captureAttemptRuntimeSnapshot(cycle.deps.modelPlugin);
+    const modelPlugin = runtimeSnapshot.model.model;
     const attempt: Attempt = {
         requestId: randomUUID(), attemptNumber: ++cycle.attemptNumber,
         snapshotRevision: revision, startedAt, deadlineAt,
         controller: new AbortController(), modelPlugin,
-        promptSnapshot: getPromptStore().getForModel(modelPlugin.id)?.content ?? "",
+        runtimeSnapshot,
         refs, hasUsedWebSearch: false,
         status: "running", resolveStop: resolve, stop,
     };
@@ -433,6 +437,8 @@ function startAttempt(cycle: Cycle, revision: number, refs: Map<string, string>)
         " request=" + shortId(attempt.requestId) +
         " attempt=" + attempt.attemptNumber + " snapshot=" + revision +
         " anchor=" + cycle.effectiveAnchor.revision);
+    logger.debug(`[Prompt] attempt snapshot provider=${runtimeSnapshot.prompt.provider} revision=${runtimeSnapshot.prompt.revision}` +
+        ` request=${shortId(attempt.requestId)} attempt=${attempt.attemptNumber}`);
     return attempt;
 }
 function clearAttempt(cycle: Cycle, attempt: Attempt): void {
@@ -485,7 +491,7 @@ async function runAttempt(cycle: Cycle, request: ReplyRequest, input: AttemptInp
                 onWebSearchStart: webSearchCallback(request, cycle, attempt) };
             return cycle.deps.executeAi
                 ? cycle.deps.executeAi(input.aiInput, options)
-                : runModelPlugin(attempt.modelPlugin, input.aiInput, options, attempt.promptSnapshot);
+                : runModelPlugin(attempt.modelPlugin, input.aiInput, options, attempt.runtimeSnapshot.prompt);
         })
         .then((value): WorkResult => {
             if (attempt.status === "running") {
@@ -702,6 +708,12 @@ async function executeCycle(cycle: Cycle): Promise<void> {
                 attempt.status = "failed";
                 publishReplyLifecycle(cycle, attempt, { kind: "failed", failureStage: "generation" });
                 cycle.consumedRevision = attempt.snapshotRevision;
+                if (outcome.error instanceof ToolProtocolLeakError) {
+                    logger.error(`[AI] invalid final output code=${outcome.error.code} provider=${attempt.modelPlugin.id}` +
+                        ` model=${attempt.modelPlugin.model} request=${shortId(attempt.requestId)} attempt=${attempt.attemptNumber}`);
+                    await sendFailureNotice(request);
+                    break;
+                }
                 const upstream = classifyUpstreamFailure(outcome.error);
                 if (outcome.error instanceof ModelProviderError || upstream) {
                     publishProviderError({ provider: attempt.modelPlugin.id, model: attempt.modelPlugin.model, error: outcome.error });

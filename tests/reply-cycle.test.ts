@@ -4,6 +4,8 @@ import { test } from "node:test";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 import type { AiResult } from "../src/ai/reply-result.js";
 import type { ModelPlugin } from "../src/ai/model-plugin.js";
+import type { AttemptRuntimeSnapshot } from "../src/ai/attempt-snapshot.js";
+import { ToolProtocolLeakError } from "../src/ai/tool-protocol.js";
 import { buildAutoMemeContext } from "../src/skills/meme/skill.js";
 import { buildReplyCycleContext, recordIncomingMessageRevision, rememberIncomingMessage } from "../src/qq/conversation/recent-context.js";
 import { getConversationGeneration, isConversationActive, markConversationActive } from "../src/qq/conversation/engagement.js";
@@ -807,6 +809,154 @@ test("new messages during the QQ send phase do not abort an already completed ac
     await pending;
     await waitFor(() => attempts.length === 2);
     assert.deepEqual(calls, ["one"]);
+});
+
+test("protocol leakage is bounded and never sent to QQ as reply text", async () => {
+    const value = message(randomUUID(), "protocol guard");
+    commit(value);
+    const { bot, calls } = fakeBot();
+    const leaked = '<qq_reply><messages/></qq_reply>';
+    let generations = 0;
+    const plugin: ModelPlugin = {
+        id: "deepseek", model: "offline", capabilities: { webSearch: false },
+        async generate() {
+            generations++;
+            throw new ToolProtocolLeakError();
+        },
+    };
+    await coordinateAiReply(requestFor(bot, value), { modelPlugin: plugin, multiMessageDelayMs: 0 });
+    assert.equal(generations, 2, "only one protocol recovery generation is allowed");
+    assert.ok(calls.length <= 1);
+    assert.equal(calls.some((call) => call.content?.includes(leaked) || JSON.stringify(call.payload)?.includes(leaked)), false);
+});
+
+test("restarted soft Attempts retain complete context and keep NO_REPLY optional through Attempt #4", async () => {
+    const group = randomUUID();
+    const values = ["m1 原始问题", "m2 补充背景", "m3 群友插话", "m4 继续讨论", "m5 后续消息"]
+        .map((text) => message(group, text));
+    markConversationActive(values[0]!);
+    commit(values[0]!);
+    const { bot } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const contexts: AttemptBuildContext[] = [];
+    const request = (index: number) => {
+        const next = requestFor(bot, values[index]!, index === 0 ? 1 : 0, true);
+        next.buildAttempt = async (current, context) => {
+            contexts.push({ ...context, newerMessages: [...context.newerMessages] });
+            return { aiInput: buildReplyCycleContext(current), imageUrls: [] };
+        };
+        return next;
+    };
+    const pending = coordinateAiReply(request(0), { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+
+    for (let index = 1; index <= 3; index++) {
+        commit(values[index]!);
+        coordinateAiReply(request(index));
+        await waitFor(() => attempts.length === index + 1);
+    }
+
+    assert.equal(attempts.length, 4);
+    assert.equal(contexts[3]?.snapshotRevision, 4);
+    assert.equal(contexts[3]?.originAnchor.revision, 1);
+    assert.equal(contexts[3]?.effectiveAnchor.revision, 1);
+    assert.equal(contexts[3]?.effectiveTriggerKind, "active-soft");
+    assert.equal(contexts[3]?.allowNoReply, true);
+    assert.deepEqual(contexts[3]?.newerMessages.map((item) => item.revision), [4]);
+    for (const text of values.slice(0, 4).map((item) => item.displayContent)) assert.match(attempts[3]!.input, new RegExp(text));
+
+    commit(values[4]!);
+    coordinateAiReply(request(4));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(attempts[3]!.signal.aborted, false, "Attempt #4 is not interrupted after the budget is spent");
+    assert.equal(attempts.length, 4);
+    attempts[3]!.resolve({ kind: "no_reply" });
+    await pending;
+    assert.equal(attempts.length, 4, "a soft Attempt #4 may still choose NO_REPLY");
+    for (const value of values) assert.match(buildReplyCycleContext(values[4]!), new RegExp(value.displayContent));
+});
+
+test("a hard mention upgrades soft obligation across later interruptions without downgrade", async () => {
+    const group = randomUUID();
+    const values = ["m1 active", "m2 ordinary", "@小尘 m3 hard", "m4 ordinary"]
+        .map((text) => message(group, text));
+    markConversationActive(values[0]!);
+    commit(values[0]!);
+    const { bot } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    const contexts: AttemptBuildContext[] = [];
+    const request = (index: number) => {
+        const priority = index === 0 ? 1 : index === 2 ? 3 : 0;
+        const next = requestFor(bot, values[index]!, priority, index !== 2);
+        next.buildAttempt = async (current, context) => {
+            contexts.push({ ...context, newerMessages: [...context.newerMessages] });
+            return { aiInput: buildReplyCycleContext(current), imageUrls: [] };
+        };
+        return next;
+    };
+    const pending = coordinateAiReply(request(0), { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+    for (let index = 1; index <= 3; index++) {
+        commit(values[index]!);
+        coordinateAiReply(request(index));
+        await waitFor(() => attempts.length === index + 1);
+    }
+    assert.deepEqual(contexts.map((context) => context.allowNoReply), [true, true, false, false]);
+    assert.equal(contexts[3]?.originAnchor.revision, 1);
+    assert.equal(contexts[3]?.effectiveAnchor.revision, 3);
+    assert.equal(contexts[3]?.effectiveTriggerKind, "hard-mention");
+    attempts[3]!.resolve({ kind: "no_reply" });
+    await pending;
+});
+
+test("each Attempt captures one immutable model and Prompt snapshot", async () => {
+    const group = randomUUID();
+    const firstMessage = message(group, "active question");
+    const interruptMessage = message(group, "newer context");
+    markConversationActive(firstMessage);
+    commit(firstMessage);
+    const { bot } = fakeBot();
+    const requests: Array<{ provider: string; model: string; systemPrompt: string; signal: AbortSignal }> = [];
+    let rejectFirst!: (error: Error) => void;
+    const gpt: ModelPlugin = {
+        id: "gpt", model: "gpt-old", capabilities: { webSearch: false },
+        async generate(request, options) {
+            requests.push({ provider: this.id, model: this.model, systemPrompt: request.systemPrompt, signal: options.signal });
+            return await new Promise<AiResult>((resolve, reject) => {
+                rejectFirst = reject;
+                options.signal.addEventListener("abort", () => reject(new Error("interrupted")), { once: true });
+            });
+        },
+    };
+    const deepseek: ModelPlugin = {
+        id: "deepseek", model: "deepseek-new", capabilities: { webSearch: false },
+        async generate(request, options) {
+            requests.push({ provider: this.id, model: this.model, systemPrompt: request.systemPrompt, signal: options.signal });
+            return { kind: "no_reply" };
+        },
+    };
+    const snapshot = (model: ModelPlugin, revision: number, promptText: string, promptRevision: number): AttemptRuntimeSnapshot => ({
+        model: { revision, provider: model.id, model, loadedAt: `model-${revision}` },
+        prompt: { provider: model.id, content: promptText, revision: promptRevision, loadedAt: `prompt-${promptRevision}` },
+    });
+    let activeSnapshot = snapshot(gpt, 5, "PROMPT_A", 3);
+    const pending = coordinateAiReply(requestFor(bot, firstMessage, 1), {
+        captureAttemptSnapshot: () => activeSnapshot,
+    });
+    await waitFor(() => requests.length === 1);
+    activeSnapshot = snapshot(deepseek, 6, "PROMPT_B", 8);
+    commit(interruptMessage);
+    coordinateAiReply(requestFor(bot, interruptMessage, 0));
+    await waitFor(() => requests.length === 2);
+
+    assert.deepEqual(requests.slice(0, 2).map(({ provider, model, systemPrompt }) => ({ provider, model, systemPrompt })), [
+        { provider: "gpt", model: "gpt-old", systemPrompt: "PROMPT_A" },
+        { provider: "deepseek", model: "deepseek-new", systemPrompt: "PROMPT_B" },
+    ]);
+    assert.equal(requests[0]?.signal.aborted, true);
+    assert.equal(requests[1]?.signal.aborted, false);
+    rejectFirst(new Error("settle old Attempt"));
+    await pending;
 });
 
 test("conversation observer retains an interrupted Attempt and emits the replacement Attempt", async () => {

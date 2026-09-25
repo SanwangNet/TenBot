@@ -9,6 +9,7 @@ import {
 import { normalizeTextReply } from "../../reply-result.js";
 import { normalizeReplyMessages, parseQqReplyArguments } from "../../../skills/qq-reply/skill.js";
 import { logger } from "../../../shared/logger.js";
+import { isToolProtocolLeak, ToolProtocolLeakError } from "../../tool-protocol.js";
 import { AiResponseFailure } from "../../upstream-error.js";
 import {
     ModelAbortedError,
@@ -246,6 +247,7 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                     logger.info(`[AI] done provider=${config.id} ${elapsed}: messages=${action.messages.length}`);
                     return { kind: "reply", action };
                 }
+                if (isToolProtocolLeak(output)) throw new ToolProtocolLeakError();
                 if (!output.trim()) throw new Error("模型没有返回文本或有效 qq_reply");
                 reportCitations(
                     renderedParts.reduce((count, part) => count + part.renderedCount, 0),

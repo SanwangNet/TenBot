@@ -11,7 +11,7 @@ export interface RuntimeConfigSnapshot {
 }
 
 export type ModelPluginBuilder = (config: AppConfig) => ModelPlugin;
-export type ModelPluginSwap = (plugin: ModelPlugin) => void;
+export type ModelPluginSwap = (plugin: ModelPlugin, revision: number) => void;
 
 /** Builds a complete plugin first, then swaps the pointer used by future Attempts. */
 export class RuntimeConfigSnapshotStore {
@@ -23,7 +23,7 @@ export class RuntimeConfigSnapshotStore {
         private readonly swapPlugin: ModelPluginSwap = replaceModelPlugin,
     ) {
         this.snapshot = this.buildSnapshot(initialConfig, 1);
-        this.swapPlugin(this.snapshot.model);
+        this.swapPlugin(this.snapshot.model, this.snapshot.revision);
     }
 
     get(): RuntimeConfigSnapshot {
@@ -32,8 +32,8 @@ export class RuntimeConfigSnapshotStore {
 
     replace(config: AppConfig): RuntimeConfigSnapshot {
         const next = this.buildSnapshot(config, this.snapshot.revision + 1);
+        this.swapPlugin(next.model, next.revision);
         this.snapshot = next;
-        this.swapPlugin(next.model);
         return next;
     }
 

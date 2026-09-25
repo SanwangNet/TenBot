@@ -44,13 +44,35 @@ export function createModelPluginFromConfig(config: AppConfig): ModelPlugin {
     });
 }
 
-let activePlugin: ModelPlugin | undefined;
-
-/** One provider is selected for the process lifetime; model failover is not implicit. */
-export function getModelPlugin(): ModelPlugin {
-    return activePlugin ??= createModelPlugin();
+export interface ModelRuntimeSnapshot {
+    readonly revision: number;
+    readonly provider: string;
+    readonly model: ModelPlugin;
+    readonly loadedAt: string;
 }
 
-export function replaceModelPlugin(plugin: ModelPlugin): void {
-    activePlugin = plugin;
+let activeSnapshot: ModelRuntimeSnapshot | undefined;
+
+function makeSnapshot(model: ModelPlugin, revision: number): ModelRuntimeSnapshot {
+    return Object.freeze({
+        revision,
+        provider: model.id,
+        model,
+        loadedAt: new Date().toISOString(),
+    });
+}
+
+/** The active pointer is replaceable; each caller keeps the snapshot it captured. */
+export function getModelRuntimeSnapshot(): ModelRuntimeSnapshot {
+    if (!activeSnapshot) activeSnapshot = makeSnapshot(createModelPlugin(), 1);
+    return activeSnapshot;
+}
+
+export function getModelPlugin(): ModelPlugin {
+    return getModelRuntimeSnapshot().model;
+}
+
+export function replaceModelPlugin(plugin: ModelPlugin, revision?: number): ModelRuntimeSnapshot {
+    activeSnapshot = makeSnapshot(plugin, revision ?? (activeSnapshot?.revision ?? 0) + 1);
+    return activeSnapshot;
 }

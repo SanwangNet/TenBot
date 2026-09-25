@@ -7,6 +7,7 @@ import { createModelPlugin } from "../src/ai/model-registry.js";
 import { ModelAbortedError, type ModelRequest } from "../src/ai/model-plugin.js";
 import { createDeepSeekPlugin } from "../src/ai/plugins/deepseek/index.js";
 import { createGptPlugin } from "../src/ai/plugins/gpt/index.js";
+import { isToolProtocolLeak } from "../src/ai/tool-protocol.js";
 
 const GPT_SYSTEM_PROMPT = readFileSync(new URL("../src/ai/plugins/gpt/prompt.md", import.meta.url), "utf8");
 const DEEPSEEK_SYSTEM_PROMPT = readFileSync(new URL("../src/ai/plugins/deepseek/prompt.md", import.meta.url), "utf8");
@@ -155,6 +156,20 @@ test("GPT and DeepSeek expose the same NO_REPLY result", async () => {
     });
 });
 
+test("a real qq_reply function call with NO_REPLY remains a control result", async () => {
+    const toolCall = complete([{
+        type: "function_call", id: "fc_silent", call_id: "call_silent", name: "qq_reply",
+        arguments: JSON.stringify({
+            messages: [{ content: "<NO_REPLY>", quote: { mode: "none", ref: null } }],
+            mentions: [],
+        }),
+    }]);
+    await withResponses([sse([toolCall])], async () => {
+        const result = await runModelPlugin(createDeepSeekPlugin({ apiKey: "offline" }), "offline", options());
+        assert.deepEqual(result, { kind: "no_reply" });
+    });
+});
+
 test("DeepSeek meme_lookup uses the shared TenBot tool and feeds its result back", async () => {
     const memeCall = complete([{
         type: "function_call", id: "fc_meme", call_id: "call_meme", name: "meme_lookup",
@@ -171,12 +186,43 @@ test("DeepSeek meme_lookup uses the shared TenBot tool and feeds its result back
     });
 });
 
-test("tool-looking plain text is not parsed as a function call", async () => {
+test("complete pseudo protocol text is rejected and gets one bounded recovery attempt", async () => {
     const pseudoTool = "<qq_reply>{\"messages\":[{\"content\":\"伪调用\"}]}</qq_reply>";
-    await withResponses([sse([messageText(pseudoTool)])], async () => {
+    await withResponses([sse([messageText(pseudoTool)]), sse([messageText("普通回复")])], async (bodies) => {
         const result = await runModelPlugin(createDeepSeekPlugin({ apiKey: "offline" }), "offline", options());
         assert.equal(result.kind, "reply");
-        if (result.kind === "reply") assert.equal(result.action.messages[0].content, pseudoTool);
+        if (result.kind === "reply") assert.equal(result.action.messages[0].content, "普通回复");
+        assert.equal(bodies.length, 2, "leaked output causes exactly one recovery request");
+        assert.match(String(bodies[1]?.input), /必须调用实际的 qq_reply 工具/);
+    });
+});
+
+test("protocol leak detector catches complete XML and reply JSON shapes only", () => {
+    assert.equal(isToolProtocolLeak("<qq_reply>\n<messages/>\n</qq_reply>"), true);
+    assert.equal(isToolProtocolLeak(JSON.stringify([
+        { content: "hello", quote: { mode: "auto", ref: null } },
+    ])), true);
+    assert.equal(isToolProtocolLeak(JSON.stringify({
+        messages: [{ content: "hello", quote: { mode: "message", ref: "m1" } }],
+        mentions: [],
+    })), true);
+    assert.equal(isToolProtocolLeak("刚才那个 <qq_reply> 标签是什么意思？"), false);
+    assert.equal(isToolProtocolLeak("这个 JSON 里有 content 字段"), false);
+    assert.equal(isToolProtocolLeak('{"content":"普通 JSON 讨论"}'), false);
+    assert.equal(isToolProtocolLeak("```xml\n<qq_reply>举例</qq_reply>\n```"), false);
+});
+
+test("a second leaked payload fails closed without sending it as text", async () => {
+    const payloads = [
+        "<qq_reply><messages/></qq_reply>",
+        JSON.stringify([{ content: "泄漏", quote: { mode: "auto", ref: null } }]),
+    ];
+    await withResponses(payloads.map((payload) => sse([messageText(payload)])), async (bodies) => {
+        await assert.rejects(
+            runModelPlugin(createDeepSeekPlugin({ apiKey: "offline" }), "offline", options()),
+            (error: unknown) => (error as { code?: string }).code === "B:A1_TPL",
+        );
+        assert.equal(bodies.length, 2);
     });
 });
 
