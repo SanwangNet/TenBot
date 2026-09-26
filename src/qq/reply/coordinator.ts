@@ -483,6 +483,11 @@ export function observeConversationUpdate(request: ReplyRequest): void {
     });
 }
 
+/** True while this conversation still owns a Reply Cycle lifecycle, including sending/finalizing. */
+export function hasActiveReplyCycle(message: NormalizedQqMessage): boolean {
+    return cycles.has(getConversationKey(message));
+}
+
 /** Admits only hard or Judge-accepted soft messages; pass never creates a new Cycle. */
 export function admitConversationWake(
     request: ReplyRequest,

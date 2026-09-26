@@ -79,8 +79,7 @@ function fakeMessage(
     } as unknown as QQBotInboundMessage;
 }
 
-function fakePrivateMessage(id: string, content: string): QQBotInboundMessage {
-    const userId = "private-user-" + id;
+function fakePrivateMessage(id: string, content: string, userId = "private-user-" + id): QQBotInboundMessage {
     return {
         kind: "c2c",
         rawEventType: "C2C_MESSAGE_CREATE",
@@ -396,15 +395,14 @@ test("Judge protocol failure sends only its public code and never calls the Main
     assert.deepEqual(state.sends.map((item) => item.value), ["ERROR: F:A_RJ_IPO"]);
 });
 
-test("Judge false cannot delay a stale hard Attempt interruption or downgrade its obligation", async () => {
+test("active hard Cycle bypasses Judge and keeps stale Attempt interruption immediate", async () => {
     configureMemberRepository(new MemoryMemberRepository());
     const state = fakeBot();
-    let resolveJudge!: (decision: { reply: boolean }) => void;
-    let capturedJudgeRequest: ReplyJudgeRequest | undefined;
+    let judgeCalls = 0;
     const judge: ReplyJudge = {
-        judge(request) {
-            capturedJudgeRequest = request;
-            return new Promise((resolve) => { resolveJudge = resolve; });
+        async judge() {
+            judgeCalls++;
+            return { reply: false };
         },
     };
     const attempts: Array<{ input: string; signal: AbortSignal }> = [];
@@ -416,21 +414,19 @@ test("Judge false cannot delay a stale hard Attempt interruption or downgrade it
             });
         }
         assert.match(input, /wake_level=hard/);
-        assert.match(input, /哈哈/);
-        return reply("我还在");
+        return reply("ok");
     });
     const group = randomUUID();
-    const hard = handler({}, fakeMessage(group, "hard-" + randomUUID(), "@小尘你怎么看", true));
+    const hard = handler({}, fakeMessage(group, "hard-" + randomUUID(), "@Bot hard question", true));
     await waitFor(() => attempts.length === 1);
-    const passive = handler({}, fakeMessage(group, "pass-" + randomUUID(), "哈哈"));
+    const passive = handler({}, fakeMessage(group, "pass-" + randomUUID(), "ordinary follow-up"));
     await waitFor(() => attempts[0]!.signal.aborted);
-    assert.equal(capturedJudgeRequest?.currentMessage.content, "哈哈");
-    assert.equal(capturedJudgeRequest?.conversation.some((item) => item.content.includes("@小尘你怎么看")), true);
-    resolveJudge({ reply: false });
     await Promise.all([hard, passive]);
+    assert.equal(judgeCalls, 0, "ordinary updates of an existing hard Cycle bypass Reply Judge");
     assert.equal(attempts.length, 2);
+    assert.match(attempts[1]!.input, /ordinary follow-up/);
+    assert.match(attempts[1]!.input, /wake_level=hard/);
 });
-
 test("Reply Judge accepts only a complete object with one boolean reply field", () => {
     assert.deepEqual(parseReplyJudgeOutput('{"reply":true}'), { reply: true });
     assert.deepEqual(parseReplyJudgeOutput(' \n { "reply" : false } \t'), { reply: false });
@@ -542,4 +538,260 @@ test("Reply Judge config is independent from the main model", () => {
         timeoutMs: 3200,
     });
     assert.notEqual(config.replyJudge.model, config.ai.deepseek.model);
+});
+
+test("an active soft Cycle bypasses Judge for follow-up context and keeps NO_REPLY optional", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let judgeCalls = 0;
+    const attempts: Array<{ input: string; signal: AbortSignal }> = [];
+    const handler = register(state, {
+        async judge() { judgeCalls++; return { reply: true }; },
+    }, async (input, options) => {
+        attempts.push({ input, signal: options.signal });
+        if (attempts.length === 1) {
+            return await new Promise<AiResult>((_resolve, reject) => {
+                options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+        }
+        assert.match(input, /follow-up detail B/);
+        assert.match(input, /wake_level=soft/);
+        assert.match(input, /admission=reply-judge/);
+        return { kind: "no_reply" };
+    });
+    const group = randomUUID();
+    const first = handler({}, fakeMessage(group, "soft-cycle-A-" + randomUUID(), "question A"));
+    await waitFor(() => attempts.length === 1);
+    const followup = handler({}, fakeMessage(group, "soft-cycle-B-" + randomUUID(), "follow-up detail B"));
+    await waitFor(() => attempts[0]!.signal.aborted);
+    await Promise.all([first, followup]);
+    assert.equal(judgeCalls, 1, "B updates the admitted Cycle without another Judge request");
+    assert.equal(attempts.length, 2);
+    assert.deepEqual(state.sends, [], "the soft Cycle may finish silently");
+});
+
+test("an active hard Cycle bypasses Judge for passive updates and keeps NO_REPLY invalid", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let judgeCalls = 0;
+    const attempts: Array<{ input: string; signal: AbortSignal }> = [];
+    const handler = register(state, {
+        async judge() { judgeCalls++; return { reply: true }; },
+    }, async (input, options) => {
+        attempts.push({ input, signal: options.signal });
+        if (attempts.length === 1) {
+            return await new Promise<AiResult>((_resolve, reject) => {
+                options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+        }
+        assert.match(input, /later context B/);
+        assert.match(input, /wake_level=hard/);
+        return { kind: "no_reply" };
+    });
+    const group = randomUUID();
+    const first = handler({}, fakeMessage(group, "hard-cycle-A-" + randomUUID(), "@小尘 question A", true));
+    await waitFor(() => attempts.length === 1);
+    const followup = handler({}, fakeMessage(group, "hard-cycle-B-" + randomUUID(), "later context B"));
+    await waitFor(() => attempts[0]!.signal.aborted);
+    await Promise.all([first, followup]);
+    assert.equal(judgeCalls, 0);
+    assert.equal(attempts.length, 2);
+    assert.equal(state.sends.length, 1, "a hard Cycle turns NO_REPLY into the existing required-reply notice");
+    assert.notEqual(state.sends[0]?.value, "ERROR: F:A_RJ_IPO");
+});
+
+test("private messages update their active hard Cycle without calling Judge", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let judgeCalls = 0;
+    const attempts: Array<{ input: string; signal: AbortSignal }> = [];
+    const handler = register(state, {
+        async judge() { judgeCalls++; return { reply: true }; },
+    }, async (input, options) => {
+        attempts.push({ input, signal: options.signal });
+        if (attempts.length === 1) {
+            return await new Promise<AiResult>((_resolve, reject) => {
+                options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+        }
+        assert.match(input, /private follow-up B/);
+        assert.match(input, /wake_level=hard/);
+        assert.match(input, /admission=private-message/);
+        return reply("required private reply");
+    });
+    const userId = "private-user-" + randomUUID();
+    const first = handler({}, fakePrivateMessage("private-A-" + randomUUID(), "private question A", userId));
+    await waitFor(() => attempts.length === 1);
+    const followup = handler({}, fakePrivateMessage("private-B-" + randomUUID(), "private follow-up B", userId));
+    await waitFor(() => attempts[0]!.signal.aborted);
+    await Promise.all([first, followup]);
+    assert.equal(judgeCalls, 0);
+    assert.equal(attempts.length, 2);
+    assert.equal(state.sends.length, 1);
+    assert.match(String(state.sends[0]?.value), /required private reply/);
+});
+
+test("a hard mention upgrades an active soft Cycle without calling Judge", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let judgeCalls = 0;
+    const attempts: Array<{ input: string; signal: AbortSignal }> = [];
+    const handler = register(state, {
+        async judge() { judgeCalls++; return { reply: true }; },
+    }, async (input, options) => {
+        attempts.push({ input, signal: options.signal });
+        if (attempts.length === 1) {
+            return await new Promise<AiResult>((_resolve, reject) => {
+                options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+        }
+        assert.match(input, /wake_level=hard/);
+        assert.match(input, /admission=hard-mention/);
+        assert.match(input, /explicit hard B/);
+        return { kind: "no_reply" };
+    });
+    const group = randomUUID();
+    const first = handler({}, fakeMessage(group, "upgrade-A-" + randomUUID(), "question A"));
+    await waitFor(() => attempts.length === 1);
+    const upgrade = handler({}, fakeMessage(group, "upgrade-B-" + randomUUID(), "@小尘 explicit hard B", true));
+    await waitFor(() => attempts[0]!.signal.aborted);
+    await Promise.all([first, upgrade]);
+    assert.equal(judgeCalls, 1, "only A was judged; B uses the deterministic hard trigger");
+    assert.equal(attempts.length, 2);
+    assert.equal(state.sends.length, 1, "the upgraded hard Cycle rejects NO_REPLY");
+});
+
+test("Judge is available again after a soft NO_REPLY Cycle completes", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let judgeCalls = 0;
+    let mainCalls = 0;
+    const handler = register(state, {
+        async judge() { judgeCalls++; return { reply: true }; },
+    }, async () => {
+        mainCalls++;
+        return { kind: "no_reply" };
+    });
+    const group = randomUUID();
+    await handler({}, fakeMessage(group, "complete-A-" + randomUUID(), "soft A"));
+    assert.equal(judgeCalls, 1);
+    assert.equal(mainCalls, 1);
+    await handler({}, fakeMessage(group, "complete-B-" + randomUUID(), "soft B"));
+    assert.equal(judgeCalls, 2, "a completed Cycle no longer bypasses Front admission");
+    assert.equal(mainCalls, 2);
+});
+
+test("Judge is available again after a failed Cycle is cleaned up", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let judgeCalls = 0;
+    let mainCalls = 0;
+    const handler = register(state, {
+        async judge() { return { reply: ++judgeCalls === 1 }; },
+    }, async () => {
+        mainCalls++;
+        throw new Error("upstream unavailable");
+    });
+    const group = randomUUID();
+    await handler({}, fakeMessage(group, "failure-A-" + randomUUID(), "first question"));
+    assert.equal(judgeCalls, 1);
+    assert.equal(mainCalls, 1);
+    await handler({}, fakeMessage(group, "failure-B-" + randomUUID(), "next question"));
+    assert.equal(judgeCalls, 2, "Cycle failure cleanup releases the active-cycle bypass");
+    assert.equal(mainCalls, 1, "the second Judge rejects a new Main Model Cycle");
+    assert.deepEqual(state.sends.map((send) => send.value), ["ERROR: M:A_MG_MRF"]);
+});
+
+test("legacy Front also bypasses new admission while a Cycle is running", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let judgeCalls = 0;
+    const attempts: Array<{ input: string; signal: AbortSignal }> = [];
+    const handler = register(state, {
+        async judge() { judgeCalls++; return { reply: true }; },
+    }, async (input, options) => {
+        attempts.push({ input, signal: options.signal });
+        if (attempts.length === 1) {
+            assert.match(input, /front_mode=legacy/);
+            assert.match(input, /wake_level=soft/);
+            return await new Promise<AiResult>((_resolve, reject) => {
+                options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+        }
+        assert.match(input, /front_mode=legacy/);
+        assert.match(input, /wake_level=soft/);
+        assert.match(input, /legacy follow-up B/);
+        return { kind: "no_reply" };
+    }, "legacy");
+    const group = randomUUID();
+    const first = handler({}, fakeMessage(group, "legacy-A-" + randomUUID(), "小尘 first question"));
+    await waitFor(() => attempts.length === 1);
+    const followup = handler({}, fakeMessage(group, "legacy-B-" + randomUUID(), "legacy follow-up B"));
+    await waitFor(() => attempts[0]!.signal.aborted);
+    await Promise.all([first, followup]);
+    assert.equal(judgeCalls, 0);
+    assert.equal(attempts.length, 2);
+    assert.deepEqual(state.sends, [], "the legacy soft Cycle may still choose NO_REPLY");
+});
+
+test("messages arriving during send bypass Judge and keep the frozen reply plan", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let judgeCalls = 0;
+    let mainCalls = 0;
+    let sendStarted = false;
+    let finishSend!: (response: { id: string; ext_info: { ref_idx: string } }) => void;
+    const bot = state.bot as unknown as { sendMarkdown: (target: unknown, content: string) => Promise<{ id: string; ext_info: { ref_idx: string } }> };
+    bot.sendMarkdown = async (_target, content) => {
+        sendStarted = true;
+        state.sends.push({ kind: "markdown", value: content });
+        return await new Promise((resolve) => { finishSend = resolve; });
+    };
+    const handler = register(state, {
+        async judge() { judgeCalls++; return { reply: true }; },
+    }, async () => {
+        mainCalls++;
+        return mainCalls === 1 ? reply("frozen reply A") : { kind: "no_reply" };
+    });
+    const group = randomUUID();
+    const first = handler({}, fakeMessage(group, "send-A-" + randomUUID(), "send question A"));
+    await waitFor(() => sendStarted);
+    await handler({}, fakeMessage(group, "send-B-" + randomUUID(), "send phase update B"));
+    assert.equal(judgeCalls, 1);
+    finishSend({ id: "sent-frozen", ext_info: { ref_idx: "sent-frozen-ref" } });
+    await first;
+    assert.equal(state.sends.length, 1);
+    assert.match(String(state.sends[0]?.value), /frozen reply A/);
+
+    await handler({}, fakeMessage(group, "send-C-" + randomUUID(), "after Cycle C"));
+    assert.equal(judgeCalls, 2, "Front admission resumes after send finalization");
+    assert.equal(mainCalls, 2);
+});
+
+test("one pending Judge per conversation admits from the latest committed context", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let judgeCalls = 0;
+    let resolveJudge!: (decision: { reply: boolean }) => void;
+    let mainInput = "";
+    const handler = register(state, {
+        judge() {
+            judgeCalls++;
+            return new Promise((resolve) => { resolveJudge = resolve; });
+        },
+    }, async (input) => {
+        mainInput = input;
+        return { kind: "no_reply" };
+    });
+    const group = randomUUID();
+    const first = handler({}, fakeMessage(group, "pending-A-" + randomUUID(), "pending message A"));
+    await waitFor(() => judgeCalls === 1);
+    await handler({}, fakeMessage(group, "pending-B-" + randomUUID(), "pending message B"));
+    assert.equal(judgeCalls, 1, "B does not start a parallel Judge request");
+    resolveJudge({ reply: true });
+    await first;
+    assert.equal(judgeCalls, 1);
+    assert.match(mainInput, /pending message A/);
+    assert.match(mainInput, /pending message B/);
+    assert.match(mainInput, /wake_level=soft/);
 });

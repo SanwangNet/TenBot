@@ -30,7 +30,7 @@ import {
 import { buildKnownMembersContext, rememberKnownMember } from "../conversation/known-members.js";
 import { normalizeQqMessage } from "../message/normalize-message.js";
 import { decideMessageTrigger, isOnlyQQFace, wantsVision } from "../message/trigger.js";
-import { admitConversationWake, observeConversationUpdate, sendFrontFailureNotice } from "../reply/coordinator.js";
+import { admitConversationWake, hasActiveReplyCycle, observeConversationUpdate, sendFrontFailureNotice } from "../reply/coordinator.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
 
 const SEARCH_NOTICES = [
@@ -65,6 +65,7 @@ export function registerMessageHandler(
     coordinatorDependencies: ReplyCoordinatorDependencies = {},
     getFrontMode: () => FrontMode = () => "legacy",
 ): void {
+    const pendingJudgeConversations = new Set<string>();
     bot.on("message", async (context, message: QQBotInboundMessage) => {
         const frontMode = getFrontMode();
         const normalized = await normalizeQqMessage(context, message);
@@ -222,6 +223,18 @@ export function registerMessageHandler(
         // This synchronous observation bumps/interupts the existing Cycle before any Judge I/O.
         observeConversationUpdate(request);
 
+        if (hasActiveReplyCycle(normalized)) {
+            // A live Cycle owns ordinary follow-up context. Only a deterministic hard wake may upgrade it.
+            if (frontDecision.kind === "admit" && frontDecision.wakeLevel === "hard") {
+                logger.info(frontDecision.reason === "private-message"
+                    ? "[Trigger] private message / hard"
+                    : "[Trigger] mention / hard");
+                await admitConversationWake({ ...request, admission: frontDecision.admission },
+                    frontDecision.wakeLevel, frontDecision.reason, cycleDependencies);
+            }
+            return;
+        }
+
         if (frontDecision.kind === "admit") {
             if (frontDecision.wakeLevel === "hard") logger.info(frontDecision.reason === "private-message"
                 ? "[Trigger] private message / hard"
@@ -232,27 +245,38 @@ export function registerMessageHandler(
         }
         if (frontDecision.kind === "pass") return;
 
+        // A pending Judge is only a narrow admission guard, not a Reply Cycle.
+        if (pendingJudgeConversations.has(conversationKey)) return;
+        pendingJudgeConversations.add(conversationKey);
+
         const judgeRequest = buildReplyJudgeRequest(normalized, {
             nameMention: trigger.mentionedByName,
             conversationActive: trigger.activeConversation,
             quotedBot: normalized.quotedBot === true,
         });
+        let decision: { reply: boolean };
         try {
             if (!replyJudge) throw new TenBotError("F:A_RJ_JRF");
-            const decision = await replyJudge.judge(judgeRequest);
+            decision = await replyJudge.judge(judgeRequest);
             if (!decision || typeof decision.reply !== "boolean") throw new TenBotError("F:A_RJ_IPO");
-            if (!decision.reply) {
-                logger.debug("[ReplyJudge] decision=pass");
-                return;
-            }
-            logger.debug("[ReplyJudge] decision=reply");
-            const reason = trigger.triggerKind && trigger.triggerKind !== "hard-mention"
-                ? trigger.triggerKind
-                : "reply-judge";
-            await admitConversationWake({ ...request, admission: "reply-judge" }, "soft", reason, cycleDependencies);
         } catch (error) {
             const frontError = isTenBotError(error) ? error : new TenBotError("F:A_RJ_JRF");
-            await sendFrontFailureNotice(bot, normalized, frontError);
+            if (!hasActiveReplyCycle(normalized)) await sendFrontFailureNotice(bot, normalized, frontError);
+            return;
+        } finally {
+            pendingJudgeConversations.delete(conversationKey);
         }
+
+        if (!decision.reply) {
+            logger.debug("[ReplyJudge] decision=pass");
+            return;
+        }
+        logger.debug("[ReplyJudge] decision=reply");
+        // A hard wake may have established a Cycle while this Judge was pending.
+        if (hasActiveReplyCycle(normalized)) return;
+        const reason = trigger.triggerKind && trigger.triggerKind !== "hard-mention"
+            ? trigger.triggerKind
+            : "reply-judge";
+        await admitConversationWake({ ...request, admission: "reply-judge" }, "soft", reason, cycleDependencies);
     });
 }

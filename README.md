@@ -5,7 +5,7 @@ TenBot 是 SanWang 内部使用的 QQ Bot，使用 TypeScript、Node.js 和 QQ �
 ## 功能
 
 - **本地命令**：命令由 Node.js 在本地执行，不会进入 AI 对话。未知的斜杠命令也会收到本地提示。
-- **Front / Reply Judge**：私聊和显式 @ 小尘在两种模式下都由 Runtime 本地判为 hard、跳过 Judge，主模型必须回复。`FRONT_MODE=legacy`（默认）使用本地 trigger / engagement 信号决定群聊 pass 或 soft，不依赖 Judge；`FRONT_MODE=judge` 将非 hard 群聊交给独立 Reply Judge，false 为 pass，true 为 soft，主模型仍可选择 NO_REPLY。Judge 只接受严格的 {"reply":true} 或 {"reply":false} JSON。
+- **Front / Reply Judge**：私聊和显式 @ 小尘在两种模式下都由 Runtime 本地判为 hard、跳过 Judge，主模型必须回复。`FRONT_MODE=legacy`（默认）使用本地 trigger / engagement 信号决定群聊 pass 或 soft，不依赖 Judge；`FRONT_MODE=judge` 将非 hard 群聊交给独立 Reply Judge，false 为 pass，true 为 soft，主模型仍可选择 NO_REPLY。Judge 只接受严格的 {"reply":true} 或 {"reply":false} JSON；它只判断是否启动新 Reply Cycle，已有 Cycle 中的后续消息直接更新上下文并按现有机制中断/重启，显式 hard trigger 仍可升级回复义务。
 - **Reply Cycle**：每个会话同一时间最多运行一个 AI Attempt。新消息可以中断生成并用最新上下文重试；单个 Cycle 最多处理中断 3 次，之后到来的消息会排入后续 Cycle。普通 Attempt 超时为 30 秒，可在同一 Cycle 重试一次；实际开始网页搜索后，Cycle 总时限最多为 120 秒。
 - **QQ 回复**：模型通过统一的 qq_reply 能力决定回复内容，支持 1～3 条消息、每条消息的引用偏好和已知群成员 @。引用消息 ID 和 QQ API payload 由 Runtime 管理，不会交给模型。
 - **网络梗知识**：本地 memes.json 支持中文、别名、拼音和首字母模糊检索。自动检索最多提供 3 个候选，由模型结合聊天上下文判断是否使用；模型也可调用只读 meme_lookup 查询详情。
