@@ -9,6 +9,7 @@ export function OverviewView({ status }: { status: RuntimeStatus }) {
     return <Box flexDirection="column">
         <Panel title="运行状态">
             <StatusRow label="QQ" value={connectionLabel(status.qq)} color={connectionColor(status.qq)} />
+            <StatusRow label="群回复" value={status.groupRepliesEnabled ? "已启用" : "已停用"} color={status.groupRepliesEnabled ? "green" : "yellow"} />
             <StatusRow label="模型提供商" value={providerLabel(status.provider.id)} />
             <StatusRow label="模型" value={status.provider.model} />
             <StatusRow label="推理强度" value={reasoningLabel(status.provider.reasoningEffort)} />

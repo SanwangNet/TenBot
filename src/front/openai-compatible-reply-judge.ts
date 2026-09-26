@@ -19,7 +19,7 @@ export type CaptureReplyJudgeSnapshot = () => ReplyJudgeProviderSnapshot;
 export class OpenAICompatibleReplyJudge implements ReplyJudge {
     constructor(private readonly captureSnapshot: CaptureReplyJudgeSnapshot) {}
 
-    async judge(request: ReplyJudgeRequest) {
+    async judge(request: ReplyJudgeRequest, signal?: AbortSignal) {
         const snapshot = this.captureSnapshot();
         if (
             snapshot.provider !== "openai-compatible" ||
@@ -52,7 +52,9 @@ export class OpenAICompatibleReplyJudge implements ReplyJudge {
                     { role: "user", content: JSON.stringify(request) },
                 ],
             };
-            const response = await client.chat.completions.create(completionRequest);
+            const response = signal
+                ? await client.chat.completions.create(completionRequest, { signal })
+                : await client.chat.completions.create(completionRequest);
             const content = response.choices[0]?.message?.content;
             if (typeof content !== "string") return parseReplyJudgeOutput("");
             const decision = parseReplyJudgeOutput(content);

@@ -30,6 +30,17 @@ export function parseAutomatedPeerIds(value: string | undefined): readonly strin
     return [...new Set((value ?? "").split(",").map((id) => id.trim()).filter(Boolean))];
 }
 
+export function parseBotAdminIds(value: string | undefined): readonly string[] {
+    const normalized = (value ?? "").replace(/&#x20;/gi, " ");
+    const ids = normalized.split(",").map((id) => id.trim().toUpperCase()).filter(Boolean);
+    for (const id of ids) {
+        if (!/^(?:[A-F0-9]{8}|[A-F0-9]{64})$/.test(id)) {
+            throw new Error("BOT_ADMIN_IDS entries must be 8-character display IDs or 64-character SHA-256 hashes");
+        }
+    }
+    return [...new Set(ids)];
+}
+
 export function validateAutomatedPeerId(value: string): string {
     const id = value.trim();
     if (!id || id.length > 256 || /[,\u0000-\u001f\u007f-\u009f]/.test(id)) {
@@ -167,6 +178,7 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }
     return {
         frontMode,
+        botAdminIds: parseBotAdminIds(env.BOT_ADMIN_IDS),
         qq: {
             appId: env.QQBOT_APP_ID,
             appSecret: env.QQBOT_APP_SECRET,

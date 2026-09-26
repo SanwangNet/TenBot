@@ -182,6 +182,7 @@ test("modal bounds stay centered and clamp width and height after resize", () =>
 function fakeControl(calls: string[], result: ReloadResult = { ok: true, message: "reloaded", loadedAt: "now" }): TenBotControl {
     const status: RuntimeStatus = {
         qq: "disconnected", provider: { id: "gpt", model: "test", webSearch: true, configured: false },
+        groupRepliesEnabled: false,
         activeCycles: 0, contextConversations: 0,
         memes: { count: 0, revision: 1, loadedAt: "now" },
         prompt: { provider: "gpt", revision: 1, loadedAt: "now" }, shuttingDown: false,
@@ -438,6 +439,7 @@ test("settings render Reply Judge as an equal-width settings column with keyboar
     };
     const status: RuntimeStatus = {
         qq: "connected",
+        groupRepliesEnabled: true,
         provider: { id: "gpt", model: "gpt-6-sol", webSearch: true, configured: true },
         activeCycles: 0,
         contextConversations: 0,
@@ -489,6 +491,7 @@ test("settings render Reply Judge as an equal-width settings column with keyboar
 test("settings shows pending restart only when Runtime marks a non-hot-reloadable change", () => {
     const status: RuntimeStatus = {
         qq: "connected",
+        groupRepliesEnabled: true,
         provider: { id: "gpt", model: "gpt-6-sol", webSearch: true, configured: true, reasoningEffort: "high", verbosity: "high" },
         activeCycles: 0,
         contextConversations: 0,

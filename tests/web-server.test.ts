@@ -18,6 +18,7 @@ import type { EditorResourceId } from "../src/control/editor-resources.js";
 
 const initialStatus: RuntimeStatus = {
     qq: "connected",
+    groupRepliesEnabled: false,
     provider: { id: "gpt", model: "gpt-test", webSearch: false, configured: true },
     activeCycles: 1,
     contextConversations: 1,

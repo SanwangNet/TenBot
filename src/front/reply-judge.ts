@@ -23,7 +23,7 @@ export type ReplyJudgeDecision =
     | { readonly decision: "wait" };
 
 export interface ReplyJudge {
-    judge(request: ReplyJudgeRequest): Promise<ReplyJudgeDecision>;
+    judge(request: ReplyJudgeRequest, signal?: AbortSignal): Promise<ReplyJudgeDecision>;
 }
 
 function topLevelKeys(payload: string): string[] {

@@ -10,7 +10,7 @@ import type { ReplyJudge, ReplyJudgeDecision, ReplyJudgeRequest } from "../../fr
 import type { FrontMode } from "../../front/wake-level.js";
 import type { ReplyCoordinatorDependencies, ReplyRequest } from "../reply/coordinator.js";
 import { TenBotError, isTenBotError } from "../../errors/tenbot-error.js";
-import { routeCommand } from "../../commands/router.js";
+import { parseCommand, routeCommand } from "../../commands/router.js";
 import { projectMemeCandidates } from "../../skills/meme/projection.js";
 import { getMemeRuntimeSnapshot, searchAutoMemeCandidates } from "../../skills/meme/skill.js";
 import type { MemeSearchQuery } from "../../skills/meme/search.js";
@@ -33,6 +33,8 @@ import { normalizeQqMessage } from "../message/normalize-message.js";
 import { decideMessageTrigger, isOnlyQQFace, wantsVision } from "../message/trigger.js";
 import { admitConversationWake, hasActiveReplyCycle, observeConversationUpdate, sendFrontFailureNotice } from "../reply/coordinator.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
+import { GroupReplyControl, isConfiguredBotAdmin } from "../../runtime/group-reply-control.js";
+import { toOpaqueMemberDisplayId } from "../../members/opaque-member-id.js";
 
 const SEARCH_NOTICES = [
     "\u7a0d\u7b49\uff0c\u6211\u67e5\u4e00\u4e0b\u3002",
@@ -83,6 +85,7 @@ interface JudgeAdmissionState {
     generation: number;
     judgeInFlight: boolean;
     recheckInFlight: boolean;
+    abortController?: AbortController;
     waitStartedAt?: number;
     waitRevision?: number;
     timer?: ReturnType<typeof setTimeout>;
@@ -106,6 +109,8 @@ export function registerMessageHandler(
     getReplyJudgeIpoFallbackToMain: () => boolean = () => true,
     getReplyJudgeTurnWaitMs: () => number = () => 20_000,
     turnWaitScheduler: ReplyJudgeTurnWaitScheduler = defaultTurnWaitScheduler,
+    groupReplyControl?: GroupReplyControl,
+    getBotAdminIds: () => readonly string[] = () => [],
 ): () => void {
     const judgeAdmissionStates = new Map<string, JudgeAdmissionState>();
     let disposed = false;
@@ -114,20 +119,30 @@ export function registerMessageHandler(
         const state = judgeAdmissionStates.get(key);
         if (!state) return;
         if (state.timer) turnWaitScheduler.clearTimeout(state.timer);
+        state.abortController?.abort();
+        state.abortController = undefined;
         state.timer = undefined;
         state.generation++;
         judgeAdmissionStates.delete(key);
     };
+
+    const clearAllAdmissionStates = (): void => {
+        for (const key of [...judgeAdmissionStates.keys()]) clearAdmissionState(key);
+    };
+    const unregisterPendingWorkCanceller = groupReplyControl?.registerPendingWorkCanceller(clearAllAdmissionStates);
 
     const dispose = (): void => {
         if (disposed) return;
         disposed = true;
         for (const state of judgeAdmissionStates.values()) {
             if (state.timer) turnWaitScheduler.clearTimeout(state.timer);
+            state.abortController?.abort();
+            state.abortController = undefined;
             state.timer = undefined;
             state.generation++;
         }
         judgeAdmissionStates.clear();
+        unregisterPendingWorkCanceller?.();
     };
 
     const runJudge = async (state: JudgeAdmissionState, turnWaitExpired: boolean): Promise<void> => {
@@ -142,13 +157,15 @@ export function registerMessageHandler(
                 state.recheckInFlight = recheckExpired;
                 let decision: ReplyJudgeDecision | undefined;
                 let failure: unknown;
+                const abortController = new AbortController();
+                state.abortController = abortController;
                 try {
                     if (!replyJudge) throw new TenBotError("F:A_RJ_JRF");
                     const judgeRequest = buildReplyJudgeRequest(candidate.request.message, {
                         ...candidate.signals,
                         turnWaitExpired: recheckExpired,
                     });
-                    decision = await replyJudge.judge(judgeRequest);
+                    decision = await replyJudge.judge(judgeRequest, abortController.signal);
                     if (!isReplyJudgeDecision(decision)) throw new TenBotError("F:A_RJ_IPO");
                     if (recheckExpired && decision.decision === "wait") {
                         logger.debug("[ReplyJudge] wait is invalid after an expired turn wait");
@@ -156,6 +173,8 @@ export function registerMessageHandler(
                     }
                 } catch (error) {
                     failure = error;
+                } finally {
+                    if (state.abortController === abortController) state.abortController = undefined;
                 }
 
                 if (disposed || judgeAdmissionStates.get(state.key) !== state) return;
@@ -262,6 +281,30 @@ export function registerMessageHandler(
         await rememberKnownMember(normalized);
         try { observePeer?.(normalized); }
         catch { /* The local TUI directory must not change message handling behavior. */ }
+
+        const isGroupEvent = normalized.kind === "group" ||
+            normalized.eventType === "GROUP_MESSAGE_CREATE" ||
+            normalized.eventType === "GROUP_AT_MESSAGE_CREATE";
+        const commandTrigger = decideMessageTrigger(normalized, false);
+        const parsedCommand = parseCommand(normalized);
+        const adminCommand = isGroupEvent && commandTrigger.isAtBot && parsedCommand?.args === ""
+            ? parsedCommand.name === "停用" ? false : parsedCommand.name === "启用" ? true : undefined
+            : undefined;
+        if (adminCommand !== undefined) {
+            if (!isConfiguredBotAdmin(normalized.authorId, getBotAdminIds())) {
+                await bot.sendText(normalized.replyTarget, "无权限");
+                return;
+            }
+            const adminDisplayId = toOpaqueMemberDisplayId(normalized.authorId!);
+            if (!groupReplyControl) {
+                await bot.sendText(normalized.replyTarget, "操作失败");
+                return;
+            }
+            const result = await groupReplyControl.setGroupRepliesEnabled(adminCommand, adminDisplayId);
+            await bot.sendText(normalized.replyTarget,
+                result.ok ? (adminCommand ? "已启用" : "已停用") : "操作失败");
+            return;
+        }
         if (await routeCommand(bot, normalized)) return;
 
         const input = normalized.displayContent;
@@ -276,9 +319,6 @@ export function registerMessageHandler(
             return;
         }
 
-        const isGroupEvent = normalized.kind === "group" ||
-            normalized.eventType === "GROUP_MESSAGE_CREATE" ||
-            normalized.eventType === "GROUP_AT_MESSAGE_CREATE";
         const speaker = normalized.authorName
             ? truncateLogText(normalized.authorName, 60)
             : shortId(normalized.authorId);
@@ -329,6 +369,7 @@ export function registerMessageHandler(
             aiInput: "",
             imageUrls: [],
             isGroup: trigger.isGroup,
+            groupRepliesEnabled: () => groupReplyControl?.getGroupRepliesEnabled() ?? true,
             frontMode,
             wakeLevel: "pass",
             wakeReason: trigger.triggerKind === "hard-mention" ? undefined :
@@ -338,6 +379,7 @@ export function registerMessageHandler(
             isAtBot: trigger.isAtBot,
             mentionedByName: trigger.mentionedByName,
             onWebSearchStart: async () => {
+                if (trigger.isGroup && groupReplyControl && !groupReplyControl.getGroupRepliesEnabled()) return;
                 await bot.sendText(latestMessage.replyTarget, randomSearchNotice());
             },
             buildAttempt: async (attemptMessage, context) => {
@@ -400,6 +442,17 @@ export function registerMessageHandler(
             ...coordinatorDependencies,
             botLoopGuard: coordinatorDependencies.botLoopGuard ?? loopGuard,
         };
+
+        if (trigger.isGroup && groupReplyControl && !groupReplyControl.getGroupRepliesEnabled()) {
+            clearAdmissionState(conversationKey);
+            if (trigger.isAtBot) {
+                try { await bot.sendText(normalized.replyTarget, "模型暂不可用"); }
+                catch (error) { logger.error("[Runtime] unavailable notice send failed", error); }
+            } else {
+                logger.debug("[Front] skipped: group replies disabled");
+            }
+            return;
+        }
 
         // This synchronous observation bumps/interupts the existing Cycle before any Judge I/O.
         observeConversationUpdate(request);

@@ -19,7 +19,7 @@ import { configureMemberRepository } from "./qq/conversation/known-members.js";
 import { automatedPeerLoopGuard } from "./qq/conversation/automated-peer.js";
 import { RecentPeerRegistry } from "./qq/conversation/recent-peers.js";
 import { getRecentContextConversationCount } from "./qq/conversation/recent-context.js";
-import { getActiveReplyCycleCount, shutdownReplyCoordinator, subscribeProviderErrors, subscribeReplyLifecycle } from "./qq/reply/coordinator.js";
+import { cancelGroupReplyCycles, getActiveReplyCycleCount, shutdownReplyCoordinator, subscribeProviderErrors, subscribeReplyLifecycle } from "./qq/reply/coordinator.js";
 import { getMemeRuntimeSnapshot, loadMemeRuntime, reloadMemes as reloadMemeData } from "./skills/meme/skill.js";
 import { sampleRecentMemeNames } from "./skills/meme/store.js";
 import { memeStore } from "./skills/meme/store.js";
@@ -33,6 +33,7 @@ import { createTenBotWebServer } from "./control/web-server.js";
 import { createEditorResourceStore } from "./control/editor-resources.js";
 import { ReplyJudgePromptStore } from "./front/reply-judge-prompt-store.js";
 import { OpenAICompatibleReplyJudge } from "./front/openai-compatible-reply-judge.js";
+import { GroupReplyControl } from "./runtime/group-reply-control.js";
 
 export interface TenBotRuntime {
     control: TenBotControl;
@@ -96,6 +97,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
 
     let control: ReturnType<typeof createTenBotControl> | undefined;
     let webServer: ReturnType<typeof createTenBotWebServer> | undefined;
+    let groupReplyControl: GroupReplyControl | undefined;
     let unsubscribeProviderErrors: () => void = () => undefined;
     let unsubscribeReplyLifecycle: () => void = () => undefined;
     let conversationItemSequence = 0;
@@ -167,6 +169,26 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         await operation;
         return result;
     };
+    let stateRepository: { getGroupRepliesEnabled(): Promise<boolean>; setGroupRepliesEnabled(enabled: boolean): Promise<void> } = {
+        async getGroupRepliesEnabled() { throw new Error("SQLite state repository is unavailable"); },
+        async setGroupRepliesEnabled() { throw new Error("SQLite state repository is unavailable"); },
+    };
+    try {
+        sqliteMemberRepository = new SqliteMemberRepository();
+        memberRepository = sqliteMemberRepository;
+        stateRepository = sqliteMemberRepository;
+        configureMemberRepository(memberRepository);
+    } catch (error) {
+        memberRepository = new MemoryMemberRepository();
+        configureMemberRepository(memberRepository);
+        logger.error("[Members] SQLite unavailable; using memory for this run", error);
+    }
+    groupReplyControl = new GroupReplyControl(stateRepository, (enabled) => {
+        if (!enabled) cancelGroupReplyCycles();
+        control?.publishStatus();
+    });
+    await groupReplyControl.initialize();
+
     let bot: ReturnType<typeof createQqBot>;
     try {
         bot = createQqBot((state) => {
@@ -177,21 +199,13 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         }, observeConversationMessage, runtimeSnapshot.appConfig.qq, replyJudge,
         () => runtimeSnapshots.get().appConfig.frontMode,
         () => runtimeSnapshots.get().appConfig.replyJudge.fallbackToMainOnInvalidOutput,
-        () => runtimeSnapshots.get().appConfig.replyJudge.turnWaitMs);
+        () => runtimeSnapshots.get().appConfig.replyJudge.turnWaitMs,
+        groupReplyControl,
+        () => runtimeSnapshots.get().appConfig.botAdminIds);
     } catch (error) {
         logs.dispose();
         setConsoleLogOutputEnabled(true);
         throw error;
-    }
-
-    try {
-        sqliteMemberRepository = new SqliteMemberRepository();
-        memberRepository = sqliteMemberRepository;
-        configureMemberRepository(memberRepository);
-    } catch (error) {
-        memberRepository = new MemoryMemberRepository();
-        configureMemberRepository(memberRepository);
-        logger.error("[Members] SQLite unavailable; using memory for this run", error);
     }
 
     const status = (): RuntimeStatus => {
@@ -205,6 +219,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             : Boolean(activeConfig.ai.deepseek.apiKey);
         return {
             qq: qqState,
+            groupRepliesEnabled: groupReplyControl?.getGroupRepliesEnabled() ?? false,
             provider: {
                 id: provider,
                 model: activeModel.model,

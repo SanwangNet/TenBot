@@ -12,7 +12,7 @@ import { buildReplyCycleContext, recordIncomingMessageRevision, rememberIncoming
 import { getConversationGeneration, isConversationActive, markConversationActive } from "../src/qq/conversation/engagement.js";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 import { decideMessageTrigger } from "../src/qq/message/trigger.js";
-import { buildReplyCycleMemeQuery, coordinateAiReply, subscribeReplyLifecycle, type AttemptBuildContext } from "../src/qq/reply/coordinator.js";
+import { buildReplyCycleMemeQuery, cancelGroupReplyCycles, coordinateAiReply, subscribeReplyLifecycle, type AttemptBuildContext } from "../src/qq/reply/coordinator.js";
 
 const MODEL_TIMEOUT_CODE = "M:A_MG_MTO";
 const MODEL_TIMEOUT_MESSAGE = `ERROR: ${MODEL_TIMEOUT_CODE}`;
@@ -84,6 +84,42 @@ test("hard mention, name and active remain wake reasons rather than reply policy
     assert.equal(decideMessageTrigger(name, false).triggerKind, "name-soft");
     assert.equal(decideMessageTrigger(passive, true).triggerKind, "active-soft");
     assert.equal(decideMessageTrigger(passive, false).triggerKind, null);
+});
+
+test("global group disable cancels active generation and prevents a stale result from sending", async () => {
+    const value = message();
+    commit(value);
+    const { bot, calls } = fakeBot();
+    const attempts: RecordedAttempt[] = [];
+    let enabled = true;
+    const request = { ...requestFor(bot, value), groupRepliesEnabled: () => enabled };
+    const pending = coordinateAiReply(request, { executeAi: controlledAttempts(attempts) });
+    await waitFor(() => attempts.length === 1);
+
+    enabled = false;
+    assert.equal(cancelGroupReplyCycles(), 1);
+    assert.equal(attempts[0]?.signal.aborted, true);
+    await pending;
+
+    // Simulate a provider resolving after cancellation despite its aborted signal.
+    attempts[0]?.resolve(reply("stale reply"));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.length, 0);
+});
+
+test("a group reply completed after the gate closes is discarded before outbound send", async () => {
+    const value = message();
+    commit(value);
+    const { bot, calls } = fakeBot();
+    let enabled = true;
+    const request = { ...requestFor(bot, value), groupRepliesEnabled: () => enabled };
+    await coordinateAiReply(request, {
+        async executeAi() {
+            enabled = false;
+            return reply("late reply");
+        },
+    });
+    assert.equal(calls.length, 0);
 });
 
 test("name-soft NO_REPLY stays optional and does not create or clear engagement", async () => {

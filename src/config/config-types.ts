@@ -6,6 +6,7 @@ export type ModelProviderId = "gpt" | "deepseek";
 
 export interface AppConfig {
     frontMode: FrontMode;
+    botAdminIds: readonly string[];
     qq: {
         appId?: string;
         appSecret?: string;

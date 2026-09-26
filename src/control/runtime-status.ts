@@ -6,6 +6,7 @@ export type QqConnectionState = "connecting" | "connected" | "disconnected" | "e
 
 export interface RuntimeStatus {
     qq: QqConnectionState;
+    groupRepliesEnabled: boolean;
     provider: {
         id: PromptProvider;
         model: string;

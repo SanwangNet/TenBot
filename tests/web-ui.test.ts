@@ -24,6 +24,7 @@ import { nextPage } from "../web/src/navigation.js";
 
 const status: RuntimeStatus = {
     qq: "connected",
+    groupRepliesEnabled: true,
     provider: { id: "gpt", model: "gpt-test", webSearch: true, configured: true },
     activeCycles: 1,
     contextConversations: 3,

@@ -6,10 +6,11 @@ import {
     MEMBER_COLUMNS, UPSERT_MEMBER_SQL, memberValues, rowToMember, type MemberRow,
 } from "./sql.js";
 import type { KnownMember, MemberRepository } from "./repository.js";
+import type { GroupReplyStateRepository } from "../runtime/group-reply-control.js";
 
 export const DEFAULT_MEMBER_DATABASE_PATH = resolve(process.cwd(), "data", "bot.db");
 
-export class SqliteMemberRepository implements MemberRepository {
+export class SqliteMemberRepository implements MemberRepository, GroupReplyStateRepository {
     private readonly database: DatabaseSync;
 
     constructor(path = DEFAULT_MEMBER_DATABASE_PATH) {
@@ -17,6 +18,7 @@ export class SqliteMemberRepository implements MemberRepository {
         this.database = new DatabaseSync(path);
         try {
             this.database.exec(readFileSync(resolve(process.cwd(), "migrations", "0001_group_members.sql"), "utf8"));
+            this.database.exec(readFileSync(resolve(process.cwd(), "migrations", "0002_runtime_state.sql"), "utf8"));
         } catch (error) {
             this.database.close();
             throw error;
@@ -57,5 +59,20 @@ export class SqliteMemberRepository implements MemberRepository {
             `SELECT ${MEMBER_COLUMNS} FROM group_members ORDER BY last_seen_at DESC, member_openid, group_openid`,
         ).all() as unknown as MemberRow[];
         return rows.map(rowToMember);
+    }
+
+    async getGroupRepliesEnabled(): Promise<boolean> {
+        const row = this.database.prepare(
+            "SELECT value FROM runtime_state WHERE key = 'group_replies_enabled'",
+        ).get() as { value?: string } | undefined;
+        return row?.value === "1";
+    }
+
+    async setGroupRepliesEnabled(enabled: boolean): Promise<void> {
+        this.database.prepare(`
+            INSERT INTO runtime_state (key, value, updated_at)
+            VALUES ('group_replies_enabled', ?, ?)
+            ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        `).run(enabled ? "1" : "0", Date.now());
     }
 }

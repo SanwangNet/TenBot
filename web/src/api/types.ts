@@ -2,6 +2,7 @@ export type QqConnectionState = "connecting" | "connected" | "disconnected" | "e
 
 export interface RuntimeStatus {
     qq: QqConnectionState;
+    groupRepliesEnabled: boolean;
     provider: {
         id: "gpt" | "deepseek";
         model: string;

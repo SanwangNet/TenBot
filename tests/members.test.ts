@@ -11,6 +11,8 @@ import { D1MemberRepository, type D1MemberDatabase } from "../src/members/d1-rep
 import { MemoryMemberRepository } from "../src/members/memory-repository.js";
 import type { KnownMember } from "../src/members/repository.js";
 import { SqliteMemberRepository } from "../src/members/sqlite-repository.js";
+import { GroupReplyControl, isConfiguredBotAdmin } from "../src/runtime/group-reply-control.js";
+import { toOpaqueMemberDisplayId, toOpaqueMemberHash } from "../src/members/opaque-member-id.js";
 import { summarizeKnownMembers } from "../src/control/known-members.js";
 import { createTenBotControl } from "../src/control/tenbot-control.js";
 import type { RuntimeStatus } from "../src/control/runtime-status.js";
@@ -58,6 +60,84 @@ test("SQLite migration and UPSERT preserve first seen while updating name, role,
     assert.equal((await sqlite.findByOpenid("group-a", "person-1"))?.role, "admin");
 });
 
+test("global group reply state defaults off and survives repository restarts without migration overwrite", async () => {
+    const stateDirectory = await mkdtemp(join(tmpdir(), "tenbot-runtime-state-"));
+    const statePath = join(stateDirectory, "runtime.db");
+    let repository = new SqliteMemberRepository(statePath);
+    try {
+        assert.equal(await repository.getGroupRepliesEnabled(), false);
+        await repository.setGroupRepliesEnabled(true);
+        repository.close();
+        repository = new SqliteMemberRepository(statePath);
+        assert.equal(await repository.getGroupRepliesEnabled(), true);
+        await repository.setGroupRepliesEnabled(false);
+        repository.close();
+        repository = new SqliteMemberRepository(statePath);
+        assert.equal(await repository.getGroupRepliesEnabled(), false);
+    } finally {
+        repository.close();
+        await rm(stateDirectory, { recursive: true, force: true });
+    }
+});
+
+test("admin authorization uses the opaque stable member OpenID and accepts display or full hash", () => {
+    const memberOpenid = "stable-member-openid";
+    const displayId = toOpaqueMemberDisplayId(memberOpenid);
+    assert.equal(isConfiguredBotAdmin(memberOpenid, [` ${displayId.toLowerCase()} `]), true);
+    assert.equal(isConfiguredBotAdmin(memberOpenid, [toOpaqueMemberHash(memberOpenid)]), true);
+    assert.equal(isConfiguredBotAdmin("different-member", [displayId]), false);
+    assert.equal(isConfiguredBotAdmin(undefined, [displayId]), false);
+});
+
+test("failed state persistence preserves the old enabled state without canceling work", async () => {
+    const control = new GroupReplyControl({
+        async getGroupRepliesEnabled() { return true; },
+        async setGroupRepliesEnabled() { throw new Error("disk failure"); },
+    });
+    await control.initialize();
+    let cancellations = 0;
+    control.registerPendingWorkCanceller(() => { cancellations++; });
+    const result = await control.setGroupRepliesEnabled(false, "4D53C611");
+    assert.deepEqual(result, { ok: false, changed: false });
+    assert.equal(control.getGroupRepliesEnabled(), true);
+    assert.equal(cancellations, 0);
+});
+
+test("group reply state load failure fails closed", async () => {
+    const control = new GroupReplyControl({
+        async getGroupRepliesEnabled() { throw new Error("database unavailable"); },
+        async setGroupRepliesEnabled() {},
+    });
+    assert.equal(await control.initialize(), false);
+    assert.equal(control.getGroupRepliesEnabled(), false);
+});
+
+test("concurrent group reply commands persist in order and publish the final state", async () => {
+    let persisted = false;
+    let releaseEnable!: () => void;
+    const enableWait = new Promise<void>((resolve) => { releaseEnable = resolve; });
+    const writes: boolean[] = [];
+    const control = new GroupReplyControl({
+        async getGroupRepliesEnabled() { return persisted; },
+        async setGroupRepliesEnabled(enabled) {
+            writes.push(enabled);
+            if (enabled) await enableWait;
+            persisted = enabled;
+        },
+    });
+    await control.initialize();
+    const enable = control.setGroupRepliesEnabled(true, "4D53C611");
+    await new Promise((resolve) => setImmediate(resolve));
+    const disable = control.setGroupRepliesEnabled(false, "4D53C611");
+    releaseEnable();
+    const [enabledResult, disabledResult] = await Promise.all([enable, disable]);
+    assert.deepEqual(writes, [true, false]);
+    assert.deepEqual(enabledResult, { ok: true, changed: true });
+    assert.deepEqual(disabledResult, { ok: true, changed: true });
+    assert.equal(persisted, false);
+    assert.equal(control.getGroupRepliesEnabled(), false);
+});
+
 test("SQLite keeps groups separate and returns every duplicate nickname", async () => {
     await sqlite.upsertMember(member("group-a", "person-2", "同名"));
     await sqlite.upsertMember(member("group-a", "person-3", "同名"));
@@ -86,6 +166,7 @@ test("known member summaries aggregate groups and survive reopening SQLite", asy
         const control = createTenBotControl({
             getStatus: () => ({
                 qq: "disconnected", provider: { id: "gpt", model: "offline", webSearch: false, configured: false },
+                groupRepliesEnabled: false,
                 activeCycles: 0, contextConversations: 0,
                 memes: { count: 0, revision: 0, loadedAt: "now" },
                 prompt: { provider: "gpt", revision: 0, loadedAt: "now" }, shuttingDown: false,

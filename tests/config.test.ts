@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createConfigStore } from "../src/config/config-store.js";
-import { loadAppConfig, parsePublicConfigPatch, validatePublicConfigPatch } from "../src/config/config-validation.js";
+import { loadAppConfig, parseBotAdminIds, parsePublicConfigPatch, validatePublicConfigPatch } from "../src/config/config-validation.js";
+
+test("BOT_ADMIN_IDS accepts opaque IDs, normalizes case, and rejects malformed entries", () => {
+    assert.deepEqual(parseBotAdminIds(" 4d53c611 &#x20;," + "A".repeat(64)), ["4D53C611", "A".repeat(64)]);
+    assert.deepEqual(loadAppConfig({ BOT_ADMIN_IDS: "4d53c611" }).botAdminIds, ["4D53C611"]);
+    assert.throws(() => parseBotAdminIds("not-a-member-id"), /BOT_ADMIN_IDS/);
+});
 
 async function withTempEnv(content: string, run: (envPath: string) => Promise<void>): Promise<void> {
     const directory = await mkdtemp(join(tmpdir(), "tenbot-config-"));
@@ -149,6 +155,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
             REPLY_JUDGE_BASE_URL: "https://judge-secret.example/v1",
             REPLY_JUDGE_API_KEY: "JUDGE_SECRET",
             REPLY_JUDGE_TIMEOUT_MS: "15000",
+            BOT_ADMIN_IDS: "4D53C611",
             BOT_LOG_LEVEL: "debug",
             BOT_LOOP_GUARD_MAX_CYCLES: "10",
             AUTOMATED_PEER_IDS: "A,B,A",
@@ -160,7 +167,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
     assert.equal(publicConfig.botLoopGuard.automatedPeerCount, 2);
     assert.equal(publicConfig.logLevel, "debug");
     assert.deepEqual(publicConfig.replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000, provider: "openai-compatible" });
-    assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example/);
+    assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example|4D53C611|botAdminIds/);
 });
 
 test("Reply Judge config patches map to their env keys and validate safe model IDs and timeout bounds", async () => {

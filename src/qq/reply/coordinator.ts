@@ -68,6 +68,8 @@ export interface ReplyRequest {
     aiInput: string;
     imageUrls: string[];
     isGroup: boolean;
+    /** Checked again at outbound boundaries; private chats are unaffected. */
+    groupRepliesEnabled?: () => boolean;
     frontMode?: FrontMode;
     wakeLevel: WakeLevel;
     wakeReason?: WakeReason;
@@ -107,6 +109,10 @@ export interface ReplyLifecycleSignal {
     timestamp: string;
     content?: string;
     failureStage?: "generation" | "send";
+}
+
+function isGroupReplyAllowed(request: ReplyRequest): boolean {
+    return !request.isGroup || request.groupRepliesEnabled?.() !== false;
 }
 
 type ProviderErrorListener = (signal: ProviderErrorSignal) => void;
@@ -495,7 +501,7 @@ export function admitConversationWake(
     wakeReason: WakeReason,
     dependencies: Dependencies = {},
 ): Promise<void> {
-    if (!acceptingCycles || wakeLevel === "pass") {
+    if (!acceptingCycles || wakeLevel === "pass" || !isGroupReplyAllowed(request)) {
         return cycles.get(getConversationKey(request.message))?.done ?? Promise.resolve();
     }
     const admission = admissionOf(request, wakeLevel);
@@ -583,6 +589,7 @@ function isConfirmedModelProvider5xx(error: unknown): boolean {
 }
 
 async function sendFailureNotice(request: ReplyRequest, error: TenBotError): Promise<void> {
+    if (!isGroupReplyAllowed(request)) return;
     logger.error(error);
     try {
         const message = toPublicErrorMessage(error);
@@ -609,6 +616,7 @@ function cycleReplyMessage(cycle: Cycle, request: ReplyRequest): NormalizedQqMes
 }
 
 async function sendFallback(request: ReplyRequest, cycle: Cycle, text: string, label: "timeout" | "upstream"): Promise<void> {
+    if (!isGroupReplyAllowed(request) || cycle.cancelled) return;
     const newer = Math.max(0, getMessageRevision(request.message) - cycle.anchorRevision);
     const quote = shouldQuoteTrigger("auto", request.isGroup, newer, Boolean(cycle.anchorMessageId));
     try {
@@ -629,10 +637,12 @@ async function sendErrorFallback(
 }
 
 async function sendNonErrorNotice(request: ReplyRequest, text: string): Promise<void> {
+    if (!isGroupReplyAllowed(request)) return;
     try { await request.bot.sendText(request.message.replyTarget, text); }
     catch (error) { logger.error(createQqSendError(error, 0)); }
 }
 async function sendBotLoopNotice(request: ReplyRequest): Promise<void> {
+    if (!isGroupReplyAllowed(request)) return;
     try {
         await request.bot.sendText(request.message.replyTarget, BOT_LOOP_GUARD_NOTICE);
         rememberBotReply(request.message, BOT_LOOP_GUARD_NOTICE);
@@ -643,7 +653,7 @@ async function sendBotLoopNotice(request: ReplyRequest): Promise<void> {
 }
 function webSearchCallback(request: ReplyRequest, cycle: Cycle, attempt: Attempt): () => Promise<void> {
     return async () => {
-        if (cycle.currentAttempt !== attempt || attempt.status !== "running") return;
+        if (cycle.currentAttempt !== attempt || attempt.status !== "running" || !isGroupReplyAllowed(request)) return;
         if (!cycle.webSearchTriggered) {
             extendForWebSearch(cycle);
             if (attempt.status !== "running" || !cycle.webSearchTriggered) return;
@@ -705,6 +715,24 @@ function cancelCycle(cycle: Cycle): boolean {
     resolveStop(attempt, "cancelled");
     return true;
 }
+
+/** Cancels all group cycles, including generation, tool work, and pre-send results. */
+export function cancelGroupReplyCycles(): number {
+    let cancelled = 0;
+    for (const cycle of cycles.values()) {
+        if (!cycle.latestRequest.isGroup) continue;
+        cycle.cancelled = true;
+        const attempt = cycle.currentAttempt;
+        if (attempt) {
+            attempt.status = "cancelled";
+            clearAttemptTimer(attempt);
+            attempt.controller.abort();
+            resolveStop(attempt, "cancelled");
+        }
+        cancelled++;
+    }
+    return cancelled;
+}
 export function cancelPendingRequestByMessageId(messageId: string): number {
     if (!messageId) return 0;
     let count = 0;
@@ -743,7 +771,7 @@ function quoteDecision(request: ReplyRequest, cycle: Cycle, attempt: Attempt, pr
     return quote ? cycle.anchorMessageId ?? getTriggerMessageId(request.message) : undefined;
 }
 async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt, result: AiResult): Promise<void> {
-    if (cycle.cancelled || cycle.currentAttempt !== attempt || attempt.status !== "completed") return;
+    if (cycle.cancelled || cycle.currentAttempt !== attempt || attempt.status !== "completed" || !isGroupReplyAllowed(request)) return;
     if (result.kind === "no_reply") {
         if (!canNoReply(cycle)) {
             publishReplyLifecycle(cycle, attempt, { kind: "failed", failureStage: "generation" });
@@ -772,14 +800,14 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
     const delay = cycle.deps.multiMessageDelayMs ?? MULTI_MESSAGE_DELAY_MS;
     try {
         for (let index = 0; index < action.messages.length; index++) {
-            if (attempt.status !== "sending" || cycle.cancelled) break;
+            if (attempt.status !== "sending" || cycle.cancelled || !isGroupReplyAllowed(request)) break;
             if (index && !await waitBetweenMessages(delay, attempt.controller.signal)) break;
-            if (attempt.status !== "sending" || cycle.cancelled) break;
+            if (attempt.status !== "sending" || cycle.cancelled || !isGroupReplyAllowed(request)) break;
             const rendered = await prepareAiReply(request.message, action, index);
-            if (attempt.status !== "sending" || cycle.cancelled) break;
+            if (attempt.status !== "sending" || cycle.cancelled || !isGroupReplyAllowed(request)) break;
             try {
                 const response = await sendAiReply(request.bot, request.message, rendered, quoteIds[index],
-                    () => attempt.status === "sending" && !cycle.cancelled);
+                    () => attempt.status === "sending" && !cycle.cancelled && isGroupReplyAllowed(request));
                 if (!response.sent) { failed = true; break; }
                 sent++;
                 publishReplyLifecycle(cycle, attempt, { kind: "reply-sent", content: action.messages[index]?.content ?? "" });
@@ -836,22 +864,26 @@ function finishCycle(cycle: Cycle): void {
 async function executeCycle(cycle: Cycle): Promise<void> {
     try {
         while (!cycle.cancelled) {
+            if (!isGroupReplyAllowed(cycle.latestRequest)) break;
             let request!: ReplyRequest;
             let input!: AttemptInput;
             let revision = 0;
             for (;;) {
+                if (!isGroupReplyAllowed(cycle.latestRequest)) return;
                 request = cycle.latestRequest;
                 revision = getMessageRevision(request.message);
                 const context = buildAttemptContext(cycle, revision);
                 input = request.buildAttempt
                     ? await request.buildAttempt(request.message, context)
                     : { aiInput: request.aiInput, imageUrls: request.imageUrls };
+                if (!isGroupReplyAllowed(request)) return;
                 if (request.isGroup) input = { ...input,
                     aiInput: input.aiInput + "\n" + semanticAnchorText(context, input.refs) };
                 if (cycle.cancelled) return;
                 if (cycle.latestRequest === request && getMessageRevision(request.message) === revision) break;
             }
             cycle.trailingUpdates = [];
+            if (!isGroupReplyAllowed(request)) break;
             const attempt = startAttempt(cycle, revision, input.refs ?? new Map());
             const outcome = await runAttempt(cycle, request, input, attempt);
             if (outcome.kind === "interrupted" && !cycle.cancelled && cycle.currentAttempt === attempt) {

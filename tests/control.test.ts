@@ -14,6 +14,7 @@ import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js
 
 const status: RuntimeStatus = {
     qq: "connected",
+    groupRepliesEnabled: false,
     provider: { id: "deepseek", model: "deepseek-flash", webSearch: false, configured: true },
     activeCycles: 1,
     contextConversations: 2,
