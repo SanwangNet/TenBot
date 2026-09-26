@@ -7,6 +7,7 @@ import type { RuntimeStatus } from "../control/runtime-status.js";
 import type { ReloadResult, TenBotControl } from "../control/tenbot-control.js";
 import type { ProviderErrorNotice } from "../control/provider-error.js";
 import type { RuntimeEvent } from "../control/runtime-event.js";
+import { parseErrorCode } from "../errors/format.js";
 import type { ConversationSummary } from "../control/conversation-timeline.js";
 import type { KnownMemberSummary } from "../control/known-members.js";
 import type { LogEntry } from "../shared/logger.js";
@@ -24,7 +25,7 @@ import { PromptView } from "./views/prompt-view.js";
 import { SettingsView } from "./views/settings-view.js";
 import { AutomatedPeersView } from "./views/automated-peers-view.js";
 import { logLevelLabel, PAGE_LABELS, PAGES, providerLabel, reasoningLabel, settingsFieldLabel, verbosityLabel } from "./i18n.js";
-import { activateSidebarPage, handleLogsNavigation, initialTuiState, moveAutomatedPeerSelection, moveSettingsSelection, quitConfirmationAction, requestQuitConfirmation, toggleTuiFocus, type ConfigOption, type ConfigSelectField, type ConfigTextField, type ModalState, type SettingsField, type TuiState } from "./state.js";
+import { activateSidebarPage, handleLogsNavigation, initialTuiState, moveAutomatedPeerSelection, moveSettingsSelection, quitConfirmationAction, requestQuitConfirmation, settingsRows, toggleTuiFocus, type ConfigOption, type ConfigSelectField, type ConfigTextField, type ModalState, type SettingsField, type TuiState } from "./state.js";
 import type { TuiPage } from "./types.js";
 import type { AutomatedPeerSummary } from "../control/automated-peers.js";
 import { ClickableRegionRegistry, isSgrMouseSequence, type TerminalMouseSession } from "./mouse-input.js";
@@ -441,10 +442,7 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
             return;
         }
         if (ui.page === "settings" && ui.focus === "main") {
-            const fields = viewedProvider === "gpt"
-                ? ["gpt.model", "gpt.reasoningEffort", "gpt.verbosity"] as const
-                : ["deepseek.model", "deepseek.reasoningEffort"] as const;
-            const rowCount = 1 + fields.length + 1 + 2;
+            const rowCount = settingsRows(viewedProvider).length;
             if (ui.settingsIndex === 0 && key.leftArrow) viewProvider(-1);
             else if (ui.settingsIndex === 0 && key.rightArrow) viewProvider(1);
             else if (key.upArrow) setUi((current) => ({ ...current, settingsIndex: moveSettingsSelection(current.settingsIndex, -1, rowCount) }));
@@ -576,6 +574,7 @@ export function providerDetailsToSummary(current: TuiState): TuiState {
 }
 
 export function receiveProviderError(current: TuiState, notice: ProviderErrorNotice): TuiState {
+    if (parseErrorCode(notice.tenbotCode)?.class === "C") return current;
     if (current.modal.type === "provider-error" || current.modal.type === "provider-error-details") {
         return { ...current, modal: { ...current.modal, notice, count: current.modal.count + 1 } };
     }
@@ -618,7 +617,7 @@ function renderView(
         case "memes": return <MemesView status={status} />;
         case "conversations": return <ConversationsView conversations={conversations} selectedIndex={conversationIndex} items={conversationItems} anchor={conversationAnchor} registry={regions} onSwitch={onSwitchConversation} onViewportMeasure={onViewportMeasure} />;
         case "logs": return <LogsView logs={logs} offset={offset} visibleLines={visibleLines} />;
-        case "settings": return <SettingsView status={status} config={config} selectedIndex={settingsIndex} pendingRestart={pendingRestart} viewedProvider={viewedProvider} registry={regions} onEdit={onEditSetting} onViewProvider={onViewProvider} onApplyProvider={onApplyProvider} />;
+        case "settings": return <SettingsView status={status} config={config} selectedIndex={settingsIndex} pendingRestart={pendingRestart} viewedProvider={viewedProvider} width={contentWidth} registry={regions} onEdit={onEditSetting} onViewProvider={onViewProvider} onApplyProvider={onApplyProvider} />;
         case "automated-peers": return <AutomatedPeersView registered={peerDirectory.registered} recent={peerDirectory.recent} knownMembers={knownMembers} selectedIndex={automatedPeerIndex} visibleCount={visiblePeerRows} width={contentWidth} registry={regions} onOpen={onOpenPeer} />;
     }
 }
@@ -655,14 +654,6 @@ const logLevelOptions: readonly ConfigOption[] = [
     { value: "error", label: "错误" },
 ];
 
-type SettingsRow = SettingsField | "provider" | "apply";
-function settingsRows(provider: ModelProviderId): SettingsRow[] {
-    const modelFields: SettingsField[] = provider === "gpt"
-        ? ["gpt.model", "gpt.reasoningEffort", "gpt.verbosity"]
-        : ["deepseek.model", "deepseek.reasoningEffort"];
-    return ["provider", ...modelFields, "apply", "logLevel", "botLoopGuard.maxCycles"];
-}
-
 function settingsRowIndex(field: SettingsField, provider: ModelProviderId): number {
     return settingsRows(provider).indexOf(field);
 }
@@ -675,6 +666,8 @@ function configValue(config: PublicConfig, field: SettingsField): string {
         case "gpt.verbosity": return verbosityLabel(config.gpt.verbosity);
         case "deepseek.model": return config.deepseek.model;
         case "deepseek.reasoningEffort": return reasoningLabel(config.deepseek.reasoningEffort);
+        case "replyJudge.model": return config.replyJudge.model;
+        case "replyJudge.timeoutMs": return String(config.replyJudge.timeoutMs);
         case "logLevel": return logLevelLabel(config.logLevel);
         case "botLoopGuard.maxCycles": return String(config.botLoopGuard.maxCycles);
     }
@@ -705,11 +698,16 @@ export function textPatch(field: ConfigTextField, value: string): { value: Publi
     if (field === "botLoopGuard.maxCycles" && !/^\d+$/.test(value.trim())) {
         return { error: "自动账号连续交互上限必须是大于等于 1 的整数" };
     }
+    if (field === "replyJudge.timeoutMs" && !/^\d+$/.test(value.trim())) {
+        return { error: "Reply Judge 超时时间必须是 1000 到 30000 毫秒之间的整数" };
+    }
     const patch: PublicConfigPatch = field === "gpt.model"
         ? { field, value }
         : field === "deepseek.model"
             ? { field, value }
-            : { field, value: Number(value.trim()) };
+            : field === "replyJudge.model"
+                ? { field, value }
+                : { field, value: Number(value.trim()) };
     try {
         validatePublicConfigPatch(patch);
         return { value: patch };
@@ -726,6 +724,8 @@ export function openConfigModal(field: SettingsField, config: PublicConfig): Mod
     if (field === "logLevel") return selectConfigModal(field, logLevelOptions, config.logLevel);
     if (field === "gpt.model") return textConfigModal(field, config.gpt.model);
     if (field === "deepseek.model") return textConfigModal(field, config.deepseek.model);
+    if (field === "replyJudge.model") return textConfigModal(field, config.replyJudge.model);
+    if (field === "replyJudge.timeoutMs") return textConfigModal(field, String(config.replyJudge.timeoutMs));
     return textConfigModal(field, String(config.botLoopGuard.maxCycles));
 }
 

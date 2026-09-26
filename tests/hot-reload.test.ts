@@ -66,6 +66,71 @@ test("Front mode hot swaps with runtime config; invalid Judge config leaves the 
     assert.equal(snapshots.get().appConfig.frontMode, "legacy");
 });
 
+test("Reply Judge model and timeout hot reload for new captures while in-flight captures stay unchanged", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tenbot-reply-judge-config-"));
+    const envPath = join(directory, ".env");
+    const tempPath = join(directory, ".env.next");
+    try {
+        await writeFile(envPath, [
+            "FRONT_MODE=judge",
+            "AI_PROVIDER=gpt",
+            "REPLY_JUDGE_PROVIDER=openai-compatible",
+            "REPLY_JUDGE_MODEL=model-a",
+            "REPLY_JUDGE_BASE_URL=https://judge.example/v1",
+            "REPLY_JUDGE_API_KEY=test-secret",
+            "REPLY_JUDGE_TIMEOUT_MS=5000",
+            "CODEX_MODEL=main-model",
+        ].join("\n") + "\n", "utf8");
+        const configStore = createConfigStore({ envPath, environment: {} });
+        const snapshots = new RuntimeConfigSnapshotStore(configStore.getAppConfig(), (config) => fakePlugin(config.ai.provider, config.ai.gpt.model), () => undefined);
+        const captureReplyJudge = () => snapshots.get().appConfig.replyJudge;
+        const inFlightConfig = captureReplyJudge();
+
+        const modelUpdate = await configStore.updatePublicConfig({ field: "replyJudge.model", value: "model-b" });
+        const timeoutUpdate = await configStore.updatePublicConfig({ field: "replyJudge.timeoutMs", value: 15_000 });
+        assert.equal(modelUpdate.ok, true);
+        assert.equal(timeoutUpdate.ok, true);
+        if (modelUpdate.ok) assert.equal(modelUpdate.requiresRestart, false);
+        if (timeoutUpdate.ok) assert.equal(timeoutUpdate.requiresRestart, false);
+        const tuiUpdate = snapshots.replace(configStore.getAppConfig());
+        assert.equal(tuiUpdate.revision, 2);
+        assert.equal(captureReplyJudge().model, "model-b");
+        assert.equal(captureReplyJudge().timeoutMs, 15_000);
+
+        const externalEnv = (await readFile(envPath, "utf8"))
+            .replace("REPLY_JUDGE_MODEL=model-b", "REPLY_JUDGE_MODEL=model-c")
+            .replace("REPLY_JUDGE_TIMEOUT_MS=15000", "REPLY_JUDGE_TIMEOUT_MS=20000");
+        const watcher = new FileChangeWatcher(envPath, async () => {
+            snapshots.replace(configStore.getAppConfig());
+        }, 35);
+        const waitFor = async (predicate: () => boolean) => {
+            const started = Date.now();
+            while (!predicate()) {
+                if (Date.now() - started > 2_000) throw new Error("Reply Judge env reload timed out");
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+        };
+        try {
+            await watcher.start();
+            await writeFile(tempPath, externalEnv, "utf8");
+            await rename(tempPath, envPath);
+            await waitFor(() => snapshots.get().revision === 3);
+        } finally {
+            watcher.close();
+        }
+        const externalUpdate = snapshots.get();
+        assert.equal(externalUpdate.revision, 3);
+        assert.equal(captureReplyJudge().model, "model-c");
+        assert.equal(captureReplyJudge().timeoutMs, 20_000);
+        assert.equal(externalUpdate.model.id, "gpt");
+        assert.equal(externalUpdate.model.model, "main-model");
+        assert.equal(inFlightConfig.model, "model-a");
+        assert.equal(inFlightConfig.timeoutMs, 5_000);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
 test("the production model registry pointer is replaced for later Attempt snapshots", () => {
     const initialConfig = loadAppConfig({ AI_PROVIDER: "gpt", CODEX_MODEL: "gpt-old" });
     const store = new RuntimeConfigSnapshotStore(initialConfig);

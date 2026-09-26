@@ -44,6 +44,10 @@ export interface AppConfig {
 
 export interface PublicConfig {
     aiProvider: ModelProviderId;
+    replyJudge: {
+        model: string;
+        timeoutMs: number;
+    };
     gpt: {
         model: string;
         reasoningEffort: ReasoningEffort;
@@ -69,6 +73,8 @@ export type PublicConfigPatch =
     | { field: "gpt.verbosity"; value: ModelVerbosity }
     | { field: "deepseek.model"; value: string }
     | { field: "deepseek.reasoningEffort"; value: ReasoningEffort }
+    | { field: "replyJudge.model"; value: string }
+    | { field: "replyJudge.timeoutMs"; value: number }
     | { field: "logLevel"; value: LogLevel }
     | { field: "botLoopGuard.maxCycles"; value: number };
 

@@ -5,9 +5,14 @@ import type { RuntimeStatus } from "../src/control/runtime-status.js";
 import type { PublicConfig } from "../src/config/config-types.js";
 import { handleTuiKey } from "../src/tui/key-handler.js";
 import { createProviderErrorNotice } from "../src/control/provider-error.js";
+import type { ProviderErrorNotice } from "../src/control/provider-error.js";
+import { TenBotError } from "../src/errors/tenbot-error.js";
+import { logger, subscribeLogs } from "../src/shared/logger.js";
 import { connectionLabel, formatTuiLogText, reasoningLabel, verbosityLabel } from "../src/tui/i18n.js";
 import { closeModal, hasPendingRestart, openConfigModal, readKnownMembers, receiveProviderError, textPatch } from "../src/tui/app.js";
 import { activateSidebarPage, clampLogOffset, handleLogsNavigation, initialTuiState, moveSettingsSelection, moveSidebarSelection, quitConfirmationAction, requestQuitConfirmation, toggleTuiFocus } from "../src/tui/state.js";
+import { settingsRows } from "../src/tui/state.js";
+import { SettingsView } from "../src/tui/views/settings-view.js";
 import { supportsInteractiveTui } from "../src/tui/terminal-check.js";
 import { ClickableRegionRegistry, SgrMouseParser, TerminalMouseSession } from "../src/tui/mouse-input.js";
 import { splitDisplayPath } from "../src/tui/path-display.js";
@@ -24,6 +29,26 @@ function conversationFixture(count: number, content = "short") : ConversationIte
     return Array.from({ length: count }, (_, index): ConversationItem => index % 2 === 0
         ? { id: `message-${index}`, type: "peer-message", displayName: "尘柒喵", content: `${content} ${index}`, timestamp: "2026-09-26T00:23:46.000Z" }
         : { id: `message-${index}`, type: "ai-reply", content: `${content} ${index}`, timestamp: "2026-09-26T00:23:46.000Z", sendStatus: "sent" });
+}
+
+function collectReactElementProps(node: unknown, output: Array<Record<string, unknown>> = []): Array<Record<string, unknown>> {
+    if (Array.isArray(node)) {
+        for (const child of node) collectReactElementProps(child, output);
+    } else if (node !== null && typeof node === "object" && "props" in node) {
+        const props = (node as { props: Record<string, unknown> }).props;
+        output.push(props);
+        collectReactElementProps(props.children, output);
+    }
+    return output;
+}
+
+function collectReactText(node: unknown): string[] {
+    if (typeof node === "string" || typeof node === "number") return [String(node)];
+    if (Array.isArray(node)) return node.flatMap(collectReactText);
+    if (node !== null && typeof node === "object" && "props" in node) {
+        return collectReactText((node as { props: { children?: unknown } }).props.children);
+    }
+    return [];
 }
 
 test("conversation rows wrap ASCII, Chinese, full-width, emoji, and combining graphemes by terminal width", () => {
@@ -163,6 +188,7 @@ function fakeControl(calls: string[], result: ReloadResult = { ok: true, message
     };
     const config: PublicConfig = {
         aiProvider: "gpt",
+        replyJudge: { model: "judge-test", timeoutMs: 5_000 },
         gpt: { model: "test", reasoningEffort: "high", verbosity: "high", configured: false },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: false },
         logLevel: "info",
@@ -369,6 +395,7 @@ test("centered modal click regions follow the resized center and ignore old corn
 test("settings select and text editors create safe patches without touching a real env", () => {
     const config: PublicConfig = {
         aiProvider: "gpt",
+        replyJudge: { model: "Qwen/Qwen3.5-4B", timeoutMs: 5_000 },
         gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: false },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: false },
         logLevel: "info",
@@ -383,8 +410,77 @@ test("settings select and text editors create safe patches without touching a re
     const text = openConfigModal("gpt.model", config);
     assert.equal(text.type, "config-text");
     assert.equal(textPatch("gpt.model", "gpt-next").value?.field, "gpt.model");
+    const judgeModel = openConfigModal("replyJudge.model", config);
+    assert.equal(judgeModel.type, "config-text");
+    if (judgeModel.type === "config-text") assert.equal(judgeModel.value, "Qwen/Qwen3.5-4B");
+    const judgeTimeout = openConfigModal("replyJudge.timeoutMs", config);
+    assert.equal(judgeTimeout.type, "config-text");
+    if (judgeTimeout.type === "config-text") assert.equal(judgeTimeout.value, "5000");
+    assert.deepEqual(textPatch("replyJudge.model", "THUDM/GLM-4-9B-0414").value, { field: "replyJudge.model", value: "THUDM/GLM-4-9B-0414" });
+    assert.deepEqual(textPatch("replyJudge.timeoutMs", "15000").value, { field: "replyJudge.timeoutMs", value: 15_000 });
+    assert.match(textPatch("replyJudge.timeoutMs", "999").error ?? "", /1000 到 30000/);
+    assert.match(textPatch("replyJudge.timeoutMs", "1500.5").error ?? "", /1000 到 30000/);
     assert.match(textPatch("botLoopGuard.maxCycles", "0").error ?? "", /大于等于/);
     assert.equal(initialTuiState.modal.type, "none");
+});
+
+test("settings render Reply Judge as an equal-width settings column with keyboard and mouse rows", () => {
+    const config: PublicConfig = {
+        aiProvider: "gpt",
+        replyJudge: { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000 },
+        gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: true },
+        deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
+        logLevel: "info",
+        botLoopGuard: { maxCycles: 4, automatedPeerCount: 2 },
+    };
+    const status: RuntimeStatus = {
+        qq: "connected",
+        provider: { id: "gpt", model: "gpt-6-sol", webSearch: true, configured: true },
+        activeCycles: 0,
+        contextConversations: 0,
+        runtimeConfig: { logLevel: "info", botLoopGuardMaxCycles: 4 },
+        hotReload: { enabled: true, revision: 3, loadedAt: "now", lastSuccessAt: "now", requiresRestart: false },
+        memes: { count: 0, revision: 1, loadedAt: "now" },
+        prompt: { provider: "gpt", revision: 1, loadedAt: "now" },
+        shuttingDown: false,
+    };
+    const edited: string[] = [];
+    const tree = SettingsView({
+        status, config, selectedIndex: 7, pendingRestart: false, viewedProvider: "gpt", width: 100,
+        registry: new ClickableRegionRegistry(), onEdit: (field) => edited.push(field), onViewProvider() {}, onApplyProvider() {},
+    });
+    const props = collectReactElementProps(tree);
+    const text = collectReactText(tree).join(" ");
+
+    assert.equal(props.some((item) => item.title === "回复判断"), true);
+    assert.match(text, /Qwen\/Qwen3\.5-4B/);
+    assert.match(text, /15000 ms/);
+    assert.doesNotMatch(text, /API_KEY|BASE_URL|openai-compatible|FRONT_MODE/);
+
+    const outerRow = props.find((item) => item.flexDirection === "row" && item.width === "100%" && item.flexGrow === 1);
+    assert.ok(outerRow);
+    const columns = outerRow.children as Array<{ props: Record<string, unknown> }>;
+    assert.equal(columns.length, 2);
+    assert.ok(columns.every((column) => column.props.flexGrow === 1 && column.props.flexBasis === 0));
+
+    const clickTargets = props.filter((item) => item.id === "settings:replyJudge.model" || item.id === "settings:replyJudge.timeoutMs");
+    assert.deepEqual(clickTargets.map((item) => item.id), ["settings:replyJudge.model", "settings:replyJudge.timeoutMs"]);
+    for (const target of clickTargets) (target.onClick as () => void)();
+    assert.deepEqual(edited, ["replyJudge.model", "replyJudge.timeoutMs"]);
+
+    const rows = settingsRows("gpt");
+    const modelIndex = rows.indexOf("replyJudge.model");
+    const timeoutIndex = rows.indexOf("replyJudge.timeoutMs");
+    assert.equal(rows[modelIndex], "replyJudge.model");
+    assert.equal(rows[timeoutIndex], "replyJudge.timeoutMs");
+    assert.equal(moveSettingsSelection(modelIndex - 1, 1, rows.length), modelIndex);
+    assert.equal(moveSettingsSelection(timeoutIndex - 1, 1, rows.length), timeoutIndex);
+    assert.deepEqual(rows.slice(-2), ["replyJudge.model", "replyJudge.timeoutMs"]);
+    const narrowTree = SettingsView({
+        status, config, selectedIndex: 0, pendingRestart: false, viewedProvider: "gpt", width: 70,
+        registry: new ClickableRegionRegistry(), onEdit() {}, onViewProvider() {}, onApplyProvider() {},
+    });
+    assert.equal(collectReactElementProps(narrowTree).some((item) => item.flexDirection === "column" && item.width === "100%" && item.flexGrow === 1), true);
 });
 
 test("settings shows pending restart only when Runtime marks a non-hot-reloadable change", () => {
@@ -401,6 +497,7 @@ test("settings shows pending restart only when Runtime marks a non-hot-reloadabl
     };
     const config: PublicConfig = {
         aiProvider: "deepseek",
+        replyJudge: { model: "judge-test", timeoutMs: 5_000 },
         gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: true },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
         logLevel: "info",
@@ -492,6 +589,62 @@ test("provider errors open one modal and queue subsequent errors", () => {
     const next = closeModal(queued);
     assert.equal(next.modal.type, "provider-error");
     if (next.modal.type === "provider-error") assert.equal(next.modal.notice.message, "再次失败");
+});
+
+test("Provider Error modal is selected by parsed error class", () => {
+    const notice = (tenbotCode: ProviderErrorNotice["tenbotCode"]) => ({
+        provider: "gpt",
+        model: "gpt-6-sol",
+        tenbotCode,
+        message: "safe error",
+        timestamp: "now",
+    });
+
+    const classA = receiveProviderError(initialTuiState, notice("R:A_MP_PSU"));
+    assert.equal(classA.modal.type, "provider-error");
+    if (classA.modal.type === "provider-error") assert.equal(classA.modal.notice.tenbotCode, "R:A_MP_PSU");
+
+    const classB = receiveProviderError(initialTuiState, notice("B:B_QT_PSF"));
+    assert.equal(classB.modal.type, "provider-error");
+
+    const classC = receiveProviderError(initialTuiState, notice("M:C_NS_NRL"));
+    assert.equal(classC, initialTuiState);
+
+    const unknownNotice = notice("not-a-tenbot-code" as ProviderErrorNotice["tenbotCode"]);
+    const unknown = receiveProviderError(initialTuiState, unknownNotice);
+    assert.equal(unknown.modal.type, "provider-error");
+});
+
+test("class C remains logged while its Provider Error notification stays UI-silent", () => {
+    const entries: string[] = [];
+    const unsubscribe = subscribeLogs((entry) => entries.push(entry.text));
+    const previousConsoleError = console.error;
+    console.error = () => undefined;
+    try {
+        const error = new TenBotError("M:C_NS_NRL");
+        logger.error(error);
+        const notice = createProviderErrorNotice("search", "search-model", error);
+        assert.equal(receiveProviderError(initialTuiState, notice), initialTuiState);
+        assert.equal(entries.some((entry) => entry.includes("M:C_NS_NRL")), true);
+    } finally {
+        unsubscribe();
+        console.error = previousConsoleError;
+    }
+});
+
+test("multiple A/B error events reuse one visible Provider Error modal", () => {
+    const notice: ProviderErrorNotice = {
+        provider: "gpt",
+        model: "gpt-6-sol",
+        tenbotCode: "R:A_MP_PSU",
+        message: "safe error",
+        timestamp: "now",
+    };
+    const opened = receiveProviderError(initialTuiState, notice);
+    const repeated = receiveProviderError(opened, notice);
+    assert.equal(repeated.modal.type, "provider-error");
+    assert.equal(repeated.queuedProviderError, undefined);
+    if (repeated.modal.type === "provider-error") assert.equal(repeated.modal.count, 2);
 });
 
 test("TUI refuses non-TTY streams before rendering", () => {

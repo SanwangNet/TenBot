@@ -144,6 +144,11 @@ test("public config exposes only safe metadata and shared defaults parse provide
             CODEX_REASONING_EFFORT: "low",
             CODEX_VERBOSITY: "medium",
             DEEPSEEK_API_KEY: "DEEP_SECRET",
+            REPLY_JUDGE_PROVIDER: "openai-compatible",
+            REPLY_JUDGE_MODEL: "Qwen/Qwen3.5-4B",
+            REPLY_JUDGE_BASE_URL: "https://judge-secret.example/v1",
+            REPLY_JUDGE_API_KEY: "JUDGE_SECRET",
+            REPLY_JUDGE_TIMEOUT_MS: "15000",
             BOT_LOG_LEVEL: "debug",
             BOT_LOOP_GUARD_MAX_CYCLES: "10",
             AUTOMATED_PEER_IDS: "A,B,A",
@@ -154,7 +159,33 @@ test("public config exposes only safe metadata and shared defaults parse provide
     assert.equal(publicConfig.deepseek.configured, true);
     assert.equal(publicConfig.botLoopGuard.automatedPeerCount, 2);
     assert.equal(publicConfig.logLevel, "debug");
-    assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|secret\.example/);
+    assert.deepEqual(publicConfig.replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000 });
+    assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example|openai-compatible/);
+});
+
+test("Reply Judge config patches map to their env keys and validate safe model IDs and timeout bounds", async () => {
+    assert.equal(validatePublicConfigPatch({ field: "replyJudge.model", value: " Qwen/Qwen3.5-4B " }), "REPLY_JUDGE_MODEL");
+    assert.equal(validatePublicConfigPatch({ field: "replyJudge.model", value: "THUDM/GLM-4-9B-0414" }), "REPLY_JUDGE_MODEL");
+    assert.throws(() => validatePublicConfigPatch({ field: "replyJudge.model", value: "  " }), /模型名称/);
+    assert.throws(() => validatePublicConfigPatch({ field: "replyJudge.model", value: "model\nnext" }), /模型名称/);
+    assert.throws(() => validatePublicConfigPatch({ field: "replyJudge.model", value: "m".repeat(129) }), /模型名称/);
+
+    for (const timeoutMs of [1_000, 5_000, 15_000, 30_000]) {
+        assert.equal(validatePublicConfigPatch({ field: "replyJudge.timeoutMs", value: timeoutMs }), "REPLY_JUDGE_TIMEOUT_MS");
+    }
+    for (const timeoutMs of [999, 30_001, 1_500.5, Number.MAX_SAFE_INTEGER + 1]) {
+        assert.throws(() => validatePublicConfigPatch({ field: "replyJudge.timeoutMs", value: timeoutMs }), /1000 到 30000/);
+    }
+
+    await withTempEnv("FRONT_MODE=legacy\n", async (envPath) => {
+        const store = createConfigStore({ envPath, environment: {} });
+        assert.equal((await store.updatePublicConfig({ field: "replyJudge.model", value: "Qwen/Qwen3.5-4B" })).ok, true);
+        assert.equal((await store.updatePublicConfig({ field: "replyJudge.timeoutMs", value: 15_000 })).ok, true);
+        const saved = await readFile(envPath, "utf8");
+        assert.match(saved, /REPLY_JUDGE_MODEL=Qwen\/Qwen3\.5-4B/);
+        assert.match(saved, /REPLY_JUDGE_TIMEOUT_MS=15000/);
+        assert.deepEqual(store.getPublicConfig().replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000 });
+    });
 });
 
 test("Front mode defaults to legacy and does not require Reply Judge configuration", () => {

@@ -114,7 +114,7 @@ TUI 快捷键：
 
 ### 运行时热重载
 
-TUI 保存的 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Provider 凭据及 Base URL、BOT_LOG_LEVEL、BOT_LOOP_GUARD_MAX_CYCLES 和 AUTOMATED_PEER_IDS 会重建配置快照并立即应用。外部编辑器修改 `.env` 也会监听并热重载。GPT、DeepSeek 与 Reply Judge Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQBOT_APP_ID 和 QQBOT_APP_SECRET 变化需要重启；TUI 不会自动重启进程。
+TUI 设置页可保存 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Reply Judge 模型与超时时间、BOT_LOG_LEVEL、BOT_LOOP_GUARD_MAX_CYCLES 和 AUTOMATED_PEER_IDS。API Key 与 Provider Base URL 仍只通过 `.env` 管理，不会暴露给 TUI。TUI 保存配置或外部编辑 `.env` 都会重建配置快照并立即热加载。GPT、DeepSeek 与 Reply Judge Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQBOT_APP_ID 和 QQBOT_APP_SECRET 变化需要重启；TUI 不会自动重启进程。
 
 ### 错误码
 

@@ -12,6 +12,8 @@ export const DEFAULT_DEEPSEEK_REASONING_EFFORT: ReasoningEffort = "high";
 export const DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES = 4;
 export const DEFAULT_REPLY_JUDGE_TIMEOUT_MS = 5_000;
 export const DEFAULT_FRONT_MODE: FrontMode = "legacy";
+const MIN_REPLY_JUDGE_TIMEOUT_MS = 1_000;
+const MAX_REPLY_JUDGE_TIMEOUT_MS = 30_000;
 
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh"];
 const VERBOSITIES: readonly ModelVerbosity[] = ["low", "medium", "high"];
@@ -105,7 +107,7 @@ function parseReplyJudgeTimeout(value: string | undefined): number {
     if (!value?.trim()) return DEFAULT_REPLY_JUDGE_TIMEOUT_MS;
     if (!/^\d+$/.test(value.trim())) return DEFAULT_REPLY_JUDGE_TIMEOUT_MS;
     const timeoutMs = Number(value.trim());
-    return Number.isSafeInteger(timeoutMs) && timeoutMs >= 1_000 && timeoutMs <= 30_000
+    return Number.isSafeInteger(timeoutMs) && timeoutMs >= MIN_REPLY_JUDGE_TIMEOUT_MS && timeoutMs <= MAX_REPLY_JUDGE_TIMEOUT_MS
         ? timeoutMs
         : DEFAULT_REPLY_JUDGE_TIMEOUT_MS;
 }
@@ -165,6 +167,10 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 export function toPublicConfig(config: AppConfig): PublicConfig {
     return {
         aiProvider: config.ai.provider,
+        replyJudge: {
+            model: config.replyJudge.model ?? "",
+            timeoutMs: config.replyJudge.timeoutMs,
+        },
         gpt: {
             model: config.ai.gpt.model,
             reasoningEffort: config.ai.gpt.reasoningEffort,
@@ -190,13 +196,21 @@ export function validatePublicConfigPatch(patch: PublicConfigPatch): string {
             if (patch.value !== "gpt" && patch.value !== "deepseek") throw new Error("模型提供商配置无效");
             return "AI_PROVIDER";
         case "gpt.model":
-        case "deepseek.model": {
+        case "deepseek.model":
+        case "replyJudge.model": {
             const model = patch.value.trim();
             if (!model || model.length > 128 || /[\r\n]/.test(model)) {
                 throw new Error("模型名称不能为空、不能换行，且长度不能超过 128 个字符");
             }
-            return patch.field === "gpt.model" ? "CODEX_MODEL" : "DEEPSEEK_MODEL";
+            if (patch.field === "gpt.model") return "CODEX_MODEL";
+            if (patch.field === "deepseek.model") return "DEEPSEEK_MODEL";
+            return "REPLY_JUDGE_MODEL";
         }
+        case "replyJudge.timeoutMs":
+            if (!Number.isSafeInteger(patch.value) || patch.value < MIN_REPLY_JUDGE_TIMEOUT_MS || patch.value > MAX_REPLY_JUDGE_TIMEOUT_MS) {
+                throw new Error("Reply Judge 超时时间必须是 1000 到 30000 毫秒之间的安全整数");
+            }
+            return "REPLY_JUDGE_TIMEOUT_MS";
         case "gpt.reasoningEffort":
         case "deepseek.reasoningEffort":
             if (!REASONING_EFFORTS.includes(patch.value)) throw new Error("推理强度配置无效");

@@ -77,6 +77,8 @@ export function settingsFieldLabel(field: SettingsField): string {
         "gpt.verbosity": "GPT 输出详细度",
         "deepseek.model": "DeepSeek 模型",
         "deepseek.reasoningEffort": "DeepSeek 推理强度",
+        "replyJudge.model": "模型",
+        "replyJudge.timeoutMs": "超时时间",
         logLevel: "日志级别",
         "botLoopGuard.maxCycles": "自动互聊上限",
     } satisfies Record<SettingsField, string>)[field];

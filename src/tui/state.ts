@@ -1,6 +1,6 @@
 import type { ProviderErrorNotice } from "../control/provider-error.js";
 import type { AutomatedPeerMutationResult, AutomatedPeerSummary } from "../control/automated-peers.js";
-import type { ConfigUpdateResult, PublicConfigPatch } from "../config/config-types.js";
+import type { ConfigUpdateResult, ModelProviderId, PublicConfigPatch } from "../config/config-types.js";
 import type { TuiPage } from "./types.js";
 
 export type TuiFocus = "sidebar" | "main";
@@ -13,12 +13,22 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     "gpt.verbosity",
     "deepseek.model",
     "deepseek.reasoningEffort",
+    "replyJudge.model",
+    "replyJudge.timeoutMs",
     "logLevel",
     "botLoopGuard.maxCycles",
 ];
 
-export type ConfigSelectField = Exclude<SettingsField, "gpt.model" | "deepseek.model" | "botLoopGuard.maxCycles">;
-export type ConfigTextField = "gpt.model" | "deepseek.model" | "botLoopGuard.maxCycles";
+export type ConfigSelectField = Exclude<SettingsField, "gpt.model" | "deepseek.model" | "replyJudge.model" | "replyJudge.timeoutMs" | "botLoopGuard.maxCycles">;
+export type ConfigTextField = "gpt.model" | "deepseek.model" | "replyJudge.model" | "replyJudge.timeoutMs" | "botLoopGuard.maxCycles";
+export type SettingsRow = SettingsField | "provider" | "apply";
+
+export function settingsRows(provider: ModelProviderId): SettingsRow[] {
+    const modelFields: SettingsField[] = provider === "gpt"
+        ? ["gpt.model", "gpt.reasoningEffort", "gpt.verbosity"]
+        : ["deepseek.model", "deepseek.reasoningEffort"];
+    return ["provider", ...modelFields, "apply", "logLevel", "botLoopGuard.maxCycles", "replyJudge.model", "replyJudge.timeoutMs"];
+}
 export interface ConfigOption {
     value: string;
     label: string;

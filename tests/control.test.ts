@@ -23,6 +23,7 @@ const status: RuntimeStatus = {
 };
 const config: PublicConfig = {
     aiProvider: "deepseek",
+    replyJudge: { model: "judge-test", timeoutMs: 5_000 },
     gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: false },
     deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
     logLevel: "info",
