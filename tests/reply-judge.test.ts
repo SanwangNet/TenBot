@@ -540,6 +540,53 @@ test("Reply Judge config is independent from the main model", () => {
     assert.notEqual(config.replyJudge.model, config.ai.deepseek.model);
 });
 
+test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token cap and no retry", async () => {
+    let requestCount = 0;
+    let requestBody: Record<string, unknown> | undefined;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        requestCount++;
+        assert.match(String(input), /chat\/completions$/);
+        assert.equal(typeof init?.body, "string");
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({
+            id: "chatcmpl-test",
+            object: "chat.completion",
+            created: 1,
+            model: "Qwen3.5-test",
+            choices: [{
+                index: 0,
+                message: { role: "assistant", content: "{\"reply\":true}" },
+                finish_reason: "stop",
+            }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+        const judge = new OpenAICompatibleReplyJudge(() => ({
+            provider: "openai-compatible",
+            model: "Qwen3.5-test",
+            baseURL: "https://api.siliconflow.example/v1",
+            apiKey: "test-only-key",
+            timeoutMs: 1_000,
+            prompt: { content: "test prompt", revision: 1, loadedAt: new Date(0).toISOString() },
+        }));
+        const decision = await judge.judge({
+            conversation: [],
+            currentMessage: { speaker: "member", content: "test" },
+            signals: { nameMention: false, conversationActive: false, quotedBot: false },
+        });
+
+        assert.deepEqual(decision, { reply: true });
+        assert.equal(requestCount, 1, "Reply Judge does not retry provider requests");
+        assert.equal(requestBody?.enable_thinking, false);
+        assert.equal(requestBody?.max_tokens, 32);
+        assert.equal(requestBody?.temperature, 0);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
 test("an active soft Cycle bypasses Judge for follow-up context and keeps NO_REPLY optional", async () => {
     configureMemberRepository(new MemoryMemberRepository());
     const state = fakeBot();

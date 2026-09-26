@@ -40,14 +40,19 @@ export class OpenAICompatibleReplyJudge implements ReplyJudge {
                 timeout: snapshot.timeoutMs,
                 maxRetries: 0,
             });
-            const response = await client.chat.completions.create({
+            const completionRequest: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming & {
+                enable_thinking: false;
+            } = {
                 model,
                 temperature: 0,
+                max_tokens: 32,
+                enable_thinking: false,
                 messages: [
                     { role: "system", content: snapshot.prompt.content },
                     { role: "user", content: JSON.stringify(request) },
                 ],
-            });
+            };
+            const response = await client.chat.completions.create(completionRequest);
             const content = response.choices[0]?.message?.content;
             if (typeof content !== "string") return parseReplyJudgeOutput("");
             const decision = parseReplyJudgeOutput(content);
