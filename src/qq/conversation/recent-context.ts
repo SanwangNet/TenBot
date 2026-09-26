@@ -1,4 +1,4 @@
-const MAX_MESSAGES = 20;
+const MAX_MESSAGES = 100;
 const CONTEXT_TTL_MS =
     30 * 60 * 1000;
 
