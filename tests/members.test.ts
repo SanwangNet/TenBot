@@ -16,7 +16,7 @@ import { createTenBotControl } from "../src/control/tenbot-control.js";
 import type { RuntimeStatus } from "../src/control/runtime-status.js";
 import type { PublicConfig } from "../src/config/config-types.js";
 import {
-    buildKnownMembersContext, configureMemberRepository, rememberKnownMember,
+    buildKnownMembersContext, configureMemberRepository, rememberKnownMember, MAX_MODEL_KNOWN_MEMBERS,
 } from "../src/qq/conversation/known-members.js";
 import { renderStructuredMentions } from "../src/qq/reply/mentions.js";
 
@@ -131,6 +131,51 @@ test("service learns author and mentions, skips bot, and resolves only unique na
 
     await rememberKnownMember({ ...incoming, authorIsBot: true, author: { member_openid: "bot-2", username: "小尘" }, mentions: [] });
     assert.equal(await repository.findByOpenid("service-group", "bot-2"), null);
+});
+
+test("main-model member context deduplicates IDs and keeps the 200 most recently active", async () => {
+    const base = new MemoryMemberRepository();
+    for (let index = 0; index < 205; index++) {
+        await base.upsertMember({
+            groupOpenid: "large-group",
+            memberOpenid: "openid-secret-" + index,
+            username: "member-" + index,
+            role: index === 204 ? "admin" : "member",
+            firstSeenAt: index,
+            lastSeenAt: index,
+            updatedAt: index,
+        });
+    }
+    class DuplicateRepository extends MemoryMemberRepository {
+        override async listByGroup(groupOpenid: string) {
+            const members = await base.listByGroup(groupOpenid);
+            const newest = members.find((member) => member.memberOpenid === "openid-secret-204")!;
+            return [...members, { ...newest, username: "最新昵称", lastSeenAt: 206 }];
+        }
+        override async findByOpenid(groupOpenid: string, memberOpenid: string) {
+            return base.findByOpenid(groupOpenid, memberOpenid);
+        }
+        override async findByUsername(groupOpenid: string, username: string) {
+            return base.findByUsername(groupOpenid, username);
+        }
+        override async upsertMember(member: KnownMember) {
+            return base.upsertMember(member);
+        }
+        override async listAll() {
+            return base.listAll();
+        }
+    }
+    configureMemberRepository(new DuplicateRepository());
+    const incoming = message("large-group", { member_openid: "other", username: "访客" });
+    const context = await buildKnownMembersContext(incoming);
+    const lines = context.split("<known_group_members>")[1]!.split("</known_group_members>")[0]!
+        .split("\n").filter(Boolean);
+    assert.equal(MAX_MODEL_KNOWN_MEMBERS, 200);
+    assert.equal(lines.length, 200);
+    assert.match(lines[0]!, /^最新昵称（管理员）/);
+    assert.match(context, /member-5（成员）/);
+    assert.doesNotMatch(context, /member-4（成员）/);
+    assert.doesNotMatch(context, /openid-secret|firstSeenAt|updatedAt|groupCount/);
 });
 
 test("/members reads the configured repository for the current group", async () => {

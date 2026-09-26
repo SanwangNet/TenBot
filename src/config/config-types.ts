@@ -24,6 +24,13 @@ export interface AppConfig {
             reasoningEffort: ReasoningEffort;
         };
     };
+    replyJudge: {
+        provider?: "openai-compatible";
+        model?: string;
+        baseURL?: string;
+        apiKey?: string;
+        timeoutMs: number;
+    };
     logging: {
         level: LogLevel;
     };

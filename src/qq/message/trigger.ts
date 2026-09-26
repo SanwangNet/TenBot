@@ -1,15 +1,12 @@
 import type { NormalizedQqMessage } from "./normalize-message.js";
 
-export type TriggerKind = "hard-mention" | "name-soft" | "active-soft";
+export type TriggerKind = "hard-mention" | "name-soft" | "active-soft" | "quoted-bot" | "reply-judge";
 
 export interface MessageTriggerDecision {
     isGroup: boolean;
     isAtBot: boolean;
     mentionedByName: boolean;
     activeConversation: boolean;
-    hardTrigger: boolean;
-    shouldReply: boolean;
-    allowNoReply: boolean;
     triggerKind: TriggerKind | null;
 }
 
@@ -27,11 +24,9 @@ export function decideMessageTrigger(
         message.mentions.some((mention) => mention.isSelf);
 
     const mentionedByName = message.content.includes("小尘");
-    const hardTrigger = isAtBot;
-    const softTrigger = mentionedByName || activeConversation;
-    const shouldReply = !isGroup || hardTrigger || softTrigger;
-    const triggerKind: TriggerKind | null = !isGroup ? null
-        : isAtBot ? "hard-mention"
+    const quotedBot = message.quotedBot === true;
+    const triggerKind: TriggerKind | null = isAtBot ? "hard-mention"
+          : quotedBot ? "quoted-bot"
           : mentionedByName ? "name-soft"
             : activeConversation ? "active-soft" : null;
 
@@ -40,9 +35,6 @@ export function decideMessageTrigger(
         isAtBot,
         mentionedByName,
         activeConversation,
-        hardTrigger,
-        shouldReply,
-        allowNoReply: isGroup && !hardTrigger,
         triggerKind,
     };
 }

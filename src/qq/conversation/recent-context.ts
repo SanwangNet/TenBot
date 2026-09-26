@@ -28,6 +28,7 @@ interface HistoryMessage {
     content: string;
     images?: HistoryImage[];
     quote?: QuotedMessage;
+    isBotReply?: boolean;
 }
 
 interface ConversationMemory {
@@ -332,18 +333,42 @@ export function rememberBotReply(
         refIdx: sent?.refIdx,
         speaker: "小尘",
         content: cleaned,
+        isBotReply: true,
     });
 }
 
 /** Resolve a QQ reference index only inside this conversation's recent memory. */
 export function findRecentQuotedMessage(message: NormalizedQqMessage, refIdx: string):
-    { id?: string; authorName: string; content: string } | undefined {
+    { id?: string; authorName: string; content: string; isBotReply: boolean } | undefined {
     const items = getMemory(message).messages;
     for (let index = items.length - 1; index >= 0; index--) {
         const item = items[index];
-        if (item.refIdx === refIdx) return { id: item.id, authorName: item.speaker, content: item.content };
+        if (item.refIdx === refIdx) {
+            return { id: item.id, authorName: item.speaker, content: item.content, isBotReply: item.isBotReply === true };
+        }
     }
     return undefined;
+}
+
+/** Compact recent conversation for Reply Judge, excluding the already committed current message. */
+export function getReplyJudgeHistory(message: NormalizedQqMessage, limit = 8):
+    Array<{ speaker: string; content: string }> {
+    const items = getMemory(message).messages;
+    if (!items.length) return [];
+    let currentIndex = -1;
+    for (let index = items.length - 1; index >= 0; index--) {
+        const item = items[index];
+        if ((message.id && item.id === message.id) ||
+            (message.source.msgIdx && item.refIdx === message.source.msgIdx)) {
+            currentIndex = index;
+            break;
+        }
+    }
+    const beforeCurrent = currentIndex >= 0 ? items.slice(0, currentIndex) : items.slice(0, -1);
+    return beforeCurrent.slice(-Math.max(0, limit)).map((item) => ({
+        speaker: item.speaker,
+        content: item.content.slice(0, 400),
+    }));
 }
 
 /*

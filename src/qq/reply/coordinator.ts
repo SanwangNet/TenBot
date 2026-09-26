@@ -20,9 +20,10 @@ import {
     type AutomatedPeerLoopGuard,
 } from "../conversation/automated-peer.js";
 import { getConversationKey, getMessageRevision, rememberBotReply, removeMessageFromContext } from "../conversation/recent-context.js";
-import { getConversationGeneration, isConversationActive, markConversationActive, stopConversation } from "../conversation/engagement.js";
+import { getConversationGeneration, markConversationActive, stopConversation } from "../conversation/engagement.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
 import type { TriggerKind } from "../message/trigger.js";
+import { wakeLevelRank, type WakeAdmission, type WakeLevel, type WakeReason } from "../../front/wake-level.js";
 import { prepareAiReply } from "./renderer.js";
 import { getTriggerMessageId, sendAiReply, sendTimeoutReply } from "./sender.js";
 
@@ -35,11 +36,20 @@ const AI_ERROR_REPLY = "\u521a\u624d\u8111\u5b50\u77ed\u8def\u4e86\u4e00\u4e0b\u
 
 export type TriggerPriority = 0 | 1 | 2 | 3;
 export interface ReplyCycleAnchor { revision: number; message: NormalizedQqMessage }
-interface TrailingUpdate { anchor: ReplyCycleAnchor; priority: TriggerPriority }
+interface TrailingUpdate {
+    anchor: ReplyCycleAnchor;
+    priority: TriggerPriority;
+    wakeLevel?: WakeLevel;
+    wakeReason?: WakeReason;
+    admitted?: boolean;
+}
 export interface AttemptInput { aiInput: string; imageUrls: string[]; refs?: Map<string, string>; memeSnapshot?: MemeRuntimeSnapshot }
 export interface AttemptBuildContext {
     snapshotRevision: number;
     allowNoReply: boolean;
+    wakeLevel: WakeLevel;
+    wakeReason?: WakeReason;
+    admission?: WakeAdmission;
     triggerPriority: TriggerPriority;
     originTriggerKind?: TriggerKind;
     effectiveTriggerKind?: TriggerKind;
@@ -55,14 +65,15 @@ export interface ReplyRequest {
     aiInput: string;
     imageUrls: string[];
     isGroup: boolean;
-    allowNoReply: boolean;
+    wakeLevel: WakeLevel;
+    wakeReason?: WakeReason;
+    admission?: WakeAdmission;
     triggerKind?: TriggerKind;
     messageRevision?: number;
     onWebSearchStart: () => void | Promise<void>;
     triggerPriority?: TriggerPriority;
     isAtBot?: boolean;
     mentionedByName?: boolean;
-    shouldStartCycle?: boolean;
     buildAttempt?: (message: NormalizedQqMessage, context: AttemptBuildContext) => Promise<AttemptInput>;
 }
 export interface ReplyCoordinatorDependencies {
@@ -163,6 +174,9 @@ interface Cycle {
     consumedRevision: number;
     latestRequest: ReplyRequest;
     priority: TriggerPriority;
+    wakeLevel: WakeLevel;
+    wakeReason?: WakeReason;
+    admission?: WakeAdmission;
     originTriggerKind?: TriggerKind;
     effectiveTriggerKind?: TriggerKind;
     originAnchor: ReplyCycleAnchor;
@@ -172,9 +186,6 @@ interface Cycle {
     engagementGeneration?: number;
     hasAtBot: boolean;
     hasName: boolean;
-    trailingPriority: TriggerPriority;
-    trailingAtBot: boolean;
-    trailingName: boolean;
     trailingUpdates: TrailingUpdate[];
     triggerIds: Set<string>;
     seenMessageIds: Set<string>;
@@ -255,9 +266,23 @@ function extendForWebSearch(cycle: Cycle): void {
     logger.info("[Cycle] Web Search deadline=" + Math.round(extended / 1000) + "s from cycle start");
 }
 function priorityOf(request: ReplyRequest): TriggerPriority {
-    if (request.triggerKind) return request.triggerKind === "hard-mention" ? 3
-        : request.triggerKind === "name-soft" ? 2 : 1;
-    return request.triggerPriority ?? (request.isGroup ? (request.allowNoReply ? 1 : 3) : 3);
+    if (request.wakeLevel === "hard") return 3;
+    if (request.wakeLevel === "pass") return 0;
+    return request.wakeReason === "name-soft" || request.wakeReason === "quoted-bot" ? 2 : 1;
+}
+function wakeReasonOf(request: ReplyRequest, level: WakeLevel): WakeReason | undefined {
+    if (request.wakeReason) return request.wakeReason;
+    if (request.triggerKind === "name-soft") return "name-soft";
+    if (request.triggerKind === "active-soft") return "active-soft";
+    if (request.triggerKind === "quoted-bot") return "quoted-bot";
+    if (level === "hard") return "hard-mention";
+    if (level === "soft") return "reply-judge";
+    return undefined;
+}
+function triggerKindOf(request: ReplyRequest, priority: TriggerPriority): TriggerKind | undefined {
+    if (request.wakeReason) return request.wakeReason;
+    if (request.triggerKind) return request.triggerKind;
+    return kindOf(priority, request.isGroup);
 }
 function anchorOf(request: ReplyRequest): ReplyCycleAnchor {
     return { revision: request.messageRevision ?? getMessageRevision(request.message), message: request.message };
@@ -277,15 +302,28 @@ function upgradeTrigger(cycle: Cycle, request: ReplyRequest, priority: TriggerPr
     if (priority > cycle.priority) {
         const previous = cycle.effectiveTriggerKind;
         cycle.priority = priority;
-        cycle.effectiveTriggerKind = kindOf(priority, request.isGroup);
+        cycle.effectiveTriggerKind = triggerKindOf(request, priority);
         if (previous && cycle.effectiveTriggerKind) logger.info("[Cycle] trigger upgrade " + previous + " -> " + cycle.effectiveTriggerKind);
     }
     cycle.hasAtBot ||= request.isAtBot === true;
     cycle.hasName ||= request.mentionedByName === true;
 }
-function canNoReply(cycle: Cycle): boolean { return cycle.latestRequest.isGroup && cycle.effectiveTriggerKind !== "hard-mention"; }
+function applyWakeAdmission(cycle: Cycle, request: ReplyRequest, priority: TriggerPriority, incoming: ReplyCycleAnchor): void {
+    const incomingLevel = request.wakeLevel;
+    const incomingReason = wakeReasonOf(request, incomingLevel);
+    if (wakeLevelRank(incomingLevel) > wakeLevelRank(cycle.wakeLevel)) {
+        cycle.wakeLevel = incomingLevel;
+        cycle.wakeReason = incomingReason;
+        cycle.admission = request.admission ?? (incomingLevel === "hard" ? "hard-mention" : "reply-judge");
+    } else if (incomingLevel === cycle.wakeLevel && priority > cycle.priority) {
+        cycle.wakeReason = incomingReason;
+    }
+    upgradeTrigger(cycle, request, priority, incoming);
+}
+function canNoReply(cycle: Cycle): boolean { return cycle.wakeLevel === "soft"; }
 function buildAttemptContext(cycle: Cycle, revision: number): AttemptBuildContext {
-    return { snapshotRevision: revision, allowNoReply: canNoReply(cycle), triggerPriority: cycle.priority,
+    return { snapshotRevision: revision, allowNoReply: canNoReply(cycle), wakeLevel: cycle.wakeLevel,
+        wakeReason: cycle.wakeReason, admission: cycle.admission, triggerPriority: cycle.priority,
         originTriggerKind: cycle.originTriggerKind, effectiveTriggerKind: cycle.effectiveTriggerKind,
         originAnchor: cycle.originAnchor, effectiveAnchor: cycle.effectiveAnchor,
         newerMessages: cycle.updates.filter((item) =>
@@ -335,20 +373,22 @@ function createCycle(request: ReplyRequest, deps: Dependencies, priority: Trigge
         }
     }
     const revision = request.messageRevision ?? getMessageRevision(request.message);
+    const wakeLevel = request.wakeLevel;
     const cycle: Cycle = {
         cycleId: randomUUID(), key: getConversationKey(request.message),
         anchorMessageId: getTriggerMessageId(request.message), anchorRevision: revision,
         interruptionCount: 0, timeoutRetryCount: 0, attemptNumber: 0, cycleStartedAt: started,
         deadlineAt: started + (deps.timeoutMs ?? AI_REQUEST_TIMEOUT_MS),
         webSearchTriggered: false, consumedRevision: revision - 1,
-        latestRequest: request, priority, originTriggerKind: kindOf(originPriority, request.isGroup),
-        effectiveTriggerKind: kindOf(priority, request.isGroup),
+        latestRequest: request, priority, originTriggerKind: triggerKindOf(request, originPriority),
+        effectiveTriggerKind: triggerKindOf(request, priority),
+        wakeLevel, wakeReason: wakeReasonOf(request, wakeLevel),
+        admission: request.admission ?? (wakeLevel === "hard" ? "hard-mention" : "reply-judge"),
         originAnchor, effectiveAnchor, updates: trailingUpdates.slice(1).map((item) => item.anchor),
         lastAttemptSnapshotRevision: originAnchor.revision,
         engagementGeneration: request.isGroup ? getConversationGeneration(request.message) : undefined,
         hasAtBot: request.isAtBot === true,
-        hasName: request.mentionedByName === true, trailingPriority: 0,
-        trailingAtBot: false, trailingName: false, trailingUpdates: [],
+        hasName: request.mentionedByName === true, trailingUpdates: [],
         triggerIds: new Set(), seenMessageIds: new Set(),
         deps, cancelled: false, finalizing: false, budgetLogged: false,
         done, resolveDone,
@@ -374,13 +414,18 @@ function updateCycle(cycle: Cycle, request: ReplyRequest): void {
     const incoming = anchorOf(request);
     const revision = incoming.revision;
     const priority = priorityOf(request);
+    const wakeLevel = request.wakeLevel;
+    const admitted = wakeLevel !== "pass";
     cycle.latestRequest = request;
     addTrigger(cycle, request.message, priority);
     if (revision <= cycle.consumedRevision) return;
-    cycle.trailingPriority = Math.max(cycle.trailingPriority, priority) as TriggerPriority;
-    cycle.trailingAtBot ||= request.isAtBot === true;
-    cycle.trailingName ||= request.mentionedByName === true;
-    cycle.trailingUpdates.push({ anchor: incoming, priority });
+    cycle.trailingUpdates.push({
+        anchor: incoming,
+        priority,
+        wakeLevel,
+        wakeReason: wakeReasonOf(request, wakeLevel),
+        admitted,
+    });
 
     const attempt = cycle.currentAttempt;
     const currentCanRestart = !cycle.finalizing && cycle.interruptionCount < MAX_GENERATION_INTERRUPTS &&
@@ -388,7 +433,8 @@ function updateCycle(cycle: Cycle, request: ReplyRequest): void {
             attempt.status === "running");
     if (currentCanRestart) {
         cycle.updates.push(incoming);
-        upgradeTrigger(cycle, request, priority, incoming);
+        if (admitted) applyWakeAdmission(cycle, request, priority, incoming);
+        else upgradeTrigger(cycle, request, 0, incoming);
     }
     if (cycle.finalizing || !attempt || attempt.status !== "running") return;
     if (cycle.interruptionCount >= MAX_GENERATION_INTERRUPTS) {
@@ -406,6 +452,62 @@ function updateCycle(cycle: Cycle, request: ReplyRequest): void {
         " by revision=" + revision + " interrupt=" + cycle.interruptionCount + "/3");
     attempt.controller.abort();
     resolveStop(attempt, "interrupted");
+}
+
+/** Commits context changes and interrupts a stale Attempt before Reply Judge network I/O. */
+export function observeConversationUpdate(request: ReplyRequest): void {
+    if (!acceptingCycles) return;
+    const active = cycles.get(getConversationKey(request.message));
+    if (!active) return;
+    updateCycle(active, {
+        ...request,
+        wakeLevel: "pass",
+        wakeReason: undefined,
+        admission: undefined,
+        triggerPriority: 0,
+    });
+}
+
+/** Admits only hard or Judge-accepted soft messages; pass never creates a new Cycle. */
+export function admitConversationWake(
+    request: ReplyRequest,
+    wakeLevel: WakeLevel,
+    wakeReason: WakeReason,
+    dependencies: Dependencies = {},
+): Promise<void> {
+    if (!acceptingCycles || wakeLevel === "pass") {
+        return cycles.get(getConversationKey(request.message))?.done ?? Promise.resolve();
+    }
+    const admission: WakeAdmission = wakeLevel === "hard" ? "hard-mention" : "reply-judge";
+    const acceptedRequest: ReplyRequest = {
+        ...request,
+        wakeLevel,
+        wakeReason,
+        admission,
+        triggerPriority: undefined,
+    };
+    const priority = priorityOf(acceptedRequest);
+    const active = cycles.get(getConversationKey(request.message));
+    if (active) {
+        const messageId = getTriggerMessageId(acceptedRequest.message);
+        const alreadyObserved = Boolean(messageId && active.seenMessageIds.has(messageId));
+        if (alreadyObserved) {
+            active.latestRequest = acceptedRequest;
+            const incoming = anchorOf(acceptedRequest);
+            const queued = active.trailingUpdates.find((item) => item.anchor.revision === incoming.revision);
+            if (queued) {
+                queued.priority = Math.max(queued.priority, priority) as TriggerPriority;
+                queued.wakeLevel = wakeLevel;
+                queued.wakeReason = wakeReason;
+                queued.admitted = true;
+            }
+            applyWakeAdmission(active, acceptedRequest, priority, incoming);
+            return active.done;
+        }
+        updateCycle(active, acceptedRequest);
+        return active.done;
+    }
+    return startNewCycle(acceptedRequest, dependencies, priority);
 }
 function startAttempt(cycle: Cycle, revision: number, refs: Map<string, string>): Attempt {
     let resolve!: (reason: StopReason) => void;
@@ -428,9 +530,6 @@ function startAttempt(cycle: Cycle, revision: number, refs: Map<string, string>)
     cycle.currentAttempt = attempt;
     publishReplyLifecycle(cycle, attempt, { kind: "started" });
     cycle.lastAttemptSnapshotRevision = revision;
-    cycle.trailingPriority = 0;
-    cycle.trailingAtBot = false;
-    cycle.trailingName = false;
     cycle.trailingUpdates = [];
     cycle.budgetLogged = false;
     armAttemptDeadline(cycle, attempt);
@@ -469,6 +568,18 @@ async function sendFailureNotice(request: ReplyRequest, error: TenBotError): Pro
         rememberBotReply(request.message, message, sent);
     }
     catch (sendError) { logger.error(createQqSendError(sendError, 0)); }
+}
+
+/** Front-stage fatal failures use the same public code formatting as Reply Cycle failures. */
+export async function sendFrontFailureNotice(bot: QQBot, message: NormalizedQqMessage, error: TenBotError): Promise<void> {
+    logger.error(error);
+    try {
+        const publicMessage = toPublicErrorMessage(error);
+        const sent = await bot.sendText(message.replyTarget, publicMessage);
+        rememberBotReply(message, publicMessage, sent);
+    } catch (sendError) {
+        logger.error(createQqSendError(sendError, 0));
+    }
 }
 
 function cycleReplyMessage(cycle: Cycle, request: ReplyRequest): NormalizedQqMessage {
@@ -673,20 +784,28 @@ function finishCycle(cycle: Cycle): void {
         const revision = getMessageRevision(cycle.latestRequest.message);
         const trailing = !cycle.cancelled && revision > cycle.consumedRevision;
         const request = cycle.latestRequest;
-        const priority = cycle.trailingPriority || 1;
-        const atBot = cycle.trailingAtBot;
-        const name = cycle.trailingName;
         const trailingUpdates = cycle.trailingUpdates.filter((item) => item.anchor.revision > cycle.consumedRevision);
+        const admittedUpdates = trailingUpdates.filter((item) => item.admitted === true && item.wakeLevel !== "pass");
+        const admittedPriority = admittedUpdates.reduce<number>((highest, item) => Math.max(highest, item.priority), 0);
+        const priority = admittedPriority as TriggerPriority;
+        const atBot = admittedUpdates.some((item) => item.anchor.message.mentions.some((mention) => mention.isSelf) ||
+            item.anchor.message.eventType === "GROUP_AT_MESSAGE_CREATE");
+        const name = admittedUpdates.some((item) => item.anchor.message.displayContent.includes("小尘"));
+        const wakeLevel: WakeLevel = admittedUpdates.some((item) => item.wakeLevel === "hard") ? "hard" : "soft";
+        const wakeReason = admittedUpdates.find((item) => item.wakeLevel === "hard")?.wakeReason ??
+            admittedUpdates[admittedUpdates.length - 1]?.wakeReason ?? "reply-judge";
         logger.info("[Cycle] consumed=" + cycle.consumedRevision + " current=" + revision);
         if (trailing) logger.info("[Cycle] trailing messages=" + (revision - cycle.consumedRevision));
         clearCycle(cycle);
         cycle.resolveDone();
         if (!trailing || cycle.cancelled) return;
-        if (!cycle.trailingPriority && request.isGroup && !isConversationActive(request.message)) return;
-        const followup: ReplyRequest = { ...request, shouldStartCycle: true,
+        if (admittedUpdates.length === 0) return;
+        const followup: ReplyRequest = { ...request,
             triggerPriority: priority, isAtBot: atBot, mentionedByName: name,
-            triggerKind: kindOf(priority, request.isGroup),
-            allowNoReply: request.isGroup && priority < 3 };
+            triggerKind: wakeReason === "quoted-bot" ? "quoted-bot" : kindOf(priority, request.isGroup),
+            wakeLevel,
+            wakeReason,
+            admission: wakeLevel === "hard" ? "hard-mention" : "reply-judge" };
         void startNewCycle(followup, cycle.deps, priority, trailingUpdates, true);
     });
 }
@@ -708,9 +827,6 @@ async function executeCycle(cycle: Cycle): Promise<void> {
                 if (cycle.cancelled) return;
                 if (cycle.latestRequest === request && getMessageRevision(request.message) === revision) break;
             }
-            cycle.trailingPriority = 0;
-            cycle.trailingAtBot = false;
-            cycle.trailingName = false;
             cycle.trailingUpdates = [];
             const attempt = startAttempt(cycle, revision, input.refs ?? new Map());
             const outcome = await runAttempt(cycle, request, input, attempt);
@@ -800,14 +916,12 @@ async function executeCycle(cycle: Cycle): Promise<void> {
 /** Submits committed messages to a per-conversation, single-flight reply cycle. */
 export function coordinateAiReply(request: ReplyRequest, dependencies: Dependencies = {}): Promise<void> {
     if (!acceptingCycles) return Promise.resolve();
-    const key = getConversationKey(request.message);
-    const active = cycles.get(key);
-    if (active) {
-        updateCycle(active, request);
-        return active.done;
+    observeConversationUpdate(request);
+    if (request.wakeLevel === "pass") {
+        return cycles.get(getConversationKey(request.message))?.done ?? Promise.resolve();
     }
-    if (request.shouldStartCycle === false) return Promise.resolve();
-    return startNewCycle(request, dependencies, priorityOf(request));
+    return admitConversationWake(request, request.wakeLevel,
+        wakeReasonOf(request, request.wakeLevel) ?? "reply-judge", dependencies);
 }
 
 function startNewCycle(request: ReplyRequest, dependencies: Dependencies, priority: TriggerPriority,

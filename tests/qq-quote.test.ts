@@ -41,7 +41,8 @@ function bot() {
     return { fake, calls };
 }
 function request(fake: QQBot, message: NormalizedQqMessage) {
-    return { bot: fake, message, aiInput: "", imageUrls: [], isGroup: true, allowNoReply: false,
+    return { bot: fake, message, aiInput: "", imageUrls: [], isGroup: true,
+        wakeLevel: "hard" as const, wakeReason: "hard-mention" as const,
         onWebSearchStart() {},
         buildAttempt: async (current: NormalizedQqMessage) => {
             const snapshot = buildReplyCycleSnapshot(current);
@@ -368,6 +369,7 @@ test("quoted Bot reply is identified from its send response and only direct rela
     const normalized = await normalizeQqMessage(context(b), b);
     assert.equal(normalized.quotedMessage?.authorName, "小尘");
     assert.equal(normalized.quotedMessage?.realMessageId, "bot-real");
+    assert.equal(normalized.quotedBot, true);
     commit(normalized);
     const snapshot = buildReplyCycleSnapshot(normalized);
     assert.match(snapshot.text, /小尘：别急，后端炸了而已，我没死/);
@@ -390,6 +392,7 @@ test("a quote of a quoted message renders only the direct relation for the newes
     await middleware(ctxC, async () => {});
     const c = await normalizeQqMessage(ctxC, rawC);
     assert.deepEqual(c.quotedMessage, { authorName: "用户", content: "B 回答", realMessageId: "real-B" });
+    assert.equal(c.quotedBot, false);
     assert.equal(c.quotedMessage?.content?.includes("A 原话"), false);
     commit(c);
     assert.match(buildReplyCycleSnapshot(c).text, /C 追问\n↳ 引用 m\d+/);

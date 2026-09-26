@@ -9,6 +9,7 @@ export const DEFAULT_GPT_REASONING_EFFORT: ReasoningEffort = "high";
 export const DEFAULT_GPT_VERBOSITY: ModelVerbosity = "high";
 export const DEFAULT_DEEPSEEK_REASONING_EFFORT: ReasoningEffort = "high";
 export const DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES = 4;
+export const DEFAULT_REPLY_JUDGE_TIMEOUT_MS = 5_000;
 
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh"];
 const VERBOSITIES: readonly ModelVerbosity[] = ["low", "medium", "high"];
@@ -68,6 +69,40 @@ function parseProvider(value: string | undefined): ModelProviderId {
     throw new Error(`不支持的 AI_PROVIDER: ${normalized}`);
 }
 
+function parseReplyJudgeProvider(value: string | undefined): "openai-compatible" | undefined {
+    const normalized = value?.trim().toLowerCase();
+    if (!normalized) return undefined;
+    if (normalized === "openai-compatible") return normalized;
+    throw new Error("不支持的 REPLY_JUDGE_PROVIDER");
+}
+
+function parseReplyJudgeBaseURL(value: string | undefined): string | undefined {
+    const normalized = value?.trim();
+    if (!normalized) return undefined;
+    try {
+        const url = new URL(normalized);
+        if (
+            (url.protocol !== "https:" && url.protocol !== "http:") ||
+            url.username ||
+            url.password ||
+            url.search ||
+            url.hash
+        ) return undefined;
+        return url.toString().replace(/\/$/, "");
+    } catch {
+        return undefined;
+    }
+}
+
+function parseReplyJudgeTimeout(value: string | undefined): number {
+    if (!value?.trim()) return DEFAULT_REPLY_JUDGE_TIMEOUT_MS;
+    if (!/^\d+$/.test(value.trim())) return DEFAULT_REPLY_JUDGE_TIMEOUT_MS;
+    const timeoutMs = Number(value.trim());
+    return Number.isSafeInteger(timeoutMs) && timeoutMs >= 1_000 && timeoutMs <= 30_000
+        ? timeoutMs
+        : DEFAULT_REPLY_JUDGE_TIMEOUT_MS;
+}
+
 export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     const provider = parseProvider(env.AI_PROVIDER);
     return {
@@ -90,6 +125,13 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
                 model: parseModelName(env.DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL),
                 reasoningEffort: parseReasoningEffort(env.DEEPSEEK_REASONING_EFFORT, DEFAULT_DEEPSEEK_REASONING_EFFORT),
             },
+        },
+        replyJudge: {
+            provider: parseReplyJudgeProvider(env.REPLY_JUDGE_PROVIDER),
+            model: parseModelName(env.REPLY_JUDGE_MODEL, ""),
+            baseURL: parseReplyJudgeBaseURL(env.REPLY_JUDGE_BASE_URL),
+            apiKey: env.REPLY_JUDGE_API_KEY,
+            timeoutMs: parseReplyJudgeTimeout(env.REPLY_JUDGE_TIMEOUT_MS),
         },
         logging: { level: parseLogLevel(env.BOT_LOG_LEVEL) },
         botLoopGuard: {

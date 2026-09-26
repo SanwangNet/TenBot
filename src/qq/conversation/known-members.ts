@@ -4,6 +4,7 @@ import { logger, truncateLogText } from "../../shared/logger.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
 
 let repository: MemberRepository = new MemoryMemberRepository();
+export const MAX_MODEL_KNOWN_MEMBERS = 200;
 
 /** The Node entry point injects SQLite; a future Worker entry point can inject D1. */
 export function configureMemberRepository(next: MemberRepository): void {
@@ -91,17 +92,29 @@ export async function findMembersByName(groupOpenid: string | undefined, usernam
 }
 
 export async function buildKnownMembersContext(message: NormalizedQqMessage): Promise<string> {
-    const members = (await getKnownMembers(message)).slice(0, 20);
+    const newestById = new Map<string, KnownMember>();
+    for (const member of await getKnownMembers(message)) {
+        const previous = newestById.get(member.memberOpenid);
+        if (!previous || member.lastSeenAt > previous.lastSeenAt) {
+            newestById.set(member.memberOpenid, member);
+        }
+    }
+    const members = [...newestById.values()]
+        .sort((left, right) => right.lastSeenAt - left.lastSeenAt ||
+            left.memberOpenid.localeCompare(right.memberOpenid))
+        .slice(0, MAX_MODEL_KNOWN_MEMBERS);
     if (!members.length) return "";
     const counts = new Map<string, number>();
     const seen = new Map<string, number>();
-    for (const member of members) counts.set(member.username, (counts.get(member.username) ?? 0) + 1);
+    const names = members.map((member) => member.username.replace(/[\r\n]/g, " ").trim().slice(0, 60));
+    for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
     const lines = members.map((member) => {
-        const ordinal = (seen.get(member.username) ?? 0) + 1;
-        seen.set(member.username, ordinal);
-        const duplicate = (counts.get(member.username) ?? 0) > 1
-            ? "；同名成员 " + ordinal + "/" + counts.get(member.username) : "";
-        return member.username + "（" + roleName(member.role) + duplicate + "）";
+        const name = member.username.replace(/[\r\n]/g, " ").trim().slice(0, 60);
+        const ordinal = (seen.get(name) ?? 0) + 1;
+        seen.set(name, ordinal);
+        const duplicate = (counts.get(name) ?? 0) > 1
+            ? "；同名成员 " + ordinal + "/" + counts.get(name) : "";
+        return name + "（" + roleName(member.role) + duplicate + "）";
     });
     return [
         "<known_group_members>", ...lines, "</known_group_members>", "",

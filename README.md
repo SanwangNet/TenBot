@@ -5,7 +5,7 @@ TenBot 是 SanWang 内部使用的 QQ Bot，使用 TypeScript、Node.js 和 QQ �
 ## 功能
 
 - **本地命令**：命令由 Node.js 在本地执行，不会进入 AI 对话。未知的斜杠命令也会收到本地提示。
-- **群聊触发**：@ 小尘会触发回复；提到“小尘”或继续活跃会话属于软触发，模型可以选择不回复。私聊消息进入回复流程。
+- **Front / Reply Judge**：显式 @ 小尘由 Runtime 本地判为 hard 并跳过 Judge，主模型必须回复。其他正常群聊和私聊消息先经过独立 Reply Judge；Judge false 为 pass、不调用主模型，Judge true 为 soft，主模型仍可选择 NO_REPLY。Judge 只接受严格的 {"reply":true} 或 {"reply":false} JSON。
 - **Reply Cycle**：每个会话同一时间最多运行一个 AI Attempt。新消息可以中断生成并用最新上下文重试；单个 Cycle 最多处理中断 3 次，之后到来的消息会排入后续 Cycle。普通 Attempt 超时为 30 秒，可在同一 Cycle 重试一次；实际开始网页搜索后，Cycle 总时限最多为 120 秒。
 - **QQ 回复**：模型通过统一的 qq_reply 能力决定回复内容，支持 1～3 条消息、每条消息的引用偏好和已知群成员 @。引用消息 ID 和 QQ API payload 由 Runtime 管理，不会交给模型。
 - **网络梗知识**：本地 memes.json 支持中文、别名、拼音和首字母模糊检索。自动检索最多提供 3 个候选，由模型结合聊天上下文判断是否使用；模型也可调用只读 meme_lookup 查询详情。
@@ -36,6 +36,13 @@ GPT 可选设置 CODEX_MODEL、CODEX_REASONING_EFFORT 和 CODEX_VERBOSITY，默�
 
 DEEPSEEK_BASE_URL 可选，默认值为 https://api.deepseek.com；DEEPSEEK_MODEL 和 DEEPSEEK_REASONING_EFFORT 可选，默认分别为 deepseek-flash 和 high。DeepSeek 当前没有输出详细度配置。未设置 AI_PROVIDER 时使用 GPT；运行时切换由用户在 TUI 显式确认，不会因请求失败自动切换 Provider。
 
+Reply Judge 与主模型 Provider 独立配置。当前通用适配器使用 OpenAI-compatible Chat Completions；仓库没有内置 Jev 地址或凭据。未设置 Judge 配置时，非 hard 消息 fail closed，不会回退到旧触发逻辑：
+
+    REPLY_JUDGE_PROVIDER=openai-compatible
+    REPLY_JUDGE_MODEL=你的判定模型
+    REPLY_JUDGE_BASE_URL=你的兼容 API 地址
+    REPLY_JUDGE_API_KEY=你的判定模型密钥
+
 其他可选设置：
 
 | 变量 | 用途 |
@@ -43,6 +50,7 @@ DEEPSEEK_BASE_URL 可选，默认值为 https://api.deepseek.com；DEEPSEEK_MODE
 | BOT_LOG_LEVEL | 日志级别：info、debug 或 error |
 | AUTOMATED_PEER_IDS | 逗号分隔的已登记自动化账号稳定成员 ID |
 | BOT_LOOP_GUARD_MAX_CYCLES | 每个会话的连续自动账号 AI Cycle 上限，默认 4，必须是大于等于 1 的整数 |
+| REPLY_JUDGE_TIMEOUT_MS | Reply Judge 独立超时，默认 5000 毫秒，接受 1000–30000 毫秒 |
 
 也可以复制 [.env.example](.env.example) 作为配置模板。`.env` 仍是配置持久化来源，TUI 只通过 ConfigStore 修改公开的普通配置；secret 只用于判断“已配置”，不会显示原文或掩码。
 
@@ -106,11 +114,11 @@ TUI 快捷键：
 
 ### 运行时热重载
 
-TUI 保存的 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Provider 凭据及 Base URL、BOT_LOG_LEVEL、BOT_LOOP_GUARD_MAX_CYCLES 和 AUTOMATED_PEER_IDS 会重建配置快照并立即应用。外部编辑器修改 `.env` 也会监听并热重载。GPT 与 DeepSeek Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQBOT_APP_ID 和 QQBOT_APP_SECRET 变化需要重启；TUI 不会自动重启进程。
+TUI 保存的 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Provider 凭据及 Base URL、BOT_LOG_LEVEL、BOT_LOOP_GUARD_MAX_CYCLES 和 AUTOMATED_PEER_IDS 会重建配置快照并立即应用。外部编辑器修改 `.env` 也会监听并热重载。GPT、DeepSeek 与 Reply Judge Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQBOT_APP_ID 和 QQBOT_APP_SECRET 变化需要重启；TUI 不会自动重启进程。
 
 ### 错误码
 
-错误码采用 `Zone:Class_Stage_Reason` 格式，例如 `B:A_OP_TPL`；终止当前回复的错误可能会以裸错误码直接发送到 QQ。
+错误码采用 Zone:Class_Stage_Reason 格式，例如 B:A_OP_TPL。Reply Judge 输出不符合严格 JSON 协议时会记录 F:A_RJ_IPO，QQ 公共错误格式为 ERROR: F:A_RJ_IPO。
 
 ### 鼠标操作
 
@@ -179,6 +187,8 @@ API 密钥、QQ 凭据、完整成员 ID 和消息引用 ID 不会放入 TUI 状
     src/commands/                  本地命令路由
     src/skills/                    Minecraft、Meme 和 QQ 回复能力
     src/ai/                        统一模型接口及内置 Provider
+    src/front/                     Wake Level 与 Reply Judge 前置准入
+    prompts/                       独立 Reply Judge Prompt
     src/ai/plugins/gpt/             GPT 适配与独立 Prompt
     src/ai/plugins/deepseek/        DeepSeek 适配与独立 Prompt
     scripts/meme-update.ts          Meme 资料研究与更新工具

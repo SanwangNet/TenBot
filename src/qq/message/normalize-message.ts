@@ -36,6 +36,7 @@ export interface NormalizedQqMessage {
     timestamp?: string;
     raw: any;
     quotedMessage?: QuotedMessage;
+    quotedBot?: boolean;
 }
 
 function stringField(value: unknown): string | undefined {
@@ -125,6 +126,7 @@ export async function normalizeQqMessage(
         replyTarget: message.replyTarget,
         timestamp: message.timestamp ?? raw?.timestamp,
         raw,
+        quotedBot: false,
     };
     if (message.refMsgIdx) {
         const recent = findRecentQuotedMessage(normalized, message.refMsgIdx);
@@ -149,6 +151,7 @@ export async function normalizeQqMessage(
             content,
             realMessageId: recent?.id ?? (resolved?.entry?.messageId || undefined),
         };
+        normalized.quotedBot = recent?.isBotReply === true;
         if (content) logger.debug("[Quote] resolved inbound reference");
         else logger.debug("[Quote] inbound reference unresolved");
     }

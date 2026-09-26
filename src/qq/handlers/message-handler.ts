@@ -4,6 +4,10 @@ import type {
 } from "@tencent-connect/qqbot-nodejs";
 
 import { buildAiInput, buildReplyPolicy } from "../../ai/input-builder.js";
+import { buildReplyJudgeRequest } from "../../front/build-reply-judge-request.js";
+import type { ReplyJudge } from "../../front/reply-judge.js";
+import type { ReplyCoordinatorDependencies, ReplyRequest } from "../reply/coordinator.js";
+import { TenBotError, isTenBotError } from "../../errors/tenbot-error.js";
 import { routeCommand } from "../../commands/router.js";
 import { projectMemeCandidates } from "../../skills/meme/projection.js";
 import { getMemeRuntimeSnapshot, searchAutoMemeCandidates } from "../../skills/meme/skill.js";
@@ -24,7 +28,7 @@ import {
 import { buildKnownMembersContext, rememberKnownMember } from "../conversation/known-members.js";
 import { normalizeQqMessage } from "../message/normalize-message.js";
 import { decideMessageTrigger, isOnlyQQFace, wantsVision } from "../message/trigger.js";
-import { coordinateAiReply } from "../reply/coordinator.js";
+import { admitConversationWake, observeConversationUpdate, sendFrontFailureNotice } from "../reply/coordinator.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
 
 const SEARCH_NOTICES = [
@@ -55,6 +59,8 @@ export function registerMessageHandler(
     loopGuard: AutomatedPeerLoopGuard = automatedPeerLoopGuard,
     observePeer?: (message: NormalizedQqMessage) => void,
     observeConversationMessage?: (message: NormalizedQqMessage) => void,
+    replyJudge?: ReplyJudge,
+    coordinatorDependencies: ReplyCoordinatorDependencies = {},
 ): void {
     bot.on("message", async (context, message: QQBotInboundMessage) => {
         const normalized = await normalizeQqMessage(context, message);
@@ -108,10 +114,6 @@ export function registerMessageHandler(
 
         const activeConversation = isGroupEvent ? isConversationActive(normalized) : false;
         const trigger = decideMessageTrigger(normalized, activeConversation);
-        const triggerPriority = !trigger.isGroup ? 3
-            : trigger.isAtBot ? 3
-              : trigger.mentionedByName ? 2
-                : trigger.activeConversation ? 1 : 0;
 
         // Filtered QQ faces and local commands never increment revision or interrupt generation.
         const revision = recordIncomingMessageRevision(normalized);
@@ -127,30 +129,20 @@ export function registerMessageHandler(
                 : "[Image] cached");
         }
 
-        if (trigger.shouldReply && input) {
-            const label = trigger.isAtBot ? "mention / hard"
-                : trigger.mentionedByName ? "name / soft"
-                  : trigger.activeConversation ? "active / soft" : "private";
-            logger.info("[Trigger] " + label);
-            logger.debug("[Trigger decision]", trigger);
-        } else {
-            logger.info("[Trigger] passive");
-        }
-
         const latestMessage = normalized;
-        await coordinateAiReply({
+        const request: ReplyRequest = {
             bot,
             message: normalized,
             aiInput: "",
             imageUrls: [],
             isGroup: trigger.isGroup,
-            allowNoReply: trigger.allowNoReply,
+            wakeLevel: "pass",
+            wakeReason: trigger.triggerKind === "hard-mention" ? undefined :
+                trigger.triggerKind ?? "reply-judge",
             triggerKind: trigger.triggerKind ?? undefined,
             messageRevision: revision,
-            triggerPriority,
             isAtBot: trigger.isAtBot,
             mentionedByName: trigger.mentionedByName,
-            shouldStartCycle: trigger.shouldReply && Boolean(input),
             onWebSearchStart: async () => {
                 await bot.sendText(latestMessage.replyTarget, randomSearchNotice());
             },
@@ -186,6 +178,14 @@ export function registerMessageHandler(
                 }
                 const replyPolicy = buildReplyPolicy(context.allowNoReply);
                 const aiInput = buildAiInput(snapshot.text, knownMembersContext, replyPolicy, memeContext);
+                const frontDecision = [
+                    "<front_decision>",
+                    "trusted_by=TenBot Runtime",
+                    "wake_level=" + context.wakeLevel,
+                    "admission=" + (context.admission ?? "runtime"),
+                    "reason=" + (context.wakeReason ?? "none"),
+                    "</front_decision>",
+                ].join("\n");
                 const recentImageUrls = getRecentImages(attemptMessage, 1);
                 const useVision = wantsVision(
                     attemptMessage.displayContent,
@@ -193,8 +193,49 @@ export function registerMessageHandler(
                     context.mentionedByName,
                     recentImageUrls.length > 0,
                 );
-                return { aiInput, imageUrls: useVision ? recentImageUrls : [], refs: snapshot.refs, memeSnapshot };
+                return {
+                    aiInput: frontDecision + "\n\n" + aiInput,
+                    imageUrls: useVision ? recentImageUrls : [],
+                    refs: snapshot.refs,
+                    memeSnapshot,
+                };
             },
-        }, { botLoopGuard: loopGuard });
+        };
+        const cycleDependencies = {
+            ...coordinatorDependencies,
+            botLoopGuard: coordinatorDependencies.botLoopGuard ?? loopGuard,
+        };
+
+        // This synchronous observation bumps/interupts the existing Cycle before any Judge I/O.
+        observeConversationUpdate(request);
+
+        if (trigger.isAtBot) {
+            logger.info("[Trigger] mention / hard");
+            await admitConversationWake(request, "hard", "hard-mention", cycleDependencies);
+            return;
+        }
+
+        const judgeRequest = buildReplyJudgeRequest(normalized, {
+            nameMention: trigger.mentionedByName,
+            conversationActive: trigger.activeConversation,
+            quotedBot: normalized.quotedBot === true,
+        });
+        try {
+            if (!replyJudge) throw new TenBotError("F:A_RJ_JRF");
+            const decision = await replyJudge.judge(judgeRequest);
+            if (!decision || typeof decision.reply !== "boolean") throw new TenBotError("F:A_RJ_IPO");
+            if (!decision.reply) {
+                logger.debug("[ReplyJudge] decision=pass");
+                return;
+            }
+            logger.debug("[ReplyJudge] decision=reply");
+            const reason = trigger.triggerKind && trigger.triggerKind !== "hard-mention"
+                ? trigger.triggerKind
+                : "reply-judge";
+            await admitConversationWake(request, "soft", reason, cycleDependencies);
+        } catch (error) {
+            const frontError = isTenBotError(error) ? error : new TenBotError("F:A_RJ_JRF");
+            await sendFrontFailureNotice(bot, normalized, frontError);
+        }
     });
 }

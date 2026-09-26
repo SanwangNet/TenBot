@@ -35,7 +35,8 @@ test("Runtime shutdown aborts active model attempts and drains reply cycles", as
         aiInput: "offline",
         imageUrls: [],
         isGroup: true,
-        allowNoReply: false,
+        wakeLevel: "hard",
+        wakeReason: "hard-mention",
         onWebSearchStart: () => undefined,
     }, {
         executeAi: async (_input, options) => await new Promise((_resolve, reject) => {

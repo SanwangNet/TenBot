@@ -23,10 +23,13 @@ export const ERROR_STAGE_CATALOG = {
 } as const;
 
 export const ERROR_CATALOG = {
-    /** Reserved for a Reply Judge implementation; no judge is wired today. */
-    "F:A_RJ_IPI": {
-        english: "Invalid Protocol Input",
-        chinese: "非法的协议输入",
+    "F:A_RJ_IPO": {
+        english: "Invalid Protocol Output",
+        chinese: "非法的协议输出",
+    },
+    "F:A_RJ_JRF": {
+        english: "Reply Judge Request Failure",
+        chinese: "回复判定请求失败",
     },
     /** Reserved policy definition: at most three network searches per 30-minute window. */
     "M:C_NS_NRL": {

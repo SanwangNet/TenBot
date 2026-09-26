@@ -41,9 +41,12 @@ function fakeBot() {
     } as unknown as QQBot;
     return { bot, calls };
 }
-function requestFor(bot: QQBot, value: NormalizedQqMessage, priority: 0 | 1 | 2 | 3 = 3, allowNoReply = priority < 3) {
+function requestFor(bot: QQBot, value: NormalizedQqMessage, priority: 0 | 1 | 2 | 3 = 3) {
+    const wakeLevel = priority === 3 ? "hard" as const : priority === 0 ? "pass" as const : "soft" as const;
+    const wakeReason = priority === 3 ? "hard-mention" as const : priority === 2 ? "name-soft" as const :
+        priority === 1 ? "active-soft" as const : undefined;
     return {
-        bot, message: value, aiInput: value.displayContent, imageUrls: [], isGroup: true, allowNoReply,
+        bot, message: value, aiInput: value.displayContent, imageUrls: [], isGroup: true, wakeLevel, wakeReason,
         triggerPriority: priority, isAtBot: priority === 3, mentionedByName: priority === 2,
         onWebSearchStart: async () => { await bot.sendText(value.replyTarget, "search notice"); },
         buildAttempt: async (current: NormalizedQqMessage, context: AttemptBuildContext) => ({
@@ -73,17 +76,14 @@ const reply = (content: string): AiResult => ({
     kind: "reply", action: { messages: [{ content, quote: { mode: "auto", ref: null } }], mentions: [] },
 });
 
-test("hard mention, name, active and Meme text keep distinct trigger semantics", () => {
+test("hard mention, name and active remain wake reasons rather than reply policy", () => {
     const hard = { ...message(randomUUID(), "@小尘 你怎么看"), eventType: "GROUP_AT_MESSAGE_CREATE" } as NormalizedQqMessage;
     const name = message(randomUUID(), "我感觉小尘刚才那句话挺怪的");
     const passive = message(randomUUID(), "kskbl？");
-    assert.deepEqual([decideMessageTrigger(hard, false).triggerKind, decideMessageTrigger(hard, false).allowNoReply],
-        ["hard-mention", false]);
-    assert.deepEqual([decideMessageTrigger(name, false).triggerKind, decideMessageTrigger(name, false).allowNoReply],
-        ["name-soft", true]);
-    assert.deepEqual([decideMessageTrigger(passive, true).triggerKind, decideMessageTrigger(passive, true).allowNoReply],
-        ["active-soft", true]);
-    assert.equal(decideMessageTrigger(passive, false).shouldReply, false);
+    assert.equal(decideMessageTrigger(hard, false).triggerKind, "hard-mention");
+    assert.equal(decideMessageTrigger(name, false).triggerKind, "name-soft");
+    assert.equal(decideMessageTrigger(passive, true).triggerKind, "active-soft");
+    assert.equal(decideMessageTrigger(passive, false).triggerKind, null);
 });
 
 test("name-soft NO_REPLY stays optional and does not create or clear engagement", async () => {
@@ -444,7 +444,7 @@ test("three interruptions cap, trailing messages schedule a fresh cycle and rese
 
     for (let index = 4; index <= 6; index++) {
         commit(messages[index]);
-        coordinateAiReply(requestFor(bot, messages[index], 0), deps);
+        coordinateAiReply(requestFor(bot, messages[index], 1), deps);
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(attempts.length, 4);
@@ -477,7 +477,7 @@ test("hard trigger arriving during soft generation upgrades no-reply policy", as
     const { bot } = fakeBot();
     const attempts: RecordedAttempt[] = [];
     const contexts: string[] = [];
-    const softRequest = requestFor(bot, soft, 1, true);
+    const softRequest = requestFor(bot, soft, 1);
     softRequest.buildAttempt = async (current, context) => {
         contexts.push(String(context.allowNoReply));
         return { aiInput: buildReplyCycleContext(current) + "\nallowNoReply=" + context.allowNoReply, imageUrls: [] };
@@ -485,7 +485,7 @@ test("hard trigger arriving during soft generation upgrades no-reply policy", as
     const first = coordinateAiReply(softRequest, { executeAi: controlledAttempts(attempts) });
     await waitFor(() => attempts.length === 1);
     commit(hard);
-    const hardRequest = requestFor(bot, hard, 3, false);
+    const hardRequest = requestFor(bot, hard, 3);
     hardRequest.buildAttempt = softRequest.buildAttempt;
     coordinateAiReply(hardRequest);
     await waitFor(() => attempts.length === 2);
@@ -606,7 +606,7 @@ test("terminal provider failure also ends active engagement during a hard mentio
     markConversationActive(value);
     const { bot } = fakeBot();
     (bot as any).send = async () => { throw Object.assign(new Error("QQ send failed"), { status: 503 }); };
-    await coordinateAiReply(requestFor(bot, value, 3, false), {
+    await coordinateAiReply(requestFor(bot, value, 3), {
         executeAi: async () => { throw new ModelProviderError("gpt", Object.assign(new Error("provider unavailable"), { status: 503, retryable: true })); },
     });
     assert.equal(isConversationActive(value), false);
@@ -881,7 +881,7 @@ test("new messages during the QQ send phase do not abort an already completed ac
     });
     await sending;
     commit(b);
-    coordinateAiReply(requestFor(bot, b, 0));
+    coordinateAiReply(requestFor(bot, b, 1));
     assert.equal(attempts[0].signal.aborted, false);
     release();
     await pending;
@@ -918,7 +918,7 @@ test("restarted soft Attempts retain complete context and keep NO_REPLY optional
     const attempts: RecordedAttempt[] = [];
     const contexts: AttemptBuildContext[] = [];
     const request = (index: number) => {
-        const next = requestFor(bot, values[index]!, index === 0 ? 1 : 0, true);
+        const next = requestFor(bot, values[index]!, index === 0 ? 1 : 0);
         next.buildAttempt = async (current, context) => {
             contexts.push({ ...context, newerMessages: [...context.newerMessages] });
             return { aiInput: buildReplyCycleContext(current), imageUrls: [] };
@@ -965,7 +965,7 @@ test("a hard mention upgrades soft obligation across later interruptions without
     const contexts: AttemptBuildContext[] = [];
     const request = (index: number) => {
         const priority = index === 0 ? 1 : index === 2 ? 3 : 0;
-        const next = requestFor(bot, values[index]!, priority, index !== 2);
+        const next = requestFor(bot, values[index]!, priority);
         next.buildAttempt = async (current, context) => {
             contexts.push({ ...context, newerMessages: [...context.newerMessages] });
             return { aiInput: buildReplyCycleContext(current), imageUrls: [] };

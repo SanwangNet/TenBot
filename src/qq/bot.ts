@@ -4,6 +4,7 @@ import { logger, qqSdkLogger } from "../shared/logger.js";
 import { registerInteractionHandler } from "./handlers/interaction-handler.js";
 import { registerMessageHandler } from "./handlers/message-handler.js";
 import type { NormalizedQqMessage } from "./message/normalize-message.js";
+import type { ReplyJudge } from "../front/reply-judge.js";
 
 export type QqConnectionState = "connecting" | "connected" | "disconnected" | "error";
 
@@ -12,6 +13,7 @@ export function createQqBot(
     observePeer?: (message: NormalizedQqMessage) => void,
     observeConversationMessage?: (message: NormalizedQqMessage) => void,
     connectionConfig?: { appId?: string; appSecret?: string },
+    replyJudge?: ReplyJudge,
 ): QQBot {
     const appId = connectionConfig ? connectionConfig.appId : process.env.QQBOT_APP_ID;
     const appSecret = connectionConfig ? connectionConfig.appSecret : process.env.QQBOT_APP_SECRET;
@@ -47,7 +49,7 @@ export function createQqBot(
         }
     });
 
-    registerMessageHandler(bot, undefined, observePeer, observeConversationMessage);
+    registerMessageHandler(bot, undefined, observePeer, observeConversationMessage, replyJudge);
     registerInteractionHandler(bot);
 
     return bot;

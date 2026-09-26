@@ -59,7 +59,9 @@ function requestFor(bot: QQBot, value: NormalizedQqMessage, hardMention = false)
     const revision = getMessageRevision(value);
     return {
         bot, message: value, aiInput: value.displayContent, imageUrls: [], isGroup: true,
-        allowNoReply: !hardMention, triggerKind: hardMention ? "hard-mention" : "name-soft",
+        wakeLevel: hardMention ? "hard" : "soft",
+        wakeReason: hardMention ? "hard-mention" : "name-soft",
+        triggerKind: hardMention ? "hard-mention" : "name-soft",
         triggerPriority: hardMention ? 3 : 2, isAtBot: hardMention, mentionedByName: !hardMention,
         messageRevision: revision, onWebSearchStart: () => {},
         buildAttempt: async (current) => ({ aiInput: current.displayContent, imageUrls: [] }),

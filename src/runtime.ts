@@ -29,6 +29,8 @@ import { FileChangeWatcher } from "./shared/file-change-watcher.js";
 import { RuntimeConfigSnapshotStore, type RuntimeConfigSnapshot } from "./runtime-config-snapshot.js";
 import { toConversationIdentity } from "./control/conversation-identity.js";
 import { createIncomingConversationEvent } from "./control/conversation-timeline.js";
+import { ReplyJudgePromptStore } from "./front/reply-judge-prompt-store.js";
+import { OpenAICompatibleReplyJudge } from "./front/openai-compatible-reply-judge.js";
 
 export interface TenBotRuntime {
     control: TenBotControl;
@@ -49,6 +51,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     const configStore = createConfigStore();
     const recentPeers = new RecentPeerRegistry();
     const promptStore = getPromptStore();
+    const replyJudgePromptStore = new ReplyJudgePromptStore();
     let runtimeSnapshot!: RuntimeConfigSnapshot;
     let runtimeSnapshots!: RuntimeConfigSnapshotStore;
     try {
@@ -61,6 +64,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         automatedPeerLoopGuard.setMaxCycles(appConfig.botLoopGuard.maxCycles);
         setLogLevel(appConfig.logging.level);
         await promptStore.load(model.id);
+        await replyJudgePromptStore.load();
         await loadMemeRuntime();
     } catch (error) {
         logs.dispose();
@@ -68,6 +72,10 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         throw error;
     }
     const qqConnectionAtStart = runtimeSnapshot.appConfig.qq;
+    const replyJudge = new OpenAICompatibleReplyJudge(() => ({
+        ...runtimeSnapshots.get().appConfig.replyJudge,
+        prompt: replyJudgePromptStore.get(),
+    }));
 
     let qqState: QqConnectionState = "disconnected";
     let shuttingDown = false;
@@ -78,6 +86,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     const fileWatchers: FileChangeWatcher[] = [];
     let envWatcher: FileChangeWatcher | undefined;
     let memeWatcher: FileChangeWatcher | undefined;
+    let replyJudgePromptWatcher: FileChangeWatcher | undefined;
     const promptWatchers = new Map<PromptProvider, FileChangeWatcher>();
     let lastReloadFailure: { message: string; timestamp: string } | undefined;
     let qqRestartRequired = false;
@@ -162,7 +171,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             control?.publishStatus();
         }, (message) => {
             if (recentPeers.observe(message)) control?.publishEvent({ type: "recent-peers-updated" });
-        }, observeConversationMessage, runtimeSnapshot.appConfig.qq);
+        }, observeConversationMessage, runtimeSnapshot.appConfig.qq, replyJudge);
     } catch (error) {
         logs.dispose();
         setConsoleLogOutputEnabled(true);
@@ -364,6 +373,19 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         promptWatchers.set(providerId, watcher);
         fileWatchers.push(watcher);
     }
+    replyJudgePromptWatcher = new FileChangeWatcher(replyJudgePromptStore.getPath(), async () => {
+        try {
+            const prompt = await replyJudgePromptStore.reload();
+            lastReloadFailure = undefined;
+            logger.info("[Runtime] Reply Judge Prompt hot reload revision=" + prompt.revision);
+            control?.publishStatus();
+        } catch (error) {
+            lastReloadFailure = { message: error instanceof Error ? error.message : "Prompt reload failed", timestamp: new Date().toISOString() };
+            logger.error("[Runtime] Reply Judge Prompt hot reload failed", error);
+            control?.publishStatus();
+        }
+    });
+    fileWatchers.push(replyJudgePromptWatcher);
     memeWatcher = new FileChangeWatcher(memeStore.getPath(), async () => {
         try {
             const snapshot = await reloadMemeData();

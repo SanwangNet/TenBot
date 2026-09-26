@@ -80,7 +80,8 @@ function request(bot: QQBot, trigger: NormalizedQqMessage) {
         aiInput: "ping",
         imageUrls: [],
         isGroup: true,
-        allowNoReply: false,
+        wakeLevel: "hard" as const,
+        wakeReason: "hard-mention" as const,
         onWebSearchStart: () => {},
     };
 }
@@ -397,7 +398,7 @@ test("NO_REPLY sends nothing, exits engagement, and clears the deadline", async 
     const trigger = message();
     recordIncomingMessageRevision(trigger);
     const { bot, calls } = fakeBot();
-    await coordinateAiReply({ ...request(bot, trigger), allowNoReply: true, triggerPriority: 1 },
+    await coordinateAiReply({ ...request(bot, trigger), wakeLevel: "soft", wakeReason: "active-soft", triggerPriority: 1 },
         { executeAi: async () => ({ kind: "no_reply" }) });
     assert.equal(calls.length, 0);
     assert.equal(isConversationActive(trigger), false);
