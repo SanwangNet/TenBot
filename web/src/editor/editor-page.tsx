@@ -100,7 +100,7 @@ export function EditorPage({ mode, onDirtyChange }: { mode: "prompts" | "memes";
                     <button type="button" className="button button-primary" onClick={() => void save()} disabled={!dirty || saving}>{saving ? "保存中…" : "保存  Ctrl+S"}</button></div>
             </div>
             {error && <div className="settings-feedback error editor-error" role="alert">{error}</div>}
-            <div className="editor-surface">{draft ? <Editor path={draft.resource.id} language={draft.resource.language} theme="vs-dark" value={draft.content} onChange={(value) => setDraft((current) => current ? editDraft(current, value ?? "") : current)} options={{ automaticLayout: true, minimap: { enabled: false }, fontSize: 15, lineHeight: 23, scrollBeyondLastLine: false, wordWrap: "on", padding: { top: 16, bottom: 16 } }} /> : <div className="editor-loading">{loading ? "正在载入编辑器…" : "资源不可用"}</div>}</div>
+            <div className="editor-surface">{draft ? <Editor path={draft.resource.id} language={draft.resource.language} theme="vs-dark" value={draft.content} onChange={(value) => setDraft((current) => current ? editDraft(current, value ?? "") : current)} options={{ automaticLayout: true, minimap: { enabled: false }, fontFamily: "Noto Sans, Noto Sans SC, sans-serif", fontSize: 15, lineHeight: 23, scrollBeyondLastLine: false, wordWrap: "on", padding: { top: 16, bottom: 16 } }} /> : <div className="editor-loading">{loading ? "正在载入编辑器…" : "资源不可用"}</div>}</div>
             <div className="editor-footer"><span>{draft?.resource.displayName ?? "—"}</span><span>{draft ? `${draft.content.split(/\r?\n/).length} 行 · UTF-8` : ""}</span></div>
         </div>
     </section>;

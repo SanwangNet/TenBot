@@ -6,6 +6,7 @@ import { FeedbackProvider } from "./ui/feedback.js";
 import "./styles.css";
 import "./design.css";
 import "./motion.css";
+import "./fonts.css";
 
 createRoot(document.getElementById("root")!).render(
     <StrictMode>

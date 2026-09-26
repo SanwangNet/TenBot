@@ -1,0 +1,8 @@
+:root {
+    font-family: "Noto Sans", "Noto Sans SC", sans-serif;
+}
+
+body,
+body *:not([class*="codicon"]) {
+    font-family: "Noto Sans", "Noto Sans SC", sans-serif !important;
+}
