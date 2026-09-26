@@ -36,6 +36,10 @@ export interface AppConfig {
     logging: {
         level: LogLevel;
     };
+    web: {
+        host: string;
+        port: number;
+    };
     botLoopGuard: {
         maxCycles: number;
         automatedPeerIds: readonly string[];

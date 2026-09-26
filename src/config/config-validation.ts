@@ -2,6 +2,7 @@ import type { ModelVerbosity, ReasoningEffort } from "../ai/model-plugin.js";
 import type { LogLevel } from "../shared/logger.js";
 import type { AppConfig, ModelProviderId, PublicConfig, PublicConfigPatch } from "./config-types.js";
 import type { FrontMode } from "../front/wake-level.js";
+import { isIP } from "node:net";
 
 export const DEFAULT_GPT_MODEL = "gpt-6-sol";
 export const DEFAULT_DEEPSEEK_MODEL = "deepseek-flash";
@@ -12,6 +13,8 @@ export const DEFAULT_DEEPSEEK_REASONING_EFFORT: ReasoningEffort = "high";
 export const DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES = 4;
 export const DEFAULT_REPLY_JUDGE_TIMEOUT_MS = 5_000;
 export const DEFAULT_FRONT_MODE: FrontMode = "legacy";
+export const DEFAULT_WEB_HOST = "127.0.0.1";
+export const DEFAULT_WEB_PORT = 3000;
 const MIN_REPLY_JUDGE_TIMEOUT_MS = 1_000;
 const MAX_REPLY_JUDGE_TIMEOUT_MS = 30_000;
 
@@ -41,6 +44,29 @@ export function parseBotLoopGuardMaxCycles(value: string | undefined): number {
         throw new Error("BOT_LOOP_GUARD_MAX_CYCLES 必须是大于等于 1 的整数");
     }
     return parsed;
+}
+
+export function parseWebHost(value: string | undefined): string {
+    const host = value?.trim() || DEFAULT_WEB_HOST;
+    const ipv6Address = host.split("%")[0] ?? "";
+    const ipv6Zone = host.includes("%") ? host.slice(host.indexOf("%") + 1) : undefined;
+    const labels = host.endsWith(".") ? host.slice(0, -1).split(".") : host.split(".");
+    const validHostname = host.length <= 253 && labels.length > 0 && labels.every((label) =>
+        label.length > 0 && label.length <= 63 && /^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(label));
+    const validIpv6 = isIP(ipv6Address) === 6 && (ipv6Zone === undefined || /^[a-zA-Z0-9_.-]+$/.test(ipv6Zone));
+    if (isIP(host) !== 0 || validHostname || validIpv6) return host;
+    throw new Error("WEB_HOST must be a valid IP address or hostname");
+}
+
+export function parseWebPort(value: string | undefined): number {
+    if (value === undefined || value.trim() === "") return DEFAULT_WEB_PORT;
+    const normalized = value.trim();
+    if (!/^\d+$/.test(normalized)) throw new Error("WEB_PORT must be an integer between 1 and 65535");
+    const port = Number(normalized);
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+        throw new Error("WEB_PORT must be an integer between 1 and 65535");
+    }
+    return port;
 }
 
 export function parseLogLevel(value: string | undefined): LogLevel {
@@ -157,6 +183,7 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         },
         replyJudge,
         logging: { level: parseLogLevel(env.BOT_LOG_LEVEL) },
+        web: { host: parseWebHost(env.WEB_HOST), port: parseWebPort(env.WEB_PORT) },
         botLoopGuard: {
             maxCycles: parseBotLoopGuardMaxCycles(env.BOT_LOOP_GUARD_MAX_CYCLES),
             automatedPeerIds: parseAutomatedPeerIds(env.AUTOMATED_PEER_IDS),

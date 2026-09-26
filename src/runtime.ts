@@ -29,6 +29,7 @@ import { FileChangeWatcher } from "./shared/file-change-watcher.js";
 import { RuntimeConfigSnapshotStore, type RuntimeConfigSnapshot } from "./runtime-config-snapshot.js";
 import { toConversationIdentity } from "./control/conversation-identity.js";
 import { createIncomingConversationEvent } from "./control/conversation-timeline.js";
+import { createTenBotWebServer } from "./control/web-server.js";
 import { ReplyJudgePromptStore } from "./front/reply-judge-prompt-store.js";
 import { OpenAICompatibleReplyJudge } from "./front/openai-compatible-reply-judge.js";
 
@@ -93,6 +94,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     let configReloadQueue: Promise<void> = Promise.resolve();
 
     let control: ReturnType<typeof createTenBotControl> | undefined;
+    let webServer: ReturnType<typeof createTenBotWebServer> | undefined;
     let unsubscribeProviderErrors: () => void = () => undefined;
     let unsubscribeReplyLifecycle: () => void = () => undefined;
     let conversationItemSequence = 0;
@@ -334,6 +336,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             shutdownPromise = (async () => {
                 shuttingDown = true;
                 control?.publishStatus();
+                try { await webServer?.close(); }
+                catch (error) { logger.error("[Web] stop failed", error); }
                 const stopCycles = shutdownReplyCoordinator();
                 try { bot.stop(); }
                 catch (error) { logger.error("[QQ] stop error", error); }
@@ -354,6 +358,11 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             })();
             return shutdownPromise;
         },
+    });
+
+    webServer = createTenBotWebServer(control, {
+        host: runtimeSnapshot.appConfig.web.host,
+        port: runtimeSnapshot.appConfig.web.port,
     });
 
     envWatcher = new FileChangeWatcher(configStore.getEnvPath(), async () => {
@@ -423,17 +432,22 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         start(): Promise<void> {
             if (startPromise) return startPromise;
             if (shuttingDown) return Promise.resolve();
-            qqState = "connecting";
-            control?.publishStatus();
-            startPromise = bot.start().then(() => {
-                qqState = "disconnected";
+            startPromise = (async () => {
+                await webServer?.start();
+                if (shuttingDown) return;
+                qqState = "connecting";
                 control?.publishStatus();
-            }).catch((error: unknown) => {
-                qqState = "error";
-                control?.publishStatus();
-                logger.error("[QQ] startup failed", error);
-                throw error;
-            });
+                try {
+                    await bot.start();
+                    qqState = "disconnected";
+                    control?.publishStatus();
+                } catch (error) {
+                    qqState = "error";
+                    control?.publishStatus();
+                    logger.error("[QQ] startup failed", error);
+                    throw error;
+                }
+            })();
             return startPromise;
         },
     };

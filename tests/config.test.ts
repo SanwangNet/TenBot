@@ -248,3 +248,27 @@ test("ConfigStore returns a safe failure and leaves the old file unchanged when 
         assert.equal(await readFile(envPath, "utf8"), "AI_PROVIDER=gpt\n");
     });
 });
+
+test("Web host and port use secure defaults and accept explicit valid values", () => {
+    const defaults = loadAppConfig({});
+    assert.deepEqual(defaults.web, { host: "127.0.0.1", port: 3000 });
+
+    for (const host of ["localhost", "127.0.0.1", "0.0.0.0", "::1"]) {
+        assert.equal(loadAppConfig({ WEB_HOST: host }).web.host, host);
+    }
+    for (const port of [1, 3000, 8080, 65_535]) {
+        assert.equal(loadAppConfig({ WEB_PORT: String(port) }).web.port, port);
+    }
+});
+
+test("Web port rejects values outside the integer range without falling back", () => {
+    for (const port of ["0", "65536", "-1", "1.5", "abc"]) {
+        assert.throws(() => loadAppConfig({ WEB_PORT: port }), /WEB_PORT/);
+    }
+});
+
+test("Web host rejects malformed bind addresses", () => {
+    for (const host of ["0.0.0.0:3000", "bad host", "bad/host"]) {
+        assert.throws(() => loadAppConfig({ WEB_HOST: host }), /WEB_HOST/);
+    }
+});

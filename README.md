@@ -58,6 +58,8 @@ Front 使用 `FRONT_MODE=legacy|judge` 配置，默认 `legacy`。只有显式�
 
 ## 运行
 
+Runtime 同时提供本机 Web Control API，默认地址为 `http://127.0.0.1:3000`。用 `WEB_HOST` 和 `WEB_PORT` 可调整监听地址；修改后需重启 Runtime。当前 API 没有身份验证，不要直接暴露到不可信公网。远程访问建议保持 `127.0.0.1` 监听并使用 SSH Tunnel，或通过受信任的反向代理访问。
+
 普通日志模式：
 
     pnpm dev
@@ -128,7 +130,7 @@ TUI 设置页可保存 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT �
 
 正常运行时按 `Q` 或 `Ctrl+C` 会打开“退出 TenBot”确认框；按 Enter 才会优雅停止 QQ Runtime 并退出，Esc 取消。Runtime 启动失败或发生 fatal shutdown 时直接执行清理退出。
 
-TUI 与 QQ Runtime 在同一进程运行，通过 TenBotControl 读取可序列化状态、订阅日志和 Runtime event，并执行配置保存、重载与关闭。Prompt 和 Meme 文件仍由外部编辑器编辑，TUI 负责查看、校验和热加载。当前没有 HTTP API 或 WebSocket 服务。
+TUI 与 QQ Runtime 在同一进程运行，通过 TenBotControl 读取可序列化状态、订阅日志和 Runtime event，并执行配置保存、重载与关闭。HTTP API 也通过同一个 TenBotControl 提供只读状态和 SSE 实时事件。Prompt 和 Meme 文件仍由外部编辑器编辑，TUI 负责查看、校验和热加载。
 
 如果当前 stdin 或 stdout 不是 TTY，`pnpm tui` 会显示中文提示并正常退出，请使用普通终端或运行 `pnpm dev`。
 
@@ -181,6 +183,7 @@ API 密钥、QQ 凭据、完整成员 ID 和消息引用 ID 不会放入 TUI 状
     src/main.ts                    普通模式入口
     src/runtime.ts                 共享 Runtime 启动与关闭
     src/control/                   TenBotControl 与状态、日志 DTO
+    src/control/web-server.ts      同进程 HTTP API 与 SSE
     src/config/                    AppConfig、PublicConfig 与 .env ConfigStore
     src/tui/                       Ink 终端控制界面
     src/qq/                        QQ 事件、上下文、触发和回复流程
