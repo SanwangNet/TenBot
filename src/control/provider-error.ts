@@ -1,6 +1,11 @@
+import { isTenBotError } from "../errors/tenbot-error.js";
+import { findExplicitHttpStatus, mapConfirmedRemoteHttpError } from "../errors/http-mapping.js";
+import type { TenBotErrorCode } from "../errors/catalog.js";
+
 export interface ProviderErrorNotice {
     provider: string;
     model: string;
+    tenbotCode: TenBotErrorCode;
     status?: number;
     code?: string;
     retryable?: boolean;
@@ -71,7 +76,10 @@ function safeCode(value: string | undefined): string | undefined {
 /** Runtime-only normalization. It deliberately reads messages and known fields, never raw error JSON. */
 export function createProviderErrorNotice(provider: string, model: string, error: unknown): ProviderErrorNotice {
     const fields = collectFields(error);
-    const status = firstNumber(fields, "status");
+    const status = findExplicitHttpStatus(error) ?? firstNumber(fields, "status");
+    const tenbotCode = isTenBotError(error)
+        ? error.code
+        : mapConfirmedRemoteHttpError("MP", status) ?? "M:A_MG_MRF";
     const code = safeCode(firstString(fields, "code"));
     const retryable = firstBoolean(fields, "retryable") ?? (status !== undefined && [502, 503, 504, 520].includes(status) ? true : undefined);
     const messages = errorMessages(fields);
@@ -86,6 +94,7 @@ export function createProviderErrorNotice(provider: string, model: string, error
     return {
         provider: sanitize(provider, 40),
         model: sanitize(model, 100),
+        tenbotCode,
         ...(status !== undefined ? { status } : {}),
         ...(code ? { code } : {}),
         ...(retryable !== undefined ? { retryable } : {}),

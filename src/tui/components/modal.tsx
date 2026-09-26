@@ -292,6 +292,7 @@ function ModalContent({
         return <ModalFrame title="模型提供商错误 · 详情" width={width} maxHeight={maxHeight}>
             <Text>模型提供商  {notice.provider}</Text>
             <Text>模型          {notice.model}</Text>
+            <Text>TenBot 错误码  {notice.tenbotCode}</Text>
             <Text> </Text>
             <Text wrap="truncate">{notice.details ?? "暂无更多安全详情。"}</Text>
             {modal.count > 1 ? <Text color="yellow">另有 {modal.count - 1} 个模型错误</Text> : null}
@@ -303,6 +304,7 @@ function ModalContent({
         <Text color="red">✕ {notice.provider} 请求失败</Text>
         <Text> </Text>
         <Text>模型        {notice.model}</Text>
+        <Text>TenBot 错误码  {notice.tenbotCode}</Text>
         <Text>HTTP 状态   {notice.status ?? "未知"}</Text>
         <Text>错误代码    {notice.code ?? "未知"}</Text>
         <Text>可重试      {notice.retryable === undefined ? "未知" : notice.retryable ? "是" : "否"}</Text>

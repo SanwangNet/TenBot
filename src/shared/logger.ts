@@ -1,5 +1,7 @@
 import type { Logger as QqSdkLogger } from "@tencent-connect/qqbot-nodejs";
 import { parseLogLevel } from "../config/config-validation.js";
+import { formatTenBotError } from "../errors/format.js";
+import { isTenBotError } from "../errors/tenbot-error.js";
 
 export type LogLevel = "info" | "debug" | "error";
 
@@ -78,18 +80,21 @@ function write(level: LogLevel, values: unknown[], preserveLastString = false): 
     }
 
     const presentValues = values.filter((value) => value !== undefined);
-    const text = presentValues.map((value, index) =>
-        preserveLastString && index === presentValues.length - 1 && typeof value === "string"
-            ? value
-            : formatValue(value),
-    ).join(" ");
+    const formalError = level === "error" ? presentValues.find(isTenBotError) : undefined;
+    const text = formalError
+        ? formatTenBotError(formalError)
+        : presentValues.map((value, index) =>
+            preserveLastString && index === presentValues.length - 1 && typeof value === "string"
+                ? value
+                : formatValue(value),
+        ).join(" ");
     const entry: LogEntry = { timestamp: new Date().toISOString(), level, text };
     for (const listener of logListeners) {
         try { listener(entry); } catch { /* A log consumer must not break Runtime work. */ }
     }
     const lines = text.split("\n");
     const output = lines.map((line, index) =>
-        index === 0 ? `[${timestamp()}] ${line}` : line,
+        index === 0 && !formalError ? `[${timestamp()}] ${line}` : line,
     ).join("\n");
 
     if (!consoleOutputEnabled) return;

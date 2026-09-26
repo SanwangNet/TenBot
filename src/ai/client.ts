@@ -67,7 +67,7 @@ export async function runModelPlugin(
             return await plugin.generate(currentRequest, generateOptions);
         } catch (error) {
             if (!isToolProtocolLeakError(error) || recovery >= 1 || options.signal.aborted) throw error;
-            logger.info(`[AI] invalid final output code=${error.code} provider=${plugin.id} model=${plugin.model} recovery=1/1`);
+            logger.info(`[AI] Tool Protocol Leakage recovery=1/1 provider=${plugin.id}`);
             currentRequest = {
                 ...request,
                 input: [request.input,

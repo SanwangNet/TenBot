@@ -9,6 +9,7 @@ import {
 import { normalizeTextReply } from "../../reply-result.js";
 import { normalizeReplyMessages, parseQqReplyArguments } from "../../../skills/qq-reply/skill.js";
 import { logger } from "../../../shared/logger.js";
+import { TenBotError } from "../../../errors/tenbot-error.js";
 import { isToolProtocolLeak, ToolProtocolLeakError } from "../../tool-protocol.js";
 import { AiResponseFailure } from "../../upstream-error.js";
 import {
@@ -32,7 +33,7 @@ export interface ResponsesPluginConfig {
 
 function providerError(provider: string, error: unknown, signal: AbortSignal): Error {
     if (signal.aborted) return new ModelAbortedError();
-    if (error instanceof ModelAbortedError || error instanceof ModelProviderError || error instanceof AiResponseFailure) {
+    if (error instanceof ModelAbortedError || error instanceof ModelProviderError || error instanceof AiResponseFailure || error instanceof TenBotError) {
         return error;
     }
     return new ModelProviderError(provider, error);
@@ -163,7 +164,9 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                             break;
                         }
                         if (event.type === "response.failed") throw new AiResponseFailure(event.response.error);
-                        if (event.type === "response.incomplete") throw new Error("模型响应未完成");
+                        if (event.type === "response.incomplete") {
+                            throw new TenBotError("M:A_MG_IRS", { safeDetails: { provider: config.id } });
+                        }
                     }
                 } catch (error) {
                     throw providerError(config.id, error, options.signal);
@@ -173,14 +176,22 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                 }
 
                 if (options.signal.aborted) throw new ModelAbortedError();
-                if (!completedResponse) throw new ModelProviderError(config.id, new Error("模型响应流意外结束"));
+                if (!completedResponse) {
+                    throw new TenBotError("M:A_MG_IRS", { safeDetails: { provider: config.id } });
+                }
 
                 const calls = (completedResponse.output ?? []).filter((item: any) => item.type === "function_call");
-                const executions: ModelToolExecution[] = await Promise.all((calls as any[]).map((call) =>
-                    request.executeTool({ name: String(call.name), arguments: String(call.arguments) })));
+                const executions: ModelToolExecution[] = await Promise.all((calls as any[]).map(async (call) => {
+                    try {
+                        return await request.executeTool({ name: String(call.name), arguments: String(call.arguments) });
+                    } catch (error) {
+                        if (options.signal.aborted || error instanceof ModelAbortedError) throw error;
+                        throw new TenBotError("M:B_TL_TEF", { cause: error, safeDetails: { provider: config.id } });
+                    }
+                }));
                 const hasContinuation = executions.some((execution) => execution.kind === "continue");
                 if (hasContinuation) {
-                    if (turn === 2) throw new Error("meme_lookup 调用次数过多");
+                    if (turn === 2) throw new TenBotError("M:C_TL_TCL", { safeDetails: { provider: config.id } });
                     const originalInput = Array.isArray(requestInput)
                         ? requestInput
                         : [{ role: "user", content: request.input }];
@@ -248,17 +259,17 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                     return { kind: "reply", action };
                 }
                 if (isToolProtocolLeak(output)) throw new ToolProtocolLeakError();
-                if (!output.trim()) throw new Error("模型没有返回文本或有效 qq_reply");
+                if (!output.trim()) throw new TenBotError("M:A_MG_NVO", { safeDetails: { provider: config.id } });
                 reportCitations(
                     renderedParts.reduce((count, part) => count + part.renderedCount, 0),
                     renderedParts.some((part) => part.metadataUnavailable),
                 );
                 logger.info(`[AI] done provider=${config.id} ${elapsed}: content length ${output.trim().length}`);
                 const result = normalizeTextReply(output);
-                if (!result) throw new Error("模型没有返回文本或有效 qq_reply");
+                if (!result) throw new TenBotError("M:A_MG_NVO", { safeDetails: { provider: config.id } });
                 return result;
             }
-            throw new Error("meme_lookup 调用次数过多");
+            throw new TenBotError("M:C_TL_TCL", { safeDetails: { provider: config.id } });
         },
     };
 }

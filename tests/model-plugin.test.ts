@@ -198,6 +198,14 @@ test("DeepSeek meme_lookup uses the shared TenBot tool and feeds its result back
     });
 });
 
+test("incomplete model response streams use the model-generation code", async () => {
+    const plugin = createDeepSeekPlugin({ apiKey: "offline" });
+    await withResponses([sse([{ type: "response.incomplete", response: { status: "incomplete" } }])], async () => {
+        await assert.rejects(plugin.generate(pluginRequest(), options()),
+            (error: unknown) => (error as { code?: string }).code === "M:A_MG_IRS");
+    });
+});
+
 test("complete pseudo protocol text is rejected and gets one bounded recovery attempt", async () => {
     const pseudoTool = "<qq_reply>{\"messages\":[{\"content\":\"伪调用\"}]}</qq_reply>";
     await withResponses([sse([messageText(pseudoTool)]), sse([messageText("普通回复")])], async (bodies) => {
@@ -232,7 +240,7 @@ test("a second leaked payload fails closed without sending it as text", async ()
     await withResponses(payloads.map((payload) => sse([messageText(payload)])), async (bodies) => {
         await assert.rejects(
             runModelPlugin(createDeepSeekPlugin({ apiKey: "offline" }), "offline", options()),
-            (error: unknown) => (error as { code?: string }).code === "B:A1_TPL",
+        (error: unknown) => (error as { code?: string }).code === "B:A_OP_TPL",
         );
         assert.equal(bodies.length, 2);
     });

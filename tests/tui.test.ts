@@ -415,16 +415,16 @@ test("provider error notice is structured and redacts credentials and headers", 
     });
     const error = Object.assign(new Error("gpt provider request failed"), { cause });
     const notice = createProviderErrorNotice("gpt", "gpt-6-sol", error);
-    assert.deepEqual({ provider: notice.provider, model: notice.model, status: notice.status, code: notice.code, retryable: notice.retryable }, {
-        provider: "gpt", model: "gpt-6-sol", status: 503, code: "service_unavailable", retryable: true,
+    assert.deepEqual({ provider: notice.provider, model: notice.model, tenbotCode: notice.tenbotCode, status: notice.status, code: notice.code, retryable: notice.retryable }, {
+        provider: "gpt", model: "gpt-6-sol", tenbotCode: "R:A_MP_PSU", status: 503, code: "service_unavailable", retryable: true,
     });
     assert.doesNotMatch(JSON.stringify(notice), /super-secret|sk-live-secret|authorization|api[_ -]?key|cookie/i);
     assert.match(notice.message, /redacted|失败|service/i);
 });
 
 test("provider errors open one modal and queue subsequent errors", () => {
-    const first = { provider: "gpt", model: "gpt-6-sol", message: "暂时不可用", timestamp: "now" };
-    const second = { provider: "gpt", model: "gpt-6-sol", message: "再次失败", timestamp: "later" };
+    const first = { provider: "gpt", model: "gpt-6-sol", tenbotCode: "M:A_MG_MRF" as const, message: "暂时不可用", timestamp: "now" };
+    const second = { provider: "gpt", model: "gpt-6-sol", tenbotCode: "M:A_MG_MRF" as const, message: "再次失败", timestamp: "later" };
     const opened = receiveProviderError(initialTuiState, first);
     assert.equal(opened.modal.type, "provider-error");
     const queued = receiveProviderError({ ...opened, modal: { type: "help" } }, second);

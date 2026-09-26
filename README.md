@@ -108,6 +108,10 @@ TUI 快捷键：
 
 TUI 保存的 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Provider 凭据及 Base URL、BOT_LOG_LEVEL、BOT_LOOP_GUARD_MAX_CYCLES 和 AUTOMATED_PEER_IDS 会重建配置快照并立即应用。外部编辑器修改 `.env` 也会监听并热重载。GPT 与 DeepSeek Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQBOT_APP_ID 和 QQBOT_APP_SECRET 变化需要重启；TUI 不会自动重启进程。
 
+### 错误码
+
+错误码采用 `Zone:Class_Stage_Reason` 格式，例如 `B:A_OP_TPL`；终止当前回复的错误可能会以裸错误码直接发送到 QQ。
+
 ### 鼠标操作
 
 键盘操作始终可用。支持左键点击侧栏页面、设置项、自动账号列表行、选择项和弹窗按钮；鼠标不可用时自动退回键盘操作。暂不支持右键、拖拽、文本选择或滚轮手势。

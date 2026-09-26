@@ -1,11 +1,9 @@
-export const TOOL_PROTOCOL_LEAK_CODE = "B:A1_TPL" as const;
+import { TenBotError } from "../errors/tenbot-error.js";
 
 /** Safe failure marker. It deliberately carries no model output or request data. */
-export class ToolProtocolLeakError extends Error {
-    readonly code = TOOL_PROTOCOL_LEAK_CODE;
-
+export class ToolProtocolLeakError extends TenBotError {
     constructor() {
-        super("Tool Protocol Leakage");
+        super("B:A_OP_TPL");
         this.name = "ToolProtocolLeakError";
     }
 }

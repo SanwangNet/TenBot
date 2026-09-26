@@ -11,7 +11,9 @@ import { buildReplyCycleContext, recordIncomingMessageRevision, rememberIncoming
 import { getConversationGeneration, isConversationActive, markConversationActive } from "../src/qq/conversation/engagement.js";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 import { decideMessageTrigger } from "../src/qq/message/trigger.js";
-import { buildReplyCycleMemeQuery, coordinateAiReply, AI_TIMEOUT_REPLY, AI_WEB_SEARCH_TIMEOUT_REPLY, subscribeReplyLifecycle, type AttemptBuildContext } from "../src/qq/reply/coordinator.js";
+import { buildReplyCycleMemeQuery, coordinateAiReply, subscribeReplyLifecycle, type AttemptBuildContext } from "../src/qq/reply/coordinator.js";
+
+const MODEL_TIMEOUT_CODE = "M:A_MG_MTO";
 
 type RecordedAttempt = { input: string; signal: AbortSignal; resolve: (result: AiResult) => void };
 function message(groupId = randomUUID(), content = "A"): NormalizedQqMessage {
@@ -511,7 +513,7 @@ test("each restarted attempt gets an ordinary deadline, while timeout retry stay
     assert.equal(attempts[1].signal.aborted, true);
     assert.equal(attempts[2].signal.aborted, true);
     assert.ok(elapsed >= 90 && elapsed < 350, "the post-interruption timeout retry gets its own ordinary deadline");
-    assert.ok(calls.some((call) => call.content === AI_TIMEOUT_REPLY || (call.payload as any)?.markdown?.content === AI_TIMEOUT_REPLY));
+    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_CODE || (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE));
 });
 
 test("Reply Coordinator runs a ModelPlugin stub without constructing a provider client", async () => {
@@ -619,8 +621,8 @@ test("second timeout keeps soft silence and hard fallback", async () => {
             },
         });
         assert.equal(attempts, 2);
-        assert.equal(calls.some((call) => call.content === AI_TIMEOUT_REPLY ||
-            (call.payload as any)?.markdown?.content === AI_TIMEOUT_REPLY), expectedFallback);
+        assert.equal(calls.some((call) => call.content === MODEL_TIMEOUT_CODE ||
+            (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE), expectedFallback);
     }
 });
 
@@ -642,8 +644,8 @@ test("a newer revision skips timeout retry", async () => {
     commit(b); // This revision reaches context before its handler updates the Cycle.
     await pending;
     assert.equal(attempts, 1);
-    assert.ok(calls.some((call) => call.content === AI_TIMEOUT_REPLY ||
-        (call.payload as any)?.markdown?.content === AI_TIMEOUT_REPLY));
+    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_CODE ||
+        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE));
 });
 
 test("web-search timeout does not retry and keeps the search timeout fallback", async () => {
@@ -661,8 +663,8 @@ test("web-search timeout does not retry and keeps the search timeout fallback", 
         },
     });
     assert.equal(attempts, 1);
-    assert.ok(calls.some((call) => call.content === AI_WEB_SEARCH_TIMEOUT_REPLY ||
-        (call.payload as any)?.markdown?.content === AI_WEB_SEARCH_TIMEOUT_REPLY));
+    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_CODE ||
+        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE));
 });
 
 test("late result from timed-out Attempt cannot replace the successful retry", async () => {
@@ -705,8 +707,8 @@ test("a new Cycle gets its own timeout retry", async () => {
     commit(b);
     await coordinateAiReply(requestFor(bot, b), deps);
     assert.equal(attempts, 4);
-    assert.equal(calls.filter((call) => call.content === AI_TIMEOUT_REPLY ||
-        (call.payload as any)?.markdown?.content === AI_TIMEOUT_REPLY).length, 2);
+    assert.equal(calls.filter((call) => call.content === MODEL_TIMEOUT_CODE ||
+        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE).length, 2);
 });
 
 test("web search extends one cycle to its original 120-second budget and uses the exact timeout notice", async () => {
@@ -739,10 +741,10 @@ test("web search extends one cycle to its original 120-second budget and uses th
     await waitFor(() => attempts.length === 2);
     await new Promise((resolve) => setTimeout(resolve, 60));
     assert.ok(Date.now() - started > 70);
-    assert.equal(calls.filter((item) => item.content === AI_WEB_SEARCH_TIMEOUT_REPLY).length, 0);
+    assert.equal(calls.filter((item) => item.content === MODEL_TIMEOUT_CODE).length, 0);
     await pending;
     assert.equal(attempts[1].signal.aborted, true);
-    assert.deepEqual(calls.map((item) => item.content ?? (item.payload as any)?.markdown?.content).filter(Boolean), ["search notice", AI_WEB_SEARCH_TIMEOUT_REPLY]);
+    assert.deepEqual(calls.map((item) => item.content ?? (item.payload as any)?.markdown?.content).filter(Boolean), ["search notice", MODEL_TIMEOUT_CODE]);
 });
 
 test("NO_REPLY consumes only its snapshot and a trailing name trigger gets a new cycle", async () => {
@@ -997,8 +999,8 @@ test("deadline settles a cycle even when the upstream promise ignores abort", as
         },
     });
     assert.equal(signal.aborted, true);
-    assert.ok(calls.some((call) => call.content === AI_TIMEOUT_REPLY ||
-        (call.payload as any)?.markdown?.content === AI_TIMEOUT_REPLY));
+    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_CODE ||
+        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE));
 });
 
 test("attempt setup failure does not spawn endless trailing cycles", async () => {

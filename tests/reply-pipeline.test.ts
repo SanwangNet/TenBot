@@ -26,10 +26,11 @@ configureMemberRepository(new MemoryMemberRepository());
 // Loading the coordinator constructs the SDK client, but these tests inject an AI stub.
 process.env.CODEX_API_KEY = "offline-test";
 process.env.CODEX_BASE_URL = "https://example.invalid";
-const { AI_TIMEOUT_REPLY, AI_WEB_SEARCH_TIMEOUT_REPLY, AI_UPSTREAM_ERROR_REPLY, MULTI_MESSAGE_DELAY_MS, coordinateAiReply, shouldQuoteTrigger,
+const { MULTI_MESSAGE_DELAY_MS, coordinateAiReply, shouldQuoteTrigger,
     handleRecalledMessage, cancelPendingRequestByMessageId } = await import(
     "../src/qq/reply/coordinator.js"
 );
+const MODEL_TIMEOUT_CODE = "M:A_MG_MTO";
 
 function message(groupId: string = randomUUID(), authorId: string = randomUUID()): NormalizedQqMessage {
     const id = randomUUID();
@@ -169,7 +170,7 @@ test("a reply with no valid messages uses one safe error notice", async () => {
         executeAi: async () => reply(["", "  "]),
     });
     assert.deepEqual(calls.map((call) => call.method), ["text"]);
-    assert.equal(calls[0].args[1], "刚才脑子短路了一下。");
+    assert.equal(calls[0].args[1], "B:A_RA_IRA");
     assert.equal(isConversationActive(trigger), false);
 });
 
@@ -379,8 +380,8 @@ test("two timeout attempts keep the explicit fallback and discard the late AI re
     assert.equal(signals.length, 2);
     assert.deepEqual(signals.map((signal) => signal.aborted), [true, true]);
     assert.deepEqual(calls.map((call) => call.method), ["text"]);
-    assert.equal(calls[0].args[1], AI_TIMEOUT_REPLY);
-    assert.match(buildChatInput(trigger, "next"), new RegExp(AI_TIMEOUT_REPLY));
+    assert.equal(calls[0].args[1], MODEL_TIMEOUT_CODE);
+    assert.match(buildChatInput(trigger, "next"), new RegExp(MODEL_TIMEOUT_CODE));
     assert.equal(isConversationActive(trigger), false);
 
     resolveAi(reply("too late"));
@@ -441,7 +442,7 @@ test("two ordinary attempts each get their full 30-second deadline", async (t) =
     await pending;
     assert.deepEqual(signals.map((signal) => signal.aborted), [true, true]);
     assert.deepEqual(calls.map((call) => call.method), ["text"]);
-    assert.equal(calls[0].args[1], AI_TIMEOUT_REPLY);
+    assert.equal(calls[0].args[1], MODEL_TIMEOUT_CODE);
     t.mock.timers.reset();
 });
 
@@ -475,15 +476,15 @@ test("an overdue result is discarded and the retry gets a fresh deadline", async
     t.mock.timers.tick(30_000);
     await pending;
     assert.deepEqual(signals.map((signal) => signal.aborted), [true, true]);
-    assert.deepEqual(calls.map((call) => call.args[1]), [AI_TIMEOUT_REPLY]);
+    assert.deepEqual(calls.map((call) => call.args[1]), [MODEL_TIMEOUT_CODE]);
     t.mock.timers.reset();
 });
 
-test("structured 520 and retryable 503 produce the upstream fallback promptly", async (t) => {
+test("confirmed provider 503 and unclassified 520 produce their terminal error codes promptly", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
-    for (const upstreamError of [
-        Object.assign(new Error("origin failed"), { status: 520, error: { retryable: true, retry_after: 60 } }),
-        Object.assign(new Error("unavailable"), { status: 503 }),
+    for (const [upstreamError, expectedCode] of [
+        [Object.assign(new Error("origin failed"), { status: 520, error: { retryable: true, retry_after: 60 } }), "M:A_MG_MRF"],
+        [Object.assign(new Error("unavailable"), { status: 503 }), "R:A_MP_PSU"],
     ]) {
         const trigger = message();
         recordIncomingMessageRevision(trigger);
@@ -492,7 +493,7 @@ test("structured 520 and retryable 503 produce the upstream fallback promptly", 
             executeAi: async () => { throw upstreamError; },
         });
         assert.deepEqual(calls.map((call) => call.method), ["text"]);
-        assert.equal(calls[0].args[1], AI_UPSTREAM_ERROR_REPLY);
+        assert.equal(calls[0].args[1], expectedCode);
         assert.equal(isConversationActive(trigger), false);
         t.mock.timers.tick(30_001);
         assert.equal(calls.length, 1);
@@ -507,7 +508,7 @@ test("structured 520 and retryable 503 produce the upstream fallback promptly", 
     t.mock.timers.reset();
 });
 
-test("upstream fallback quotes the trigger after a newer group message", async () => {
+test("provider error code fallback keeps the existing trigger quote decision", async () => {
     const trigger = message();
     recordIncomingMessageRevision(trigger);
     const { bot, calls } = fakeBot();
@@ -521,11 +522,11 @@ test("upstream fallback quotes the trigger after a newer group message", async (
     await pending;
     assert.deepEqual(calls.map((call) => call.method), ["send"]);
     const payload = calls[0].args[0] as { markdown: { content: string }; messageReference: { message_id: string } };
-    assert.equal(payload.markdown.content, AI_UPSTREAM_ERROR_REPLY);
+    assert.equal(payload.markdown.content, "M:A_MG_MRF");
     assert.equal(payload.messageReference.message_id, trigger.id);
 });
 
-test("web search notice is followed by timeout fallback", async (t) => {
+test("web search notice is followed by the terminal model timeout code", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const trigger = message();
     recordIncomingMessageRevision(trigger);
@@ -548,18 +549,18 @@ test("web search notice is followed by timeout fallback", async (t) => {
     t.mock.timers.tick(30_000);
     await pending;
     assert.equal(signal.aborted, true);
-    assert.deepEqual(calls.map((call) => call.args[1]), ["稍等，我查一下。", AI_WEB_SEARCH_TIMEOUT_REPLY]);
+    assert.deepEqual(calls.map((call) => call.args[1]), ["稍等，我查一下。", MODEL_TIMEOUT_CODE]);
     t.mock.timers.reset();
 });
 
-test("unknown AI error keeps the ordinary failure notice", async () => {
+test("unknown fatal AI error gets the generic model request code", async () => {
     const trigger = message();
     const { bot, calls } = fakeBot();
     await coordinateAiReply(request(bot, trigger), {
         executeAi: async () => { throw new TypeError("local bug"); },
     });
     assert.deepEqual(calls.map((call) => call.method), ["text"]);
-    assert.equal(calls[0].args[1], "刚才脑子短路了一下。");
+    assert.equal(calls[0].args[1], "M:A_MG_MRF");
 });
 
 test("recall just before the deadline wins without a fallback", async (t) => {

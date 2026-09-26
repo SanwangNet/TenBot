@@ -8,7 +8,11 @@ import type { AiResult } from "../../ai/reply-result.js";
 import type { MemeRuntimeSnapshot } from "../../skills/meme/store.js";
 import { normalizeQQReplyAction, type QuotePreference } from "../../skills/qq-reply/skill.js";
 import { classifyUpstreamFailure } from "../../ai/upstream-error.js";
-import { ModelProviderError } from "../../ai/model-plugin.js";
+import { ModelAbortedError, ModelProviderError } from "../../ai/model-plugin.js";
+import { TenBotError, isTenBotError } from "../../errors/tenbot-error.js";
+import { findExplicitHttpStatus, mapConfirmedRemoteHttpError } from "../../errors/http-mapping.js";
+import { toPublicErrorMessage } from "../../errors/format.js";
+import { createQqSendError } from "./error-adapter.js";
 import { logger, shortId } from "../../shared/logger.js";
 import {
     automatedPeerLoopGuard,
@@ -27,9 +31,6 @@ export const AI_WEB_SEARCH_TIMEOUT_MS = 120_000;
 export const MAX_GENERATION_INTERRUPTS = 3;
 export const MAX_TIMEOUT_RETRIES = 1;
 export const MULTI_MESSAGE_DELAY_MS = 450;
-export const AI_TIMEOUT_REPLY = "\u540e\u7aef\u5361\u4f4f\u4e86\uff0c\u7b49\u4f1a\u518d\u53eb\u6211\u4e00\u4e0b";
-export const AI_WEB_SEARCH_TIMEOUT_REPLY = "\u56de\u590d\u65f6\u95f4\u8fc7\u957f\uff0c\u5df2\u88ab\u4e2d\u6b62";
-export const AI_UPSTREAM_ERROR_REPLY = "\u540e\u7aef\u6682\u65f6\u70b8\u4e86\uff0c\u7b49\u4f1a\u518d\u53eb\u6211\u4e00\u4e0b";
 const AI_ERROR_REPLY = "\u521a\u624d\u8111\u5b50\u77ed\u8def\u4e86\u4e00\u4e0b\u3002";
 
 export type TriggerPriority = 0 | 1 | 2 | 3;
@@ -445,9 +446,53 @@ function clearAttempt(cycle: Cycle, attempt: Attempt): void {
     clearAttemptTimer(attempt);
     if (cycle.currentAttempt === attempt) cycle.currentAttempt = undefined;
 }
-async function sendFailureNotice(request: ReplyRequest): Promise<void> {
-    try { await request.bot.sendText(request.message.replyTarget, AI_ERROR_REPLY); }
-    catch (error) { logger.error("[QQ] send error", error); }
+function modelError(error: unknown, provider: string, attempt: number): TenBotError {
+    if (isTenBotError(error)) return error;
+    const status = findExplicitHttpStatus(error);
+    const code = mapConfirmedRemoteHttpError("MP", status) ?? "M:A_MG_MRF";
+    return new TenBotError(code, {
+        cause: error,
+        safeDetails: { provider, attempt, ...(status === undefined ? {} : { httpStatus: status }) },
+    });
+}
+
+async function sendFailureNotice(request: ReplyRequest, error: TenBotError): Promise<void> {
+    logger.error(error);
+    try {
+        const message = toPublicErrorMessage(error);
+        const sent = await request.bot.sendText(request.message.replyTarget, message);
+        rememberBotReply(request.message, message, sent);
+    }
+    catch (sendError) { logger.error(createQqSendError(sendError, 0)); }
+}
+
+function cycleReplyMessage(cycle: Cycle, request: ReplyRequest): NormalizedQqMessage {
+    return cycle.anchorMessageId ? { ...request.message, id: cycle.anchorMessageId } : request.message;
+}
+
+async function sendFallback(request: ReplyRequest, cycle: Cycle, text: string, label: "timeout" | "upstream"): Promise<void> {
+    const newer = Math.max(0, getMessageRevision(request.message) - cycle.anchorRevision);
+    const quote = shouldQuoteTrigger("auto", request.isGroup, newer, Boolean(cycle.anchorMessageId));
+    try {
+        const sent = await sendTimeoutReply(request.bot, cycleReplyMessage(cycle, request), text, quote);
+        rememberBotReply(request.message, text, sent);
+        logger.info("[Reply] " + label + " fallback sent");
+    } catch (error) { logger.error(createQqSendError(error, 0)); }
+}
+
+async function sendErrorFallback(
+    request: ReplyRequest,
+    cycle: Cycle,
+    error: TenBotError,
+    label: "timeout" | "upstream",
+): Promise<void> {
+    logger.error(error);
+    await sendFallback(request, cycle, toPublicErrorMessage(error), label);
+}
+
+async function sendNonErrorNotice(request: ReplyRequest, text: string): Promise<void> {
+    try { await request.bot.sendText(request.message.replyTarget, text); }
+    catch (error) { logger.error(createQqSendError(error, 0)); }
 }
 async function sendBotLoopNotice(request: ReplyRequest): Promise<void> {
     try {
@@ -457,18 +502,6 @@ async function sendBotLoopNotice(request: ReplyRequest): Promise<void> {
     } catch (error) {
         logger.error("[BotLoop] local notice send error", error);
     }
-}
-function cycleReplyMessage(cycle: Cycle, request: ReplyRequest): NormalizedQqMessage {
-    return cycle.anchorMessageId ? { ...request.message, id: cycle.anchorMessageId } : request.message;
-}
-async function sendFallback(request: ReplyRequest, cycle: Cycle, text: string, label: "timeout" | "upstream"): Promise<void> {
-    const newer = Math.max(0, getMessageRevision(request.message) - cycle.anchorRevision);
-    const quote = shouldQuoteTrigger("auto", request.isGroup, newer, Boolean(cycle.anchorMessageId));
-    try {
-        const sent = await sendTimeoutReply(request.bot, cycleReplyMessage(cycle, request), text, quote);
-        rememberBotReply(request.message, text, sent);
-        logger.info("[Reply] " + label + " fallback sent");
-    } catch (error) { logger.error("[Reply] " + label + " fallback send error", error); }
 }
 function webSearchCallback(request: ReplyRequest, cycle: Cycle, attempt: Attempt): () => Promise<void> {
     return async () => {
@@ -510,6 +543,11 @@ async function runAttempt(cycle: Cycle, request: ReplyRequest, input: AttemptInp
         work,
         attempt.stop.then((kind): AttemptResult => ({ kind })),
     ]);
+    if (outcome.kind === "error") {
+        if (attempt.status === "interrupted") return { kind: "interrupted" };
+        if (attempt.status === "cancelled") return { kind: "cancelled" };
+        if (attempt.status === "timed_out") return { kind: "timeout" };
+    }
     if (outcome.kind === "interrupted") return outcome;
     if (outcome.kind === "cancelled" || outcome.kind === "timeout") return outcome;
     if (Date.now() >= attempt.deadlineAt && attempt.status === "completed") {
@@ -571,7 +609,7 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
     if (result.kind === "no_reply") {
         if (!canNoReply(cycle)) {
             publishReplyLifecycle(cycle, attempt, { kind: "failed", failureStage: "generation" });
-            await sendFailureNotice(request);
+            await sendNonErrorNotice(request, AI_ERROR_REPLY);
             return;
         }
         logger.info("[AI] no reply");
@@ -583,7 +621,7 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
     const action = normalizeQQReplyAction(result.action);
     if (!action) {
         publishReplyLifecycle(cycle, attempt, { kind: "failed", failureStage: "generation" });
-        await sendFailureNotice(request);
+        await sendFailureNotice(request, new TenBotError("B:A_RA_IRA"));
         return;
     }
 
@@ -611,7 +649,7 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
                 logger.info(action.messages.length === 1 ? "[Reply] sent" : "[Reply] sent " + sent + "/" + action.messages.length);
             } catch (error) {
                 failed = true;
-                logger.error("[Reply] message " + (index + 1) + "/" + action.messages.length + " failed", error);
+                logger.error(createQqSendError(error, sent));
                 break;
             }
         }
@@ -699,19 +737,24 @@ async function executeCycle(cycle: Cycle): Promise<void> {
                 }
                 cycle.consumedRevision = attempt.snapshotRevision;
                 if (cycle.webSearchTriggered || !canNoReply(cycle)) {
-                    await sendFallback(request, cycle,
-                        cycle.webSearchTriggered ? AI_WEB_SEARCH_TIMEOUT_REPLY : AI_TIMEOUT_REPLY, "timeout");
+                    await sendErrorFallback(request, cycle, new TenBotError("M:A_MG_MTO", {
+                        safeDetails: { provider: attempt.modelPlugin.id, attempt: attempt.attemptNumber },
+                    }), "timeout");
                 } else logger.info("[Cycle] soft timeout silent");
                 break;
             }
             if (outcome.kind === "error") {
+                const abortName = outcome.error !== null && typeof outcome.error === "object" &&
+                    "name" in outcome.error && (outcome.error as { name?: unknown }).name === "AbortError";
+                if (attempt.controller.signal.aborted && (outcome.error instanceof ModelAbortedError || abortName)) {
+                    logger.info("[AI] aborted request=" + shortId(attempt.requestId));
+                    break;
+                }
                 attempt.status = "failed";
                 publishReplyLifecycle(cycle, attempt, { kind: "failed", failureStage: "generation" });
                 cycle.consumedRevision = attempt.snapshotRevision;
                 if (outcome.error instanceof ToolProtocolLeakError) {
-                    logger.error(`[AI] invalid final output code=${outcome.error.code} provider=${attempt.modelPlugin.id}` +
-                        ` model=${attempt.modelPlugin.model} request=${shortId(attempt.requestId)} attempt=${attempt.attemptNumber}`);
-                    await sendFailureNotice(request);
+                    await sendFailureNotice(request, outcome.error);
                     break;
                 }
                 const upstream = classifyUpstreamFailure(outcome.error);
@@ -720,10 +763,9 @@ async function executeCycle(cycle: Cycle): Promise<void> {
                 }
                 if (upstream) {
                     logger.info("[AI] upstream error provider=" + attempt.modelPlugin.id + " status=" + (upstream.status ?? "unknown") + " retryable=yes");
-                    await sendFallback(request, cycle, AI_UPSTREAM_ERROR_REPLY, "upstream");
+                    await sendErrorFallback(request, cycle, modelError(outcome.error, attempt.modelPlugin.id, attempt.attemptNumber), "upstream");
                 } else {
-                    logger.error("[AI] error provider=" + attempt.modelPlugin.id, outcome.error);
-                    await sendFailureNotice(request);
+                    await sendFailureNotice(request, modelError(outcome.error, attempt.modelPlugin.id, attempt.attemptNumber));
                 }
                 break;
             }
