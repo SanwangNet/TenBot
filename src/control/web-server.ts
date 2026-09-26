@@ -3,8 +3,14 @@ import { readFile, stat } from "node:fs/promises";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TenBotControl } from "./tenbot-control.js";
 import { logger } from "../shared/logger.js";
+import { parsePublicConfigPatch, validatePublicConfigPatch } from "../config/config-validation.js";
 
 const SSE_HEARTBEAT_MS = 25_000;
+const MAX_CONFIG_PATCH_BODY_BYTES = 16 * 1024;
+
+class HttpInputError extends Error {
+    constructor(readonly statusCode: number, message: string) { super(message); }
+}
 
 interface WebServerOptions {
     host: string;
@@ -150,8 +156,13 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
             return;
         }
 
+        if (pathname === "/api/config" && request.method === "PATCH") {
+            await updateConfig(request, response);
+            return;
+        }
+
         if (request.method !== "GET") {
-            response.setHeader("Allow", "GET");
+            response.setHeader("Allow", pathname === "/api/config" ? "GET, PATCH" : "GET");
             error(response, 405, "Method not allowed");
             return;
         }
@@ -212,6 +223,55 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
         }
 
         await serveStatic(pathname, response);
+    }
+
+    async function updateConfig(request: import("node:http").IncomingMessage, response: ServerResponse): Promise<void> {
+        let rawPatch: unknown;
+        try { rawPatch = await readJsonBody(request); }
+        catch (cause) {
+            if (cause instanceof HttpInputError) error(response, cause.statusCode, cause.message);
+            else error(response, 400, "Invalid request body");
+            return;
+        }
+
+        const patch = parsePublicConfigPatch(rawPatch);
+        if (!patch) {
+            error(response, 400, "Unsupported configuration patch");
+            return;
+        }
+        try { validatePublicConfigPatch(patch); }
+        catch (cause) {
+            error(response, 400, cause instanceof Error ? cause.message : "Invalid configuration value");
+            return;
+        }
+
+        try {
+            const result = await control.updateConfig(patch);
+            if (!result.ok) {
+                error(response, 500, "Unable to save configuration");
+                return;
+            }
+            json(response, 200, { result, config: control.getConfig() });
+        } catch {
+            error(response, 500, "Unable to save configuration");
+        }
+    }
+
+    async function readJsonBody(request: import("node:http").IncomingMessage): Promise<unknown> {
+        const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
+        if (contentType !== "application/json") throw new HttpInputError(415, "Content-Type must be application/json");
+        const chunks: Buffer[] = [];
+        let size = 0;
+        let tooLarge = false;
+        for await (const chunk of request) {
+            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            size += buffer.length;
+            if (size <= MAX_CONFIG_PATCH_BODY_BYTES) chunks.push(buffer);
+            else tooLarge = true;
+        }
+        if (tooLarge) throw new HttpInputError(413, "Request body is too large");
+        try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown; }
+        catch { throw new HttpInputError(400, "Invalid JSON body"); }
     }
 
     async function serveStatic(pathname: string, response: ServerResponse): Promise<void> {

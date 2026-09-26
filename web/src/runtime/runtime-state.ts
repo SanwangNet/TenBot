@@ -23,6 +23,7 @@ export type RuntimeAction =
     | { type: "bootstrap-success"; status: RuntimeStatus; config: PublicConfig }
     | { type: "bootstrap-failure"; message: string }
     | { type: "status"; status: RuntimeStatus }
+    | { type: "config-refresh"; config: PublicConfig }
     | { type: "connection"; connection: RuntimeConnectionState }
     | { type: "runtime-event"; event: RuntimeEvent; receivedAt: string };
 
@@ -40,6 +41,8 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
             return { ...state, loading: false, error: action.message };
         case "status":
             return { ...state, status: action.status, loading: false, error: null };
+        case "config-refresh":
+            return { ...state, config: action.config };
         case "connection":
             return { ...state, connection: action.connection };
         case "runtime-event":

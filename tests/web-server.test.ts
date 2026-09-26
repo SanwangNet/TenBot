@@ -13,6 +13,7 @@ import type { ConversationItem, ConversationSummary } from "../src/control/conve
 import type { AutomatedPeerSummary } from "../src/control/automated-peers.js";
 import type { KnownMemberSummary } from "../src/control/known-members.js";
 import { loadAppConfig } from "../src/config/config-validation.js";
+import type { ConfigUpdateResult, PublicConfigPatch } from "../src/config/config-types.js";
 
 const initialStatus: RuntimeStatus = {
     qq: "connected",
@@ -70,10 +71,16 @@ function createFakeControl() {
     const statusListeners = new Set<(value: RuntimeStatus) => void>();
     const logListeners = new Set<(value: LogEntry) => void>();
     const eventListeners = new Set<(value: RuntimeEvent) => void>();
+    const patchCalls: PublicConfigPatch[] = [];
+    let updateResult: ConfigUpdateResult = { ok: true, requiresRestart: false, changedFields: [], message: "saved" };
 
     const control = {
         getStatus: () => structuredClone(status),
         getConfig: () => structuredClone(publicConfig),
+        async updateConfig(patch: PublicConfigPatch) {
+            patchCalls.push(patch);
+            return updateResult;
+        },
         getConversations: () => structuredClone(conversations),
         getConversationTimeline: (id: string) => id === conversationId ? structuredClone(timeline) : [],
         getAutomatedPeers: () => structuredClone(registered),
@@ -110,6 +117,8 @@ function createFakeControl() {
         listenerCounts() {
             return { status: statusListeners.size, logs: logListeners.size, events: eventListeners.size };
         },
+        patchCalls,
+        setUpdateResult(result: ConfigUpdateResult) { updateResult = result; },
     };
 }
 
@@ -172,6 +181,77 @@ test("HTTP API reads through TenBotControl and keeps config secrets out of respo
         const methodNotAllowed = await fetch(`${baseUrl}/api/status`, { method: "POST" });
         assert.equal(methodNotAllowed.status, 405);
         assert.deepEqual(await methodNotAllowed.json(), { error: { message: "Method not allowed" } });
+    } finally {
+        await server.close();
+    }
+});
+
+test("PATCH /api/config validates allowlisted patches and delegates updates through TenBotControl", async () => {
+    const fake = createFakeControl();
+    const { server, baseUrl } = await startServer(fake.control);
+    try {
+        const response = await fetch(`${baseUrl}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ field: "replyJudge.model", value: "judge-next" }),
+        });
+        assert.equal(response.status, 200);
+        const payload = await response.json() as { result: ConfigUpdateResult; config: unknown };
+        assert.deepEqual(payload.result, { ok: true, requiresRestart: false, changedFields: [], message: "saved" });
+        assert.deepEqual(fake.patchCalls, [{ field: "replyJudge.model", value: "judge-next" }]);
+        const responseText = JSON.stringify(payload);
+        assert.doesNotMatch(responseText, /private-qq-app-secret|private-main-model-key|private-judge-key|private-deepseek-key|private-model\.example/);
+    } finally {
+        await server.close();
+    }
+});
+
+test("PATCH /api/config rejects secret fields and semantically invalid values before calling Control", async () => {
+    const fake = createFakeControl();
+    const { server, baseUrl } = await startServer(fake.control);
+    try {
+        const unsupported = await fetch(`${baseUrl}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ field: "REPLY_JUDGE_API_KEY", value: "never-accept-this" }),
+        });
+        assert.equal(unsupported.status, 400);
+        assert.deepEqual(await unsupported.json(), { error: { message: "Unsupported configuration patch" } });
+
+        const invalid = await fetch(`${baseUrl}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ field: "replyJudge.timeoutMs", value: 30.5 }),
+        });
+        assert.equal(invalid.status, 400);
+
+        const wrongType = await fetch(`${baseUrl}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ field: "replyJudge.timeoutMs", value: "15000" }),
+        });
+        assert.equal(wrongType.status, 400);
+        assert.deepEqual(fake.patchCalls, []);
+    } finally {
+        await server.close();
+    }
+});
+
+test("PATCH /api/config reports save failure without exposing backend details", async () => {
+    const fake = createFakeControl();
+    fake.setUpdateResult({ ok: false, requiresRestart: false, changedFields: [], message: "save failed", details: "private-main-model-key" });
+    const { server, baseUrl } = await startServer(fake.control);
+    try {
+        const response = await fetch(`${baseUrl}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ field: "logLevel", value: "debug" }),
+        });
+        assert.equal(response.status, 500);
+        const body = await response.text();
+        assert.match(body, /Unable to save configuration/);
+        assert.doesNotMatch(body, /private-main-model-key/);
+        assert.deepEqual(fake.patchCalls, [{ field: "logLevel", value: "debug" }]);
     } finally {
         await server.close();
     }

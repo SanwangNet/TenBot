@@ -1,18 +1,32 @@
-import { createContext, useContext, useEffect, useMemo, useReducer, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, type ReactNode } from "react";
 import { apiClient } from "../api/client.js";
 import { connectRuntimeEvents } from "../api/events.js";
-import { initialRuntimeState, runtimeReducer } from "./runtime-state.js";
+import type { PublicConfig } from "../api/types.js";
+import { initialRuntimeState, runtimeReducer, type RuntimeState } from "./runtime-state.js";
+import { initialLogViewState, logViewReducer, type LogViewAction, type LogViewState } from "../components/log-state.js";
 
-const RuntimeContext = createContext<ReturnType<typeof useRuntimeValue> | null>(null);
+interface RuntimeContextValue extends RuntimeState {
+    acceptConfig(config: PublicConfig): void;
+}
 
-function useRuntimeValue() {
+interface LogContextValue {
+    state: LogViewState;
+    dispatch(action: LogViewAction): void;
+}
+
+const RuntimeContext = createContext<RuntimeContextValue | null>(null);
+const LogContext = createContext<LogContextValue | null>(null);
+
+export function RuntimeProvider({ children }: { children: ReactNode }) {
     const [state, dispatch] = useReducer(runtimeReducer, initialRuntimeState);
+    const [logState, dispatchLog] = useReducer(logViewReducer, initialLogViewState);
 
+    const acceptConfig = useCallback((config: PublicConfig) => dispatch({ type: "config-refresh", config }), []);
     useEffect(() => {
         const controller = new AbortController();
         const closeEvents = connectRuntimeEvents({
             onStatus: (status) => dispatch({ type: "status", status }),
-            onLog: () => undefined,
+            onLog: (entry) => dispatchLog({ type: "append", entry }),
             onRuntimeEvent: (event) => dispatch({ type: "runtime-event", event, receivedAt: new Date().toISOString() }),
             onConnection: (connection) => dispatch({ type: "connection", connection }),
         });
@@ -33,16 +47,31 @@ function useRuntimeValue() {
         };
     }, []);
 
-    return useMemo(() => ({ ...state }), [state]);
-}
+    const configRevision = state.status?.hotReload?.revision;
+    useEffect(() => {
+        if (configRevision === undefined) return;
+        const controller = new AbortController();
+        void apiClient.getConfig(controller.signal)
+            .then((config) => dispatch({ type: "config-refresh", config }))
+            .catch(() => undefined);
+        return () => controller.abort();
+    }, [configRevision]);
 
-export function RuntimeProvider({ children }: { children: ReactNode }) {
-    const value = useRuntimeValue();
-    return <RuntimeContext.Provider value={value}>{children}</RuntimeContext.Provider>;
+    const runtimeValue = useMemo<RuntimeContextValue>(() => ({ ...state, acceptConfig }), [state, acceptConfig]);
+    const logValue = useMemo<LogContextValue>(() => ({ state: logState, dispatch: dispatchLog }), [logState]);
+    return <RuntimeContext.Provider value={runtimeValue}>
+        <LogContext.Provider value={logValue}>{children}</LogContext.Provider>
+    </RuntimeContext.Provider>;
 }
 
 export function useRuntime() {
     const context = useContext(RuntimeContext);
     if (!context) throw new Error("useRuntime must be used within RuntimeProvider");
+    return context;
+}
+
+export function useLogs() {
+    const context = useContext(LogContext);
+    if (!context) throw new Error("useLogs must be used within RuntimeProvider");
     return context;
 }

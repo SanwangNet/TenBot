@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { OverviewPage } from "./components/overview-page.js";
+import { SettingsPage } from "./settings/settings-page.js";
+import { LogsPage } from "./components/logs-page.js";
 import { useRuntime } from "./runtime/runtime-context.js";
 
 const pages = [
@@ -83,6 +85,10 @@ export function App() {
                     )}
                     {page === "overview"
                         ? <OverviewPage />
+                        : page === "settings"
+                            ? <SettingsPage />
+                            : page === "logs"
+                                ? <LogsPage />
                         : <section className="placeholder-panel">
                             <div className="eyebrow">TENBOT CONTROL</div>
                             <h1>{currentPage.label}</h1>

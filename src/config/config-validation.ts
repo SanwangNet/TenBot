@@ -256,6 +256,34 @@ export function validatePublicConfigPatch(patch: PublicConfigPatch): string {
     }
 }
 
+/** Checks transport input shape and primitive types before semantic validation. */
+export function parsePublicConfigPatch(value: unknown): PublicConfigPatch | undefined {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    if (Object.keys(record).length !== 2 || !Object.hasOwn(record, "field") || !Object.hasOwn(record, "value")) return undefined;
+    const field = record.field;
+    const patchValue = record.value;
+    if (typeof field !== "string") return undefined;
+
+    switch (field) {
+        case "aiProvider":
+        case "gpt.reasoningEffort":
+        case "gpt.verbosity":
+        case "deepseek.reasoningEffort":
+        case "logLevel":
+            return typeof patchValue === "string" ? { field, value: patchValue } as PublicConfigPatch : undefined;
+        case "gpt.model":
+        case "deepseek.model":
+        case "replyJudge.model":
+            return typeof patchValue === "string" ? { field, value: patchValue } as PublicConfigPatch : undefined;
+        case "replyJudge.timeoutMs":
+        case "botLoopGuard.maxCycles":
+            return typeof patchValue === "number" ? { field, value: patchValue } as PublicConfigPatch : undefined;
+        default:
+            return undefined;
+    }
+}
+
 export function patchValueAsString(patch: PublicConfigPatch): string {
     return String(patch.value).trim();
 }

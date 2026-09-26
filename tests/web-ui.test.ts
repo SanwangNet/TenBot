@@ -6,6 +6,15 @@ import { ApiError, parseJsonResponse } from "../web/src/api/client.js";
 import { parseEventData } from "../web/src/api/events.js";
 import type { PublicConfig, RuntimeStatus } from "../web/src/api/types.js";
 import { initialRuntimeState, runtimeReducer } from "../web/src/runtime/runtime-state.js";
+import {
+    createSettingsForm,
+    dirtySettingsFields,
+    parseTimeoutInput,
+    settingsFormReducer,
+    settingsPatches,
+} from "../web/src/settings/settings-state.js";
+import { filterLogs, initialLogViewState, logViewReducer, MAX_WEB_LOG_ENTRIES } from "../web/src/components/log-state.js";
+import type { LogEntry } from "../web/src/api/types.js";
 
 const status: RuntimeStatus = {
     qq: "connected",
@@ -61,6 +70,64 @@ test("Runtime reducer preserves live status over bootstrap and tracks connection
     });
     assert.equal(recent.connection, "online");
     assert.equal(recent.lastRuntimeEventAt, "2026-03-01T12:00:00.000Z");
+});
+
+test("settings form calculates dirty fields and serializable patches with numeric conversion", () => {
+    let form = createSettingsForm(config);
+    form = settingsFormReducer(form, { type: "edit", field: "replyJudge.timeoutMs", value: "15000" })!;
+    form = settingsFormReducer(form, { type: "edit", field: "aiProvider", value: "deepseek" })!;
+    assert.deepEqual(dirtySettingsFields(form), ["aiProvider", "replyJudge.timeoutMs"]);
+    assert.deepEqual(settingsPatches(form), [
+        { field: "aiProvider", value: "deepseek" },
+        { field: "replyJudge.timeoutMs", value: 15000 },
+    ]);
+    assert.equal(parseTimeoutInput("15000"), 15000);
+    assert.equal(parseTimeoutInput("999"), null);
+    assert.equal(parseTimeoutInput("1500.5"), null);
+});
+
+test("settings external refresh reloads clean forms and preserves dirty edits with a conflict notice", () => {
+    const changedConfig: PublicConfig = { ...config, replyJudge: { ...config.replyJudge, model: "external-judge" } };
+    const clean = settingsFormReducer(createSettingsForm(config), { type: "server-refresh", config: changedConfig });
+    assert.equal(clean?.baseline.replyJudge.model, "external-judge");
+    assert.equal(clean?.values["replyJudge.model"], "external-judge");
+
+    let dirty = settingsFormReducer(createSettingsForm(config), { type: "edit", field: "replyJudge.model", value: "my-unsaved-model" })!;
+    dirty = settingsFormReducer(dirty, { type: "server-refresh", config: changedConfig })!;
+    assert.equal(dirty.externalConflict, true);
+    assert.equal(dirty.baseline.replyJudge.model, config.replyJudge.model);
+    assert.equal(dirty.values["replyJudge.model"], "my-unsaved-model");
+});
+
+test("log reducer bounds the browser buffer, keeps append order, and clears only local entries", () => {
+    let state = initialLogViewState;
+    for (let index = 0; index <= MAX_WEB_LOG_ENTRIES; index++) {
+        state = logViewReducer(state, { type: "append", entry: { timestamp: String(index), level: "info", text: `line ${index}` } });
+    }
+    assert.equal(state.entries.length, MAX_WEB_LOG_ENTRIES);
+    assert.equal(state.entries[0]?.text, "line 1");
+    assert.equal(state.entries.at(-1)?.text, `line ${MAX_WEB_LOG_ENTRIES}`);
+    const cleared = logViewReducer(state, { type: "clear" });
+    assert.deepEqual(cleared.entries, []);
+    assert.equal(state.entries.length, MAX_WEB_LOG_ENTRIES);
+});
+
+test("log filtering matches level and case-insensitive text; follow state counts unseen rows", () => {
+    const entries: LogEntry[] = [
+        { timestamp: "1", level: "debug", text: "Loading Config" },
+        { timestamp: "2", level: "error", text: "Model FAILED" },
+        { timestamp: "3", level: "info", text: "Runtime ready" },
+    ];
+    assert.deepEqual(filterLogs(entries, "error", "failed"), [entries[1]]);
+    assert.deepEqual(filterLogs(entries, "all", "CONFIG"), [entries[0]]);
+
+    let state = logViewReducer(initialLogViewState, { type: "set-follow", follow: false });
+    state = logViewReducer(state, { type: "append", entry: entries[0]! });
+    assert.equal(state.follow, false);
+    assert.equal(state.unseenCount, 1);
+    state = logViewReducer(state, { type: "scroll-position", atBottom: true });
+    assert.equal(state.follow, true);
+    assert.equal(state.unseenCount, 0);
 });
 
 test("Vite API proxy streams SSE frames from the backend", async () => {

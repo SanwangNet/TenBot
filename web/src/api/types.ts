@@ -32,13 +32,38 @@ export interface RuntimeStatus {
     shuttingDown: boolean;
 }
 
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
+export type ModelVerbosity = "low" | "medium" | "high";
+export type LogLevel = "debug" | "info" | "error";
+
 export interface PublicConfig {
     aiProvider: "gpt" | "deepseek";
     replyJudge: { model: string; timeoutMs: number };
-    gpt: { model: string; reasoningEffort: string; verbosity: string; configured: boolean };
-    deepseek: { model: string; reasoningEffort: string; configured: boolean };
-    logLevel: string;
+    gpt: { model: string; reasoningEffort: ReasoningEffort; verbosity: ModelVerbosity; configured: boolean };
+    deepseek: { model: string; reasoningEffort: ReasoningEffort; configured: boolean };
+    logLevel: LogLevel;
     botLoopGuard: { maxCycles: number; automatedPeerCount: number };
+}
+
+export type PublicConfigPatch =
+    | { field: "aiProvider"; value: "gpt" | "deepseek" }
+    | { field: "gpt.model"; value: string }
+    | { field: "gpt.reasoningEffort"; value: ReasoningEffort }
+    | { field: "gpt.verbosity"; value: ModelVerbosity }
+    | { field: "deepseek.model"; value: string }
+    | { field: "deepseek.reasoningEffort"; value: ReasoningEffort }
+    | { field: "replyJudge.model"; value: string }
+    | { field: "replyJudge.timeoutMs"; value: number }
+    | { field: "logLevel"; value: LogLevel }
+    | { field: "botLoopGuard.maxCycles"; value: number };
+
+export type ConfigUpdateResult =
+    | { ok: true; requiresRestart: boolean; changedFields: string[]; message: string }
+    | { ok: false; requiresRestart: false; changedFields: string[]; message: string; details?: string };
+
+export interface ConfigPatchResponse {
+    result: Extract<ConfigUpdateResult, { ok: true }>;
+    config: PublicConfig;
 }
 
 export interface ConversationSummary {

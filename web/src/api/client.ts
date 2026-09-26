@@ -1,9 +1,11 @@
 import type {
     AutomatedPeerSummary,
+    ConfigPatchResponse,
     ConversationItem,
     ConversationSummary,
     KnownMemberSummary,
     PublicConfig,
+    PublicConfigPatch,
     RuntimeStatus,
 } from "./types.js";
 
@@ -44,6 +46,22 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
     return parseJsonResponse<T>(response.status, await response.text());
 }
 
+async function sendJson<T>(path: string, method: "PATCH", body: unknown, signal?: AbortSignal): Promise<T> {
+    let response: Response;
+    try {
+        response = await fetch(path, {
+            method,
+            headers: { Accept: "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal,
+        });
+    } catch (cause) {
+        if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+        throw new ApiError("Unable to connect to TenBot Runtime");
+    }
+    return parseJsonResponse<T>(response.status, await response.text());
+}
+
 export const apiClient = {
     getStatus: (signal?: AbortSignal) => getJson<RuntimeStatus>("/api/status", signal),
     getConfig: (signal?: AbortSignal) => getJson<PublicConfig>("/api/config", signal),
@@ -52,4 +70,6 @@ export const apiClient = {
         getJson<ConversationItem[]>(`/api/conversations/${encodeURIComponent(id)}`, signal),
     getAutomatedPeers: (signal?: AbortSignal) => getJson<{ registered: AutomatedPeerSummary[]; recent: AutomatedPeerSummary[] }>("/api/automated-peers", signal),
     getKnownMembers: (signal?: AbortSignal) => getJson<KnownMemberSummary[]>("/api/known-members", signal),
+    updateConfig: (patch: PublicConfigPatch, signal?: AbortSignal) =>
+        sendJson<ConfigPatchResponse>("/api/config", "PATCH", patch, signal),
 };
