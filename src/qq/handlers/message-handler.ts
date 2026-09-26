@@ -5,7 +5,9 @@ import type {
 
 import { buildAiInput, buildReplyPolicy } from "../../ai/input-builder.js";
 import { buildReplyJudgeRequest } from "../../front/build-reply-judge-request.js";
+import { decideFrontPolicy } from "../../front/front-policy.js";
 import type { ReplyJudge } from "../../front/reply-judge.js";
+import type { FrontMode } from "../../front/wake-level.js";
 import type { ReplyCoordinatorDependencies, ReplyRequest } from "../reply/coordinator.js";
 import { TenBotError, isTenBotError } from "../../errors/tenbot-error.js";
 import { routeCommand } from "../../commands/router.js";
@@ -61,8 +63,10 @@ export function registerMessageHandler(
     observeConversationMessage?: (message: NormalizedQqMessage) => void,
     replyJudge?: ReplyJudge,
     coordinatorDependencies: ReplyCoordinatorDependencies = {},
+    getFrontMode: () => FrontMode = () => "legacy",
 ): void {
     bot.on("message", async (context, message: QQBotInboundMessage) => {
+        const frontMode = getFrontMode();
         const normalized = await normalizeQqMessage(context, message);
         debugPeerIdentity(normalized.authorName, normalized.authorId);
         const isAutomatedPeer = loopGuard.isAutomatedPeer(normalized.authorId);
@@ -114,6 +118,13 @@ export function registerMessageHandler(
 
         const activeConversation = isGroupEvent ? isConversationActive(normalized) : false;
         const trigger = decideMessageTrigger(normalized, activeConversation);
+        const frontDecision = decideFrontPolicy(frontMode, {
+            isPrivateMessage: normalized.kind === "c2c" || normalized.kind === "dm",
+            hardMention: trigger.isAtBot,
+            nameMention: trigger.mentionedByName,
+            conversationActive: trigger.activeConversation,
+            quotedBot: normalized.quotedBot === true,
+        });
 
         // Filtered QQ faces and local commands never increment revision or interrupt generation.
         const revision = recordIncomingMessageRevision(normalized);
@@ -136,6 +147,7 @@ export function registerMessageHandler(
             aiInput: "",
             imageUrls: [],
             isGroup: trigger.isGroup,
+            frontMode,
             wakeLevel: "pass",
             wakeReason: trigger.triggerKind === "hard-mention" ? undefined :
                 trigger.triggerKind ?? "reply-judge",
@@ -184,6 +196,7 @@ export function registerMessageHandler(
                     "wake_level=" + context.wakeLevel,
                     "admission=" + (context.admission ?? "runtime"),
                     "reason=" + (context.wakeReason ?? "none"),
+                    "front_mode=" + context.frontMode,
                     "</front_decision>",
                 ].join("\n");
                 const recentImageUrls = getRecentImages(attemptMessage, 1);
@@ -209,11 +222,15 @@ export function registerMessageHandler(
         // This synchronous observation bumps/interupts the existing Cycle before any Judge I/O.
         observeConversationUpdate(request);
 
-        if (trigger.isAtBot) {
-            logger.info("[Trigger] mention / hard");
-            await admitConversationWake(request, "hard", "hard-mention", cycleDependencies);
+        if (frontDecision.kind === "admit") {
+            if (frontDecision.wakeLevel === "hard") logger.info(frontDecision.reason === "private-message"
+                ? "[Trigger] private message / hard"
+                : "[Trigger] mention / hard");
+            await admitConversationWake({ ...request, admission: frontDecision.admission },
+                frontDecision.wakeLevel, frontDecision.reason, cycleDependencies);
             return;
         }
+        if (frontDecision.kind === "pass") return;
 
         const judgeRequest = buildReplyJudgeRequest(normalized, {
             nameMention: trigger.mentionedByName,
@@ -232,7 +249,7 @@ export function registerMessageHandler(
             const reason = trigger.triggerKind && trigger.triggerKind !== "hard-mention"
                 ? trigger.triggerKind
                 : "reply-judge";
-            await admitConversationWake(request, "soft", reason, cycleDependencies);
+            await admitConversationWake({ ...request, admission: "reply-judge" }, "soft", reason, cycleDependencies);
         } catch (error) {
             const frontError = isTenBotError(error) ? error : new TenBotError("F:A_RJ_JRF");
             await sendFrontFailureNotice(bot, normalized, frontError);

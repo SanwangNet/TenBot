@@ -3,9 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { mergeMemeCandidates, mergeMemeCandidatesWithinLimit, serializeMemes, writeMemeJson } from "../scripts/meme-update-core.js";
 import { buildMemeResearchInstructions, buildMemeResearchSchema, parseMemeUpdateArgs, researchCandidateLimit } from "../scripts/meme-update.js";
-import { searchMemes } from "../src/skills/meme/search.js";
-import { lookupMeme, memeLookupTool } from "../src/skills/meme/skill.js";
+import { createMemeSearchIndex, searchMemes } from "../src/skills/meme/search.js";
+import { lookupMeme as lookupMemeFromRuntime, memeLookupTool } from "../src/skills/meme/skill.js";
 import type { MemeCandidate, MemeEntry } from "../src/skills/meme/types.js";
+import type { MemeRuntimeSnapshot } from "../src/skills/meme/store.js";
 import { validateMemeCandidate, validateMemeEntry, validateMemeFile } from "../src/skills/meme/validation.js";
 
 const candidate: MemeCandidate = {
@@ -13,6 +14,24 @@ const candidate: MemeCandidate = {
     origin: "示例出处", meaning: "示例含义", usage: "示例用法", examples: ["示例句"],
 };
 const entry: MemeEntry = { id: "meme-123456789abc", ...candidate };
+const lookupFixtureEntry: MemeEntry = {
+    id: "meme-test-fixture",
+    name: "fixture meme",
+    aliases: ["fixture", "kskbl"],
+    summary: "A fixed test summary",
+    origin: "A fixed test origin",
+    meaning: "A fixed test meaning",
+    usage: "A fixed test usage",
+    examples: ["A fixed test example"],
+};
+const emptyLookupFixture: MemeRuntimeSnapshot = {
+    entries: [], index: createMemeSearchIndex([]), loadedAt: "fixture", revision: 1,
+};
+const detailedLookupFixture: MemeRuntimeSnapshot = {
+    entries: [lookupFixtureEntry], index: createMemeSearchIndex([lookupFixtureEntry]), loadedAt: "fixture", revision: 1,
+};
+const lookupMeme = (argumentsJson: string, snapshot: MemeRuntimeSnapshot = emptyLookupFixture): string =>
+    lookupMemeFromRuntime(argumentsJson, snapshot);
 const dataUrl = new URL("../src/skills/meme/data/memes.json", import.meta.url);
 const makeCandidate = (index: number): MemeCandidate => ({
     ...candidate,
@@ -171,7 +190,7 @@ test("runtime lookup is read-only and misses safely", async () => {
     assert.equal(await readFile(dataUrl, "utf8"), before);
 });
 test("meme_lookup returns detailed knowledge without ids or removed metadata", () => {
-    const result = JSON.parse(lookupMeme('{"query":"kskbl"}')) as Record<string, unknown>[];
+    const result = JSON.parse(lookupMeme('{"query":"kskbl"}', detailedLookupFixture)) as Record<string, unknown>[];
     assert.ok(result.length > 0);
     assert.deepEqual(Object.keys(result[0]),
         ["confidence", "name", "aliases", "summary", "origin", "meaning", "usage", "examples"]);
@@ -201,7 +220,10 @@ test("offline meme_lookup call continues to final reply", async () => {
             { status: 200, headers: { "content-type": "text/event-stream" } });
     };
     try {
-        const result = await chat("未知梗是什么意思", { signal: new AbortController().signal });
+        const result = await chat("未知梗是什么意思", {
+            signal: new AbortController().signal,
+            memeSnapshot: emptyLookupFixture,
+        });
         assert.equal(result.kind, "reply");
         if (result.kind === "reply") assert.deepEqual(result.action.messages.map((message) => message.content), ["我还不确定这个梗的意思。"]);
         assert.equal(requests.length, 2);

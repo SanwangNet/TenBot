@@ -1,9 +1,11 @@
 import type { ModelVerbosity, ReasoningEffort } from "../ai/model-plugin.js";
 import type { LogLevel } from "../shared/logger.js";
+import type { FrontMode } from "../front/wake-level.js";
 
 export type ModelProviderId = "gpt" | "deepseek";
 
 export interface AppConfig {
+    frontMode: FrontMode;
     qq: {
         appId?: string;
         appSecret?: string;

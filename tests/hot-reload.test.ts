@@ -38,6 +38,34 @@ test("RuntimeConfigSnapshotStore swaps future Attempt plugins and preserves in-f
     assert.equal(oldAttemptPlugin.model, "gpt-old");
 });
 
+test("Front mode hot swaps with runtime config; invalid Judge config leaves the previous snapshot active", () => {
+    const legacyConfig = loadAppConfig({ FRONT_MODE: "legacy", AI_PROVIDER: "gpt" });
+    const snapshots = new RuntimeConfigSnapshotStore(legacyConfig, (config) => fakePlugin(
+        config.ai.provider,
+        config.ai.provider === "gpt" ? config.ai.gpt.model : config.ai.deepseek.model,
+    ), () => undefined);
+    const inFlight = snapshots.get();
+    assert.equal(inFlight.appConfig.frontMode, "legacy");
+
+    assert.throws(() => snapshots.replace(loadAppConfig({ FRONT_MODE: "judge", AI_PROVIDER: "gpt" })), /REPLY_JUDGE_PROVIDER/);
+    assert.equal(snapshots.get(), inFlight);
+
+    const judgeConfig = loadAppConfig({
+        FRONT_MODE: "judge",
+        AI_PROVIDER: "gpt",
+        REPLY_JUDGE_PROVIDER: "openai-compatible",
+        REPLY_JUDGE_MODEL: "judge-test",
+        REPLY_JUDGE_BASE_URL: "https://judge.example/v1",
+        REPLY_JUDGE_API_KEY: "secret",
+    });
+    snapshots.replace(judgeConfig);
+    assert.equal(snapshots.get().appConfig.frontMode, "judge");
+    assert.equal(inFlight.appConfig.frontMode, "legacy", "captured requests retain the old Front policy snapshot");
+
+    snapshots.replace(loadAppConfig({ FRONT_MODE: "legacy", AI_PROVIDER: "gpt" }));
+    assert.equal(snapshots.get().appConfig.frontMode, "legacy");
+});
+
 test("the production model registry pointer is replaced for later Attempt snapshots", () => {
     const initialConfig = loadAppConfig({ AI_PROVIDER: "gpt", CODEX_MODEL: "gpt-old" });
     const store = new RuntimeConfigSnapshotStore(initialConfig);

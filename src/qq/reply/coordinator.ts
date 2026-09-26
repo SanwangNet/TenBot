@@ -23,7 +23,7 @@ import { getConversationKey, getMessageRevision, rememberBotReply, removeMessage
 import { getConversationGeneration, markConversationActive, stopConversation } from "../conversation/engagement.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
 import type { TriggerKind } from "../message/trigger.js";
-import { wakeLevelRank, type WakeAdmission, type WakeLevel, type WakeReason } from "../../front/wake-level.js";
+import { wakeLevelRank, type FrontMode, type WakeAdmission, type WakeLevel, type WakeReason } from "../../front/wake-level.js";
 import { prepareAiReply } from "./renderer.js";
 import { getTriggerMessageId, sendAiReply, sendTimeoutReply } from "./sender.js";
 
@@ -41,12 +41,15 @@ interface TrailingUpdate {
     priority: TriggerPriority;
     wakeLevel?: WakeLevel;
     wakeReason?: WakeReason;
+    admission?: WakeAdmission;
+    frontMode?: FrontMode;
     admitted?: boolean;
 }
 export interface AttemptInput { aiInput: string; imageUrls: string[]; refs?: Map<string, string>; memeSnapshot?: MemeRuntimeSnapshot }
 export interface AttemptBuildContext {
     snapshotRevision: number;
     allowNoReply: boolean;
+    frontMode: FrontMode;
     wakeLevel: WakeLevel;
     wakeReason?: WakeReason;
     admission?: WakeAdmission;
@@ -65,6 +68,7 @@ export interface ReplyRequest {
     aiInput: string;
     imageUrls: string[];
     isGroup: boolean;
+    frontMode?: FrontMode;
     wakeLevel: WakeLevel;
     wakeReason?: WakeReason;
     admission?: WakeAdmission;
@@ -173,6 +177,7 @@ interface Cycle {
     currentAttempt?: Attempt;
     consumedRevision: number;
     latestRequest: ReplyRequest;
+    frontMode: FrontMode;
     priority: TriggerPriority;
     wakeLevel: WakeLevel;
     wakeReason?: WakeReason;
@@ -322,13 +327,20 @@ function applyWakeAdmission(cycle: Cycle, request: ReplyRequest, priority: Trigg
 }
 function canNoReply(cycle: Cycle): boolean { return cycle.wakeLevel === "soft"; }
 function buildAttemptContext(cycle: Cycle, revision: number): AttemptBuildContext {
-    return { snapshotRevision: revision, allowNoReply: canNoReply(cycle), wakeLevel: cycle.wakeLevel,
+    return { snapshotRevision: revision, allowNoReply: canNoReply(cycle), frontMode: cycle.frontMode, wakeLevel: cycle.wakeLevel,
         wakeReason: cycle.wakeReason, admission: cycle.admission, triggerPriority: cycle.priority,
         originTriggerKind: cycle.originTriggerKind, effectiveTriggerKind: cycle.effectiveTriggerKind,
         originAnchor: cycle.originAnchor, effectiveAnchor: cycle.effectiveAnchor,
         newerMessages: cycle.updates.filter((item) =>
             item.revision > cycle.lastAttemptSnapshotRevision && item.revision <= revision),
         isAtBot: cycle.hasAtBot, mentionedByName: cycle.hasName };
+}
+function admissionOf(request: ReplyRequest, wakeLevel: WakeLevel): WakeAdmission {
+    if (request.admission) return request.admission;
+    if (wakeLevel === "hard") return request.wakeReason === "private-message" ? "private-message" : "hard-mention";
+    return request.wakeReason === "name-soft" || request.wakeReason === "active-soft" || request.wakeReason === "quoted-bot"
+        ? request.wakeReason
+        : "reply-judge";
 }
 function semanticAnchorText(context: AttemptBuildContext, refs?: Map<string, string>): string {
     const byId = new Map<string, string>();
@@ -380,10 +392,11 @@ function createCycle(request: ReplyRequest, deps: Dependencies, priority: Trigge
         interruptionCount: 0, timeoutRetryCount: 0, attemptNumber: 0, cycleStartedAt: started,
         deadlineAt: started + (deps.timeoutMs ?? AI_REQUEST_TIMEOUT_MS),
         webSearchTriggered: false, consumedRevision: revision - 1,
-        latestRequest: request, priority, originTriggerKind: triggerKindOf(request, originPriority),
+        latestRequest: request, frontMode: request.frontMode ?? "legacy", priority,
+        originTriggerKind: triggerKindOf(request, originPriority),
         effectiveTriggerKind: triggerKindOf(request, priority),
         wakeLevel, wakeReason: wakeReasonOf(request, wakeLevel),
-        admission: request.admission ?? (wakeLevel === "hard" ? "hard-mention" : "reply-judge"),
+        admission: admissionOf(request, wakeLevel),
         originAnchor, effectiveAnchor, updates: trailingUpdates.slice(1).map((item) => item.anchor),
         lastAttemptSnapshotRevision: originAnchor.revision,
         engagementGeneration: request.isGroup ? getConversationGeneration(request.message) : undefined,
@@ -424,6 +437,8 @@ function updateCycle(cycle: Cycle, request: ReplyRequest): void {
         priority,
         wakeLevel,
         wakeReason: wakeReasonOf(request, wakeLevel),
+        admission: request.admission,
+        frontMode: request.frontMode,
         admitted,
     });
 
@@ -478,7 +493,7 @@ export function admitConversationWake(
     if (!acceptingCycles || wakeLevel === "pass") {
         return cycles.get(getConversationKey(request.message))?.done ?? Promise.resolve();
     }
-    const admission: WakeAdmission = wakeLevel === "hard" ? "hard-mention" : "reply-judge";
+    const admission = admissionOf(request, wakeLevel);
     const acceptedRequest: ReplyRequest = {
         ...request,
         wakeLevel,
@@ -499,6 +514,8 @@ export function admitConversationWake(
                 queued.priority = Math.max(queued.priority, priority) as TriggerPriority;
                 queued.wakeLevel = wakeLevel;
                 queued.wakeReason = wakeReason;
+                queued.admission = admission;
+                queued.frontMode = request.frontMode;
                 queued.admitted = true;
             }
             applyWakeAdmission(active, acceptedRequest, priority, incoming);
@@ -805,7 +822,9 @@ function finishCycle(cycle: Cycle): void {
             triggerKind: wakeReason === "quoted-bot" ? "quoted-bot" : kindOf(priority, request.isGroup),
             wakeLevel,
             wakeReason,
-            admission: wakeLevel === "hard" ? "hard-mention" : "reply-judge" };
+            admission: admittedUpdates.find((item) => item.wakeLevel === "hard")?.admission ??
+                admittedUpdates[admittedUpdates.length - 1]?.admission ?? (wakeLevel === "hard" ? "hard-mention" : "reply-judge"),
+            frontMode: admittedUpdates[admittedUpdates.length - 1]?.frontMode ?? cycle.frontMode };
         void startNewCycle(followup, cycle.deps, priority, trailingUpdates, true);
     });
 }

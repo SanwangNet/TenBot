@@ -171,7 +171,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             control?.publishStatus();
         }, (message) => {
             if (recentPeers.observe(message)) control?.publishEvent({ type: "recent-peers-updated" });
-        }, observeConversationMessage, runtimeSnapshot.appConfig.qq, replyJudge);
+        }, observeConversationMessage, runtimeSnapshot.appConfig.qq, replyJudge,
+        () => runtimeSnapshots.get().appConfig.frontMode);
     } catch (error) {
         logs.dispose();
         setConsoleLogOutputEnabled(true);

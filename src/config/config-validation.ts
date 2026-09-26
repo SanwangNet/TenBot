@@ -1,6 +1,7 @@
 import type { ModelVerbosity, ReasoningEffort } from "../ai/model-plugin.js";
 import type { LogLevel } from "../shared/logger.js";
 import type { AppConfig, ModelProviderId, PublicConfig, PublicConfigPatch } from "./config-types.js";
+import type { FrontMode } from "../front/wake-level.js";
 
 export const DEFAULT_GPT_MODEL = "gpt-6-sol";
 export const DEFAULT_DEEPSEEK_MODEL = "deepseek-flash";
@@ -10,6 +11,7 @@ export const DEFAULT_GPT_VERBOSITY: ModelVerbosity = "high";
 export const DEFAULT_DEEPSEEK_REASONING_EFFORT: ReasoningEffort = "high";
 export const DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES = 4;
 export const DEFAULT_REPLY_JUDGE_TIMEOUT_MS = 5_000;
+export const DEFAULT_FRONT_MODE: FrontMode = "legacy";
 
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh"];
 const VERBOSITIES: readonly ModelVerbosity[] = ["low", "medium", "high"];
@@ -72,8 +74,13 @@ function parseProvider(value: string | undefined): ModelProviderId {
 function parseReplyJudgeProvider(value: string | undefined): "openai-compatible" | undefined {
     const normalized = value?.trim().toLowerCase();
     if (!normalized) return undefined;
-    if (normalized === "openai-compatible") return normalized;
-    throw new Error("不支持的 REPLY_JUDGE_PROVIDER");
+    return normalized === "openai-compatible" ? normalized : undefined;
+}
+
+function parseFrontMode(value: string | undefined): FrontMode {
+    const normalized = value?.trim().toLowerCase() || DEFAULT_FRONT_MODE;
+    if (normalized === "legacy" || normalized === "judge") return normalized;
+    throw new Error("FRONT_MODE must be legacy or judge");
 }
 
 function parseReplyJudgeBaseURL(value: string | undefined): string | undefined {
@@ -105,7 +112,27 @@ function parseReplyJudgeTimeout(value: string | undefined): number {
 
 export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     const provider = parseProvider(env.AI_PROVIDER);
+    const frontMode = parseFrontMode(env.FRONT_MODE);
+    const replyJudge = {
+        provider: parseReplyJudgeProvider(env.REPLY_JUDGE_PROVIDER),
+        model: parseModelName(env.REPLY_JUDGE_MODEL, ""),
+        baseURL: parseReplyJudgeBaseURL(env.REPLY_JUDGE_BASE_URL),
+        apiKey: env.REPLY_JUDGE_API_KEY?.trim() || undefined,
+        timeoutMs: parseReplyJudgeTimeout(env.REPLY_JUDGE_TIMEOUT_MS),
+    };
+    if (frontMode === "judge") {
+        const missing = [
+            !replyJudge.provider && "REPLY_JUDGE_PROVIDER",
+            !replyJudge.model && "REPLY_JUDGE_MODEL",
+            !replyJudge.baseURL && "REPLY_JUDGE_BASE_URL",
+            !replyJudge.apiKey && "REPLY_JUDGE_API_KEY",
+        ].filter((field): field is string => Boolean(field));
+        if (missing.length) {
+            throw new Error(`FRONT_MODE=judge requires valid ${missing.join(", ")}`);
+        }
+    }
     return {
+        frontMode,
         qq: {
             appId: env.QQBOT_APP_ID,
             appSecret: env.QQBOT_APP_SECRET,
@@ -126,13 +153,7 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
                 reasoningEffort: parseReasoningEffort(env.DEEPSEEK_REASONING_EFFORT, DEFAULT_DEEPSEEK_REASONING_EFFORT),
             },
         },
-        replyJudge: {
-            provider: parseReplyJudgeProvider(env.REPLY_JUDGE_PROVIDER),
-            model: parseModelName(env.REPLY_JUDGE_MODEL, ""),
-            baseURL: parseReplyJudgeBaseURL(env.REPLY_JUDGE_BASE_URL),
-            apiKey: env.REPLY_JUDGE_API_KEY,
-            timeoutMs: parseReplyJudgeTimeout(env.REPLY_JUDGE_TIMEOUT_MS),
-        },
+        replyJudge,
         logging: { level: parseLogLevel(env.BOT_LOG_LEVEL) },
         botLoopGuard: {
             maxCycles: parseBotLoopGuardMaxCycles(env.BOT_LOOP_GUARD_MAX_CYCLES),

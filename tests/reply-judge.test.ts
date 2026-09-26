@@ -8,6 +8,7 @@ import { TenBotError } from "../src/errors/tenbot-error.js";
 import { formatTenBotError, toPublicErrorMessage } from "../src/errors/format.js";
 import { loadAppConfig } from "../src/config/config-validation.js";
 import { buildReplyJudgeRequest } from "../src/front/build-reply-judge-request.js";
+import type { FrontMode } from "../src/front/wake-level.js";
 import { OpenAICompatibleReplyJudge } from "../src/front/openai-compatible-reply-judge.js";
 import { parseReplyJudgeOutput, type ReplyJudge, type ReplyJudgeRequest } from "../src/front/reply-judge.js";
 import { ReplyJudgePromptStore } from "../src/front/reply-judge-prompt-store.js";
@@ -78,10 +79,28 @@ function fakeMessage(
     } as unknown as QQBotInboundMessage;
 }
 
+function fakePrivateMessage(id: string, content: string): QQBotInboundMessage {
+    const userId = "private-user-" + id;
+    return {
+        kind: "c2c",
+        rawEventType: "C2C_MESSAGE_CREATE",
+        content,
+        messageId: id,
+        msgIdx: "private-ref-" + id,
+        senderId: userId,
+        senderName: "Friend",
+        replyTarget: { scope: "c2c", targetId: userId, msgId: id },
+        timestamp: new Date().toISOString(),
+        mentions: [],
+        raw: { author: { user_openid: userId, username: "Friend" } },
+    } as unknown as QQBotInboundMessage;
+}
+
 function register(
     state: FakeBotState,
     judge: ReplyJudge,
     executeAi: (input: string, options: { signal: AbortSignal }) => Promise<AiResult>,
+    frontMode: FrontMode | (() => FrontMode) = "judge",
 ): FakeBotState["handler"] {
     const guard = {
         isAutomatedPeer: () => false,
@@ -93,7 +112,7 @@ function register(
         botLoopGuard: guard,
         executeAi,
         multiMessageDelayMs: 0,
-    });
+    }, typeof frontMode === "function" ? frontMode : () => frontMode);
     return state.handler;
 }
 
@@ -141,6 +160,98 @@ test("hard @ makes NO_REPLY invalid even though ordinary soft requests may choos
     assert.equal(mainCalls, 1);
     assert.equal(state.sends.length, 1);
     assert.equal(state.sends[0]?.kind, "text");
+});
+
+test("private messages are hard in both Front modes, bypass Judge, and reject NO_REPLY", async () => {
+    for (const frontMode of ["legacy", "judge"] as const) {
+        configureMemberRepository(new MemoryMemberRepository());
+        const state = fakeBot();
+        let judgeCalls = 0;
+        let mainCalls = 0;
+        const handler = register(state, {
+            async judge() { judgeCalls++; return { reply: false }; },
+        }, async (input) => {
+            mainCalls++;
+            assert.match(input, /wake_level=hard/);
+            assert.match(input, /admission=private-message/);
+            assert.match(input, /reason=private-message/);
+            assert.match(input, new RegExp(`front_mode=${frontMode}`));
+            return { kind: "no_reply" };
+        }, frontMode);
+
+        await handler({}, fakePrivateMessage(`private-${frontMode}-${randomUUID()}`, "Hello"));
+        assert.equal(judgeCalls, 0);
+        assert.equal(mainCalls, 1);
+        assert.deepEqual(state.sends.map((send) => send.value), ["刚才脑子短路了一下。"]);
+    }
+});
+
+test("legacy Front uses local triggers and never calls Reply Judge", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let judgeCalls = 0;
+    let mainCalls = 0;
+    const handler = register(state, {
+        async judge() { judgeCalls++; return { reply: true }; },
+    }, async (input) => {
+        mainCalls++;
+        assert.match(input, /front_mode=legacy/);
+        if (mainCalls === 1) {
+            assert.match(input, /wake_level=soft/);
+            assert.match(input, /admission=name-soft/);
+        } else if (mainCalls === 2) {
+            assert.match(input, /wake_level=soft/);
+            assert.match(input, /admission=active-soft/);
+        } else if (mainCalls === 3) {
+            assert.match(input, /wake_level=soft/);
+            assert.match(input, /admission=quoted-bot/);
+        } else {
+            assert.match(input, /wake_level=hard/);
+            assert.match(input, /admission=hard-mention/);
+        }
+        return reply("Received");
+    }, "legacy");
+
+    const group = randomUUID();
+    await handler({}, fakeMessage(group, "legacy-pass-" + randomUUID(), "Unrelated group chat"));
+    assert.equal(mainCalls, 0);
+    await handler({}, fakeMessage(group, "legacy-name-" + randomUUID(), "小尘, can you help?"));
+    await handler({}, fakeMessage(group, "legacy-active-" + randomUUID(), "Keep going"));
+    await handler({}, fakeMessage(group, "legacy-quote-" + randomUUID(), "Really?", false, "sent-ref-1"));
+    await handler({}, fakeMessage(group, "legacy-hard-" + randomUUID(), "@小尘", true));
+    assert.equal(mainCalls, 4);
+    assert.equal(judgeCalls, 0);
+});
+
+test("Front hot switch applies to later messages while a pending message keeps its captured mode", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let frontMode: FrontMode = "judge";
+    let judgeCalls = 0;
+    let resolveJudge!: (decision: { reply: boolean }) => void;
+    let mainCalls = 0;
+    const handler = register(state, {
+        judge() {
+            judgeCalls++;
+            return new Promise((resolve) => { resolveJudge = resolve; });
+        },
+    }, async (input) => {
+        mainCalls++;
+        assert.match(input, new RegExp(`front_mode=${mainCalls === 1 ? "judge" : "legacy"}`));
+        return reply("Received");
+    }, () => frontMode);
+
+    const group = randomUUID();
+    const inFlightJudgeMessage = handler({}, fakeMessage(group, "switch-judge-" + randomUUID(), "Ordinary message"));
+    await waitFor(() => judgeCalls === 1);
+    frontMode = "legacy";
+    resolveJudge({ reply: true });
+    await inFlightJudgeMessage;
+    assert.equal(mainCalls, 1);
+
+    await handler({}, fakeMessage(group, "switch-legacy-" + randomUUID(), "小尘, one more thing"));
+    assert.equal(judgeCalls, 1, "the later legacy message does not call the Judge");
+    assert.equal(mainCalls, 2);
 });
 
 test("Judge false stays in Recent Context; Judge true becomes soft and allows NO_REPLY", async () => {

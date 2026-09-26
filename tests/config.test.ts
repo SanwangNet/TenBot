@@ -157,6 +157,31 @@ test("public config exposes only safe metadata and shared defaults parse provide
     assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|secret\.example/);
 });
 
+test("Front mode defaults to legacy and does not require Reply Judge configuration", () => {
+    const config = loadAppConfig({ AI_PROVIDER: "gpt" });
+    assert.equal(config.frontMode, "legacy");
+    assert.equal(config.replyJudge.provider, undefined);
+    assert.equal(config.replyJudge.model, "");
+    assert.equal(config.replyJudge.apiKey, undefined);
+    assert.equal(loadAppConfig({ FRONT_MODE: "legacy", REPLY_JUDGE_PROVIDER: "unused-invalid-provider" }).frontMode, "legacy");
+});
+
+test("judge Front mode validates its independent provider configuration at load time", () => {
+    assert.throws(() => loadAppConfig({ FRONT_MODE: "judge" }), /REPLY_JUDGE_PROVIDER.*REPLY_JUDGE_MODEL.*REPLY_JUDGE_BASE_URL.*REPLY_JUDGE_API_KEY/);
+    const config = loadAppConfig({
+        FRONT_MODE: "judge",
+        REPLY_JUDGE_PROVIDER: "openai-compatible",
+        REPLY_JUDGE_MODEL: "judge-test",
+        REPLY_JUDGE_BASE_URL: "https://judge.example/v1",
+        REPLY_JUDGE_API_KEY: "secret",
+    });
+    assert.equal(config.frontMode, "judge");
+    assert.equal(config.replyJudge.provider, "openai-compatible");
+    assert.equal(config.replyJudge.model, "judge-test");
+    assert.equal(config.replyJudge.timeoutMs, 5_000);
+    assert.throws(() => loadAppConfig({ FRONT_MODE: "typo" }), /FRONT_MODE/);
+});
+
 test("ConfigStore reload parsing follows current disk values instead of stale dotenv values", async () => {
     await withTempEnv("AI_PROVIDER=gpt\nCODEX_MODEL=gpt-old\n", async (envPath) => {
         const store = createConfigStore({ envPath, environment: { AI_PROVIDER: "gpt", CODEX_MODEL: "gpt-old" } });
