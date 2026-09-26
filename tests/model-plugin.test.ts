@@ -68,7 +68,7 @@ test("registry selects GPT, DeepSeek, and defaults to GPT without requiring cred
 
 test("GPT and DeepSeek use isolated provider prompts and keep the same persona", async () => {
     assert.notEqual(GPT_SYSTEM_PROMPT, DEEPSEEK_SYSTEM_PROMPT);
-    assert.match(GPT_SYSTEM_PROMPT, /GPT-6 Sol/);
+    assert.doesNotMatch(GPT_SYSTEM_PROMPT, /GPT-6 Sol/);
     assert.doesNotMatch(DEEPSEEK_SYSTEM_PROMPT, /GPT-6 Sol/);
     assert.match(DEEPSEEK_SYSTEM_PROMPT, /没有 web_search 工具/);
     assert.doesNotMatch(DEEPSEEK_SYSTEM_PROMPT, /才使用 web_search/);

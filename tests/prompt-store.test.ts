@@ -109,6 +109,8 @@ test("migrated Prompt files contain provider-specific content", async () => {
     const gpt = await readFile(new URL("../src/ai/plugins/gpt/prompt.md", import.meta.url), "utf8");
     const deepseek = await readFile(new URL("../src/ai/plugins/deepseek/prompt.md", import.meta.url), "utf8");
     assert.notEqual(gpt, deepseek);
-    assert.match(gpt, /GPT-6 Sol/);
+    assert.match(gpt, /一般不主动插话/);
+    assert.match(deepseek, /一般不主动插话/);
+    assert.doesNotMatch(gpt, /GPT-6 Sol/);
     assert.match(deepseek, /web_search/);
 });
