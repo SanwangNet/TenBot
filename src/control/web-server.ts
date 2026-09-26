@@ -1,4 +1,6 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
+import { readFile, stat } from "node:fs/promises";
+import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TenBotControl } from "./tenbot-control.js";
 import { logger } from "../shared/logger.js";
 
@@ -7,6 +9,8 @@ const SSE_HEARTBEAT_MS = 25_000;
 interface WebServerOptions {
     host: string;
     port: number;
+    /** Optional static root for tests and packaged deployments. Defaults to web/dist. */
+    staticDirectory?: string;
 }
 
 interface WebServerAddress {
@@ -40,6 +44,19 @@ function errorText(value: unknown): string {
     return value instanceof Error ? value.message : "Unknown server error";
 }
 
+const CONTENT_TYPES: Record<string, string> = {
+    ".css": "text/css; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".ico": "image/x-icon",
+    ".js": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".txt": "text/plain; charset=utf-8",
+    ".webp": "image/webp",
+    ".woff2": "font/woff2",
+};
+
 /** HTTP transport for the shared Runtime Control Plane. */
 export function createTenBotWebServer(control: TenBotControl, options: WebServerOptions) {
     if (!Number.isInteger(options.port) || options.port < 0 || options.port > 65_535) {
@@ -47,6 +64,7 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
     }
 
     const clients = new Set<SseClient>();
+    const staticDirectory = resolve(options.staticDirectory ?? resolve(process.cwd(), "web", "dist"));
     let startPromise: Promise<WebServerAddress> | undefined;
     let closePromise: Promise<void> | undefined;
     let closing = false;
@@ -188,7 +206,60 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
             return;
         }
 
-        error(response, 404, "Not found");
+        if (pathname === "/api" || pathname.startsWith("/api/")) {
+            error(response, 404, "Not found");
+            return;
+        }
+
+        await serveStatic(pathname, response);
+    }
+
+    async function serveStatic(pathname: string, response: ServerResponse): Promise<void> {
+        let decodedPath: string;
+        try { decodedPath = decodeURIComponent(pathname); }
+        catch {
+            error(response, 400, "Bad request");
+            return;
+        }
+
+        const requestedPath = resolve(staticDirectory, `.${decodedPath}`);
+        const pathFromRoot = relative(staticDirectory, requestedPath);
+        if (pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`) || isAbsolute(pathFromRoot)) {
+            error(response, 404, "Not found");
+            return;
+        }
+
+        let filePath = requestedPath;
+        let fileInfo;
+        try {
+            fileInfo = await stat(filePath);
+            if (fileInfo.isDirectory()) {
+                filePath = resolve(filePath, "index.html");
+                fileInfo = await stat(filePath);
+            }
+        } catch {
+            if (extname(decodedPath)) {
+                error(response, 404, "Not found");
+                return;
+            }
+            filePath = resolve(staticDirectory, "index.html");
+            try { fileInfo = await stat(filePath); }
+            catch {
+                error(response, 404, "Not found");
+                return;
+            }
+        }
+
+        if (!fileInfo.isFile()) {
+            error(response, 404, "Not found");
+            return;
+        }
+
+        const contentType = CONTENT_TYPES[extname(filePath).toLowerCase()] ?? "application/octet-stream";
+        const headers: Record<string, string | number> = { "Content-Type": contentType, "Content-Length": fileInfo.size };
+        if (extname(filePath).toLowerCase() === ".html") headers["Cache-Control"] = "no-cache";
+        response.writeHead(200, headers);
+        response.end(await readFile(filePath));
     }
 
     return {

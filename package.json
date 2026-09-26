@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "tsx src/main.ts",
     "tui": "tsx src/tui/main.tsx",
-    "test": "tsx --test tests/errors.test.ts tests/reply-pipeline.test.ts tests/reply-cycle.test.ts tests/reply-judge.test.ts tests/front-policy.test.ts tests/qq-quote.test.ts tests/commands.test.ts tests/members.test.ts tests/citations.test.ts tests/meme.test.ts tests/meme-auto.test.ts tests/meme-search.test.ts tests/meme-response.test.ts tests/model-plugin.test.ts tests/automated-peer.test.ts tests/config.test.ts tests/control.test.ts tests/prompt-store.test.ts tests/meme-reload.test.ts tests/runtime-shutdown.test.ts tests/tui.test.ts tests/hot-reload.test.ts tests/web-server.test.ts",
+    "test": "tsx --test tests/errors.test.ts tests/reply-pipeline.test.ts tests/reply-cycle.test.ts tests/reply-judge.test.ts tests/front-policy.test.ts tests/qq-quote.test.ts tests/commands.test.ts tests/members.test.ts tests/citations.test.ts tests/meme.test.ts tests/meme-auto.test.ts tests/meme-search.test.ts tests/meme-response.test.ts tests/model-plugin.test.ts tests/automated-peer.test.ts tests/config.test.ts tests/control.test.ts tests/prompt-store.test.ts tests/meme-reload.test.ts tests/runtime-shutdown.test.ts tests/tui.test.ts tests/hot-reload.test.ts tests/web-server.test.ts tests/web-ui.test.ts",
+    "web:dev": "vite --config web/vite.config.ts",
+    "web:build": "vite build --config web/vite.config.ts",
+    "web:typecheck": "tsc --noEmit -p web/tsconfig.json",
     "meme:update": "tsx scripts/meme-update.ts"
   },
   "keywords": [],
@@ -29,12 +32,16 @@
     "openai": "^7.21.0",
     "pinyin-pro": "^3.29.4",
     "react": "^19.3.0",
+    "react-dom": "19.3.0",
     "string-width": "^8.2.2"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
     "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1"
   }
 }

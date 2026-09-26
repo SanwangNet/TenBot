@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createTenBotWebServer } from "../src/control/web-server.js";
 import type { TenBotControl } from "../src/control/tenbot-control.js";
 import type { RuntimeStatus } from "../src/control/runtime-status.js";
@@ -110,8 +113,8 @@ function createFakeControl() {
     };
 }
 
-async function startServer(control: TenBotControl) {
-    const server = createTenBotWebServer(control, { host: "127.0.0.1", port: 0 });
+async function startServer(control: TenBotControl, staticDirectory?: string) {
+    const server = createTenBotWebServer(control, { host: "127.0.0.1", port: 0, staticDirectory });
     const address = await server.start();
     return { server, baseUrl: `http://127.0.0.1:${address.port}` };
 }
@@ -277,5 +280,35 @@ test("a busy configured port fails clearly without selecting another port", asyn
     } finally {
         await second.close();
         await first.close();
+    }
+});
+
+test("production static server returns the app entry, serves assets, and falls back for client routes", async () => {
+    const fake = createFakeControl();
+    const staticDirectory = await mkdtemp(join(tmpdir(), "tenbot-web-ui-"));
+    await mkdir(join(staticDirectory, "assets"));
+    await writeFile(join(staticDirectory, "index.html"), "<!doctype html><title>TenBot Web Control</title>");
+    await writeFile(join(staticDirectory, "assets", "app.js"), "console.log('web-ui');");
+    const { server, baseUrl } = await startServer(fake.control, staticDirectory);
+    try {
+        const root = await fetch(`${baseUrl}/`);
+        assert.equal(root.status, 200);
+        assert.match(await root.text(), /TenBot Web Control/);
+        assert.match(root.headers.get("content-type") ?? "", /text\/html/);
+
+        const route = await fetch(`${baseUrl}/settings`);
+        assert.equal(route.status, 200);
+        assert.match(await route.text(), /TenBot Web Control/);
+
+        const asset = await fetch(`${baseUrl}/assets/app.js`);
+        assert.equal(asset.status, 200);
+        assert.match(asset.headers.get("content-type") ?? "", /javascript/);
+        assert.match(await asset.text(), /web-ui/);
+
+        const missingAsset = await fetch(`${baseUrl}/assets/missing.js`);
+        assert.equal(missingAsset.status, 404);
+    } finally {
+        await server.close();
+        await rm(staticDirectory, { recursive: true, force: true });
     }
 });

@@ -64,6 +64,19 @@ Runtime 同时提供本机 Web Control API，默认地址为 `http://127.0.0.1:3
 
     pnpm dev
 
+WebUI 开发时，在另一个终端运行 Vite：
+
+    pnpm web:dev
+
+打开终端显示的本机开发地址。Vite 会将 `/api` 请求转发给 Runtime。
+
+生产构建和启动：
+
+    pnpm web:build
+    pnpm dev
+
+构建后，浏览器访问 `http://127.0.0.1:3000/` 即可打开 WebUI；Runtime 仍默认只监听本机。当前 Web Control 没有身份验证，不要把管理接口直接暴露到不可信公网。远程访问建议使用 SSH Tunnel，或仅通过受信任的反向代理访问。
+
 终端控制界面：
 
     pnpm tui
