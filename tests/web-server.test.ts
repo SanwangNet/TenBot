@@ -214,6 +214,14 @@ test("PATCH /api/config validates allowlisted patches and delegates updates thro
         assert.deepEqual(fake.patchCalls, [{ field: "replyJudge.model", value: "judge-next" }]);
         const responseText = JSON.stringify(payload);
         assert.doesNotMatch(responseText, /private-qq-app-secret|private-main-model-key|private-judge-key|private-deepseek-key|private-model\.example/);
+
+        const fallback = await fetch(`${baseUrl}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ field: "replyJudge.fallbackToMainOnInvalidOutput", value: false }),
+        });
+        assert.equal(fallback.status, 200);
+        assert.deepEqual(fake.patchCalls[1], { field: "replyJudge.fallbackToMainOnInvalidOutput", value: false });
     } finally {
         await server.close();
     }
@@ -244,6 +252,13 @@ test("PATCH /api/config rejects secret fields and semantically invalid values be
             body: JSON.stringify({ field: "replyJudge.timeoutMs", value: "15000" }),
         });
         assert.equal(wrongType.status, 400);
+
+        const invalidFallback = await fetch(`${baseUrl}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ field: "replyJudge.fallbackToMainOnInvalidOutput", value: "true" }),
+        });
+        assert.equal(invalidFallback.status, 400);
         assert.deepEqual(fake.patchCalls, []);
     } finally {
         await server.close();

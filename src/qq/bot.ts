@@ -8,6 +8,13 @@ import type { ReplyJudge } from "../front/reply-judge.js";
 import type { FrontMode } from "../front/wake-level.js";
 
 export type QqConnectionState = "connecting" | "connected" | "disconnected" | "error";
+const messageHandlerCleanup = new WeakMap<QQBot, () => void>();
+
+export function shutdownQqMessageHandler(bot: QQBot): void {
+    const cleanup = messageHandlerCleanup.get(bot);
+    messageHandlerCleanup.delete(bot);
+    cleanup?.();
+}
 
 export function createQqBot(
     onConnectionState?: (state: QqConnectionState) => void,
@@ -16,6 +23,8 @@ export function createQqBot(
     connectionConfig?: { appId?: string; appSecret?: string },
     replyJudge?: ReplyJudge,
     getFrontMode?: () => FrontMode,
+    getReplyJudgeIpoFallbackToMain?: () => boolean,
+    getReplyJudgeTurnWaitMs?: () => number,
 ): QQBot {
     const appId = connectionConfig ? connectionConfig.appId : process.env.QQBOT_APP_ID;
     const appSecret = connectionConfig ? connectionConfig.appSecret : process.env.QQBOT_APP_SECRET;
@@ -51,7 +60,8 @@ export function createQqBot(
         }
     });
 
-    registerMessageHandler(bot, undefined, observePeer, observeConversationMessage, replyJudge, {}, getFrontMode);
+    messageHandlerCleanup.set(bot, registerMessageHandler(bot, undefined, observePeer, observeConversationMessage,
+        replyJudge, {}, getFrontMode, getReplyJudgeIpoFallbackToMain, getReplyJudgeTurnWaitMs));
     registerInteractionHandler(bot);
 
     return bot;

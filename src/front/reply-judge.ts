@@ -13,12 +13,14 @@ export interface ReplyJudgeRequest {
         readonly nameMention: boolean;
         readonly conversationActive: boolean;
         readonly quotedBot: boolean;
+        readonly turnWaitExpired: boolean;
     };
 }
 
-export interface ReplyJudgeDecision {
-    readonly reply: boolean;
-}
+export type ReplyJudgeDecision =
+    | { readonly decision: "reply" }
+    | { readonly decision: "pass" }
+    | { readonly decision: "wait" };
 
 export interface ReplyJudge {
     judge(request: ReplyJudgeRequest): Promise<ReplyJudgeDecision>;
@@ -117,13 +119,13 @@ export function parseReplyJudgeOutput(payload: string): ReplyJudgeDecision {
     const sourceKeys = topLevelKeys(payload);
     if (
         keys.length !== 1 ||
-        keys[0] !== "reply" ||
+        keys[0] !== "decision" ||
         sourceKeys.length !== 1 ||
-        sourceKeys[0] !== "reply" ||
-        typeof decision.reply !== "boolean"
+        sourceKeys[0] !== "decision" ||
+        (decision.decision !== "reply" && decision.decision !== "pass" && decision.decision !== "wait")
     ) {
         throw new TenBotError("F:A_RJ_IPO");
     }
 
-    return Object.freeze({ reply: decision.reply });
+    return Object.freeze({ decision: decision.decision });
 }

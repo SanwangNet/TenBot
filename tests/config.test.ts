@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createConfigStore } from "../src/config/config-store.js";
-import { loadAppConfig, validatePublicConfigPatch } from "../src/config/config-validation.js";
+import { loadAppConfig, parsePublicConfigPatch, validatePublicConfigPatch } from "../src/config/config-validation.js";
 
 async function withTempEnv(content: string, run: (envPath: string) => Promise<void>): Promise<void> {
     const directory = await mkdtemp(join(tmpdir(), "tenbot-config-"));
@@ -159,7 +159,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
     assert.equal(publicConfig.deepseek.configured, true);
     assert.equal(publicConfig.botLoopGuard.automatedPeerCount, 2);
     assert.equal(publicConfig.logLevel, "debug");
-    assert.deepEqual(publicConfig.replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, provider: "openai-compatible" });
+    assert.deepEqual(publicConfig.replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000, provider: "openai-compatible" });
     assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example/);
 });
 
@@ -173,6 +173,12 @@ test("Reply Judge config patches map to their env keys and validate safe model I
     for (const timeoutMs of [1_000, 5_000, 15_000, 30_000]) {
         assert.equal(validatePublicConfigPatch({ field: "replyJudge.timeoutMs", value: timeoutMs }), "REPLY_JUDGE_TIMEOUT_MS");
     }
+    for (const turnWaitMs of [1_000, 20_000, 60_000]) {
+        assert.equal(validatePublicConfigPatch({ field: "replyJudge.turnWaitMs", value: turnWaitMs }), "REPLY_JUDGE_TURN_WAIT_MS");
+    }
+    for (const turnWaitMs of [0, 999, 60_001, 1_500.5, Number.MAX_SAFE_INTEGER + 1]) {
+        assert.throws(() => validatePublicConfigPatch({ field: "replyJudge.turnWaitMs", value: turnWaitMs }), /1000 and 60000/);
+    }
     for (const timeoutMs of [999, 30_001, 1_500.5, Number.MAX_SAFE_INTEGER + 1]) {
         assert.throws(() => validatePublicConfigPatch({ field: "replyJudge.timeoutMs", value: timeoutMs }), /1000 到 30000/);
     }
@@ -181,10 +187,15 @@ test("Reply Judge config patches map to their env keys and validate safe model I
         const store = createConfigStore({ envPath, environment: {} });
         assert.equal((await store.updatePublicConfig({ field: "replyJudge.model", value: "Qwen/Qwen3.5-4B" })).ok, true);
         assert.equal((await store.updatePublicConfig({ field: "replyJudge.timeoutMs", value: 15_000 })).ok, true);
+        assert.equal((await store.updatePublicConfig({ field: "replyJudge.turnWaitMs", value: 25_000 })).ok, true);
         const saved = await readFile(envPath, "utf8");
         assert.match(saved, /REPLY_JUDGE_MODEL=Qwen\/Qwen3\.5-4B/);
         assert.match(saved, /REPLY_JUDGE_TIMEOUT_MS=15000/);
-        assert.deepEqual(store.getPublicConfig().replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000 });
+        assert.match(saved, /REPLY_JUDGE_TURN_WAIT_MS=25000/);
+        assert.deepEqual(store.getPublicConfig().replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 25_000 });
+        assert.equal((await store.updatePublicConfig({ field: "replyJudge.fallbackToMainOnInvalidOutput", value: false })).ok, true);
+        assert.match(await readFile(envPath, "utf8"), /REPLY_JUDGE_IPO_FALLBACK_TO_MAIN=false/);
+        assert.equal(store.getPublicConfig().replyJudge.fallbackToMainOnInvalidOutput, false);
     });
 });
 
@@ -194,6 +205,8 @@ test("Front mode defaults to legacy and does not require Reply Judge configurati
     assert.equal(config.replyJudge.provider, undefined);
     assert.equal(config.replyJudge.model, "");
     assert.equal(config.replyJudge.apiKey, undefined);
+    assert.equal(config.replyJudge.fallbackToMainOnInvalidOutput, true);
+    assert.equal(config.replyJudge.turnWaitMs, 20_000);
     assert.equal(loadAppConfig({ FRONT_MODE: "legacy", REPLY_JUDGE_PROVIDER: "unused-invalid-provider" }).frontMode, "legacy");
 });
 
@@ -210,6 +223,8 @@ test("judge Front mode validates its independent provider configuration at load 
     assert.equal(config.replyJudge.provider, "openai-compatible");
     assert.equal(config.replyJudge.model, "judge-test");
     assert.equal(config.replyJudge.timeoutMs, 5_000);
+    assert.equal(config.replyJudge.fallbackToMainOnInvalidOutput, true);
+    assert.equal(config.replyJudge.turnWaitMs, 20_000);
     assert.throws(() => loadAppConfig({ FRONT_MODE: "typo" }), /FRONT_MODE/);
 });
 
@@ -247,6 +262,34 @@ test("ConfigStore returns a safe failure and leaves the old file unchanged when 
         assert.doesNotMatch(JSON.stringify(result), /secret should not escape/);
         assert.equal(await readFile(envPath, "utf8"), "AI_PROVIDER=gpt\n");
     });
+});
+
+test("Reply Judge IPO fallback strictly parses boolean config and public patches", () => {
+    assert.equal(loadAppConfig({}).replyJudge.fallbackToMainOnInvalidOutput, true);
+    assert.equal(loadAppConfig({ REPLY_JUDGE_IPO_FALLBACK_TO_MAIN: "true" }).replyJudge.fallbackToMainOnInvalidOutput, true);
+    assert.equal(loadAppConfig({ REPLY_JUDGE_IPO_FALLBACK_TO_MAIN: "false" }).replyJudge.fallbackToMainOnInvalidOutput, false);
+    assert.equal(loadAppConfig({ REPLY_JUDGE_IPO_FALLBACK_TO_MAIN: " FALSE " }).replyJudge.fallbackToMainOnInvalidOutput, false);
+    assert.throws(() => loadAppConfig({ REPLY_JUDGE_IPO_FALLBACK_TO_MAIN: "enabled" }), /REPLY_JUDGE_IPO_FALLBACK_TO_MAIN/);
+
+    const patch = { field: "replyJudge.fallbackToMainOnInvalidOutput", value: false } as const;
+    assert.deepEqual(parsePublicConfigPatch(patch), patch);
+    assert.equal(parsePublicConfigPatch({ field: patch.field, value: "false" }), undefined);
+    assert.equal(validatePublicConfigPatch(patch), "REPLY_JUDGE_IPO_FALLBACK_TO_MAIN");
+    assert.throws(() => validatePublicConfigPatch({ field: patch.field, value: "false" } as never), /must be true or false/);
+});
+
+test("Reply Judge turn wait defaults to 20 seconds and validates env and public patch bounds", () => {
+    assert.equal(loadAppConfig({}).replyJudge.turnWaitMs, 20_000);
+    assert.equal(loadAppConfig({ REPLY_JUDGE_TURN_WAIT_MS: "20000" }).replyJudge.turnWaitMs, 20_000);
+    assert.equal(loadAppConfig({ REPLY_JUDGE_TURN_WAIT_MS: "1000" }).replyJudge.turnWaitMs, 1_000);
+    assert.equal(loadAppConfig({ REPLY_JUDGE_TURN_WAIT_MS: "60000" }).replyJudge.turnWaitMs, 60_000);
+    for (const value of ["0", "999", "60001", "1.5", "20s", "-1"]) {
+        assert.throws(() => loadAppConfig({ REPLY_JUDGE_TURN_WAIT_MS: value }), /REPLY_JUDGE_TURN_WAIT_MS/);
+    }
+    const patch = { field: "replyJudge.turnWaitMs", value: 20_000 } as const;
+    assert.deepEqual(parsePublicConfigPatch(patch), patch);
+    assert.equal(parsePublicConfigPatch({ field: patch.field, value: "20000" }), undefined);
+    assert.equal(validatePublicConfigPatch(patch), "REPLY_JUDGE_TURN_WAIT_MS");
 });
 
 test("Web host and port use secure defaults and accept explicit valid values", () => {

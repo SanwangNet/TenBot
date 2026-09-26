@@ -72,6 +72,8 @@ test("GPT and DeepSeek use isolated provider prompts and keep the same persona",
     assert.doesNotMatch(DEEPSEEK_SYSTEM_PROMPT, /GPT-6 Sol/);
     assert.match(DEEPSEEK_SYSTEM_PROMPT, /没有 web_search 工具/);
     assert.doesNotMatch(DEEPSEEK_SYSTEM_PROMPT, /才使用 web_search/);
+    assert.match(GPT_SYSTEM_PROMPT, /可信的自身安全风险/);
+    assert.match(DEEPSEEK_SYSTEM_PROMPT, /可信的自身安全风险/);
     assert.match(GPT_SYSTEM_PROMPT, /你叫“小尘”/);
     assert.match(DEEPSEEK_SYSTEM_PROMPT, /你叫“小尘”/);
     await withResponses([sse([messageText("收到")]), sse([messageText("收到")])], async (bodies) => {

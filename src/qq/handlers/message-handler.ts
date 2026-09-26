@@ -6,7 +6,7 @@ import type {
 import { buildAiInput, buildReplyPolicy } from "../../ai/input-builder.js";
 import { buildReplyJudgeRequest } from "../../front/build-reply-judge-request.js";
 import { decideFrontPolicy } from "../../front/front-policy.js";
-import type { ReplyJudge } from "../../front/reply-judge.js";
+import type { ReplyJudge, ReplyJudgeDecision, ReplyJudgeRequest } from "../../front/reply-judge.js";
 import type { FrontMode } from "../../front/wake-level.js";
 import type { ReplyCoordinatorDependencies, ReplyRequest } from "../reply/coordinator.js";
 import { TenBotError, isTenBotError } from "../../errors/tenbot-error.js";
@@ -18,6 +18,7 @@ import { debugPeerIdentity, logger, shortId, truncateLogText } from "../../share
 import {
     buildReplyCycleSnapshot,
     getConversationKey,
+    getMessageRevision,
     getRecentImages,
     rememberIncomingMessage,
     recordIncomingMessageRevision,
@@ -56,6 +57,44 @@ function summarizeMessage(input: string, imageAttachments: any[]): string {
     return "[\u56fe\u7247 x" + imageAttachments.length + "]";
 }
 
+export interface ReplyJudgeTurnWaitScheduler {
+    setTimeout(callback: () => void, milliseconds: number): ReturnType<typeof setTimeout>;
+    clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+    unref?(timer: ReturnType<typeof setTimeout>): void;
+}
+
+const defaultTurnWaitScheduler: ReplyJudgeTurnWaitScheduler = {
+    setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
+    clearTimeout: (timer) => clearTimeout(timer),
+    unref: (timer) => timer.unref?.(),
+};
+
+interface JudgeCandidate {
+    request: ReplyRequest;
+    revision: number;
+    signals: Omit<ReplyJudgeRequest["signals"], "turnWaitExpired">;
+    dependencies: ReplyCoordinatorDependencies;
+}
+
+interface JudgeAdmissionState {
+    readonly key: string;
+    latest: JudgeCandidate;
+    phase: "judging" | "waiting-turn";
+    generation: number;
+    judgeInFlight: boolean;
+    recheckInFlight: boolean;
+    waitStartedAt?: number;
+    waitRevision?: number;
+    timer?: ReturnType<typeof setTimeout>;
+}
+
+function isReplyJudgeDecision(value: unknown): value is ReplyJudgeDecision {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    return Object.keys(record).length === 1 &&
+        (record.decision === "reply" || record.decision === "pass" || record.decision === "wait");
+}
+
 export function registerMessageHandler(
     bot: QQBot,
     loopGuard: AutomatedPeerLoopGuard = automatedPeerLoopGuard,
@@ -64,9 +103,151 @@ export function registerMessageHandler(
     replyJudge?: ReplyJudge,
     coordinatorDependencies: ReplyCoordinatorDependencies = {},
     getFrontMode: () => FrontMode = () => "legacy",
-): void {
-    const pendingJudgeConversations = new Set<string>();
+    getReplyJudgeIpoFallbackToMain: () => boolean = () => true,
+    getReplyJudgeTurnWaitMs: () => number = () => 20_000,
+    turnWaitScheduler: ReplyJudgeTurnWaitScheduler = defaultTurnWaitScheduler,
+): () => void {
+    const judgeAdmissionStates = new Map<string, JudgeAdmissionState>();
+    let disposed = false;
+
+    const clearAdmissionState = (key: string): void => {
+        const state = judgeAdmissionStates.get(key);
+        if (!state) return;
+        if (state.timer) turnWaitScheduler.clearTimeout(state.timer);
+        state.timer = undefined;
+        state.generation++;
+        judgeAdmissionStates.delete(key);
+    };
+
+    const dispose = (): void => {
+        if (disposed) return;
+        disposed = true;
+        for (const state of judgeAdmissionStates.values()) {
+            if (state.timer) turnWaitScheduler.clearTimeout(state.timer);
+            state.timer = undefined;
+            state.generation++;
+        }
+        judgeAdmissionStates.clear();
+    };
+
+    const runJudge = async (state: JudgeAdmissionState, turnWaitExpired: boolean): Promise<void> => {
+        if (disposed || judgeAdmissionStates.get(state.key) !== state || state.judgeInFlight) return;
+        state.judgeInFlight = true;
+        let recheckExpired = turnWaitExpired;
+        try {
+            while (!disposed && judgeAdmissionStates.get(state.key) === state) {
+                let candidate = state.latest;
+                let revision = candidate.revision;
+                const generation = state.generation;
+                state.recheckInFlight = recheckExpired;
+                let decision: ReplyJudgeDecision | undefined;
+                let failure: unknown;
+                try {
+                    if (!replyJudge) throw new TenBotError("F:A_RJ_JRF");
+                    const judgeRequest = buildReplyJudgeRequest(candidate.request.message, {
+                        ...candidate.signals,
+                        turnWaitExpired: recheckExpired,
+                    });
+                    decision = await replyJudge.judge(judgeRequest);
+                    if (!isReplyJudgeDecision(decision)) throw new TenBotError("F:A_RJ_IPO");
+                    if (recheckExpired && decision.decision === "wait") {
+                        logger.debug("[ReplyJudge] wait is invalid after an expired turn wait");
+                        throw new TenBotError("F:A_RJ_IPO");
+                    }
+                } catch (error) {
+                    failure = error;
+                }
+
+                if (disposed || judgeAdmissionStates.get(state.key) !== state) return;
+                if (state.generation !== generation) {
+                    state.recheckInFlight = false;
+                    recheckExpired = false;
+                    continue;
+                }
+                // A normal in-flight Judge remains single-flight. If messages arrived while it was
+                // running, apply its admission result to the newest committed message/context.
+                if (state.latest.revision !== revision) {
+                    candidate = state.latest;
+                    revision = candidate.revision;
+                }
+                state.recheckInFlight = false;
+                const currentRevision = getMessageRevision(candidate.request.message);
+                if (currentRevision !== revision) {
+                    if (state.latest.revision === revision) {
+                        logger.debug(`[Front] stale Judge context discarded conversation=${shortId(state.key)} revision=${revision}->${currentRevision}`);
+                        clearAdmissionState(state.key);
+                        return;
+                    }
+                    recheckExpired = false;
+                    continue;
+                }
+
+                const ipoFallback = failure instanceof TenBotError &&
+                    failure.code === "F:A_RJ_IPO" && getReplyJudgeIpoFallbackToMain();
+                if (failure && !ipoFallback) {
+                    clearAdmissionState(state.key);
+                    const frontError = isTenBotError(failure) ? failure : new TenBotError("F:A_RJ_JRF");
+                    if (!hasActiveReplyCycle(candidate.request.message)) {
+                        await sendFrontFailureNotice(bot, candidate.request.message, frontError);
+                    }
+                    return;
+                }
+
+                if (ipoFallback) {
+                    logger.info("[ReplyJudge] invalid protocol output; falling back to main model");
+                }
+                const outcome = ipoFallback ? "reply" : decision?.decision;
+                if (outcome === "pass") {
+                    logger.debug("[ReplyJudge] decision=pass");
+                    clearAdmissionState(state.key);
+                    return;
+                }
+                if (outcome === "wait") {
+                    state.phase = "waiting-turn";
+                    state.recheckInFlight = false;
+                    state.waitRevision = revision;
+                    state.waitStartedAt = Date.now();
+                    const waitGeneration = ++state.generation;
+                    const waitMs = getReplyJudgeTurnWaitMs();
+                    logger.debug(`[ReplyJudge] decision=wait`);
+                    logger.debug(`[Front] turn wait started conversation=${shortId(state.key)} revision=${revision}`);
+                    state.timer = turnWaitScheduler.setTimeout(() => {
+                        if (disposed || judgeAdmissionStates.get(state.key) !== state ||
+                            state.phase !== "waiting-turn" || state.generation !== waitGeneration) return;
+                        state.timer = undefined;
+                        const latestRevision = getMessageRevision(state.latest.request.message);
+                        if (latestRevision !== state.waitRevision) {
+                            logger.debug(`[Front] stale turn wait discarded conversation=${shortId(state.key)} revision=${state.waitRevision}->${latestRevision}`);
+                            clearAdmissionState(state.key);
+                            return;
+                        }
+                        state.phase = "judging";
+                        state.recheckInFlight = true;
+                        logger.debug(`[Front] turn wait expired; rechecking conversation=${shortId(state.key)} revision=${latestRevision}`);
+                        void runJudge(state, true);
+                    }, waitMs);
+                    turnWaitScheduler.unref?.(state.timer);
+                    return;
+                }
+
+                clearAdmissionState(state.key);
+                if (hasActiveReplyCycle(candidate.request.message)) return;
+                const reason = ipoFallback
+                    ? "judge-invalid-output-fallback"
+                    : candidate.request.triggerKind && candidate.request.triggerKind !== "hard-mention"
+                        ? candidate.request.triggerKind
+                        : "reply-judge";
+                if (!ipoFallback) logger.debug("[ReplyJudge] decision=reply");
+                await admitConversationWake({ ...candidate.request, admission: reason }, "soft", reason, candidate.dependencies);
+                return;
+            }
+        } finally {
+            state.judgeInFlight = false;
+        }
+    };
+
     bot.on("message", async (context, message: QQBotInboundMessage) => {
+        if (disposed) return;
         const frontMode = getFrontMode();
         const normalized = await normalizeQqMessage(context, message);
         debugPeerIdentity(normalized.authorName, normalized.authorId);
@@ -224,6 +405,7 @@ export function registerMessageHandler(
         observeConversationUpdate(request);
 
         if (hasActiveReplyCycle(normalized)) {
+            clearAdmissionState(conversationKey);
             // A live Cycle owns ordinary follow-up context. Only a deterministic hard wake may upgrade it.
             if (frontDecision.kind === "admit" && frontDecision.wakeLevel === "hard") {
                 logger.info(frontDecision.reason === "private-message"
@@ -235,6 +417,8 @@ export function registerMessageHandler(
             return;
         }
 
+        if (frontDecision.kind !== "judge") clearAdmissionState(conversationKey);
+
         if (frontDecision.kind === "admit") {
             if (frontDecision.wakeLevel === "hard") logger.info(frontDecision.reason === "private-message"
                 ? "[Trigger] private message / hard"
@@ -245,38 +429,43 @@ export function registerMessageHandler(
         }
         if (frontDecision.kind === "pass") return;
 
-        // A pending Judge is only a narrow admission guard, not a Reply Cycle.
-        if (pendingJudgeConversations.has(conversationKey)) return;
-        pendingJudgeConversations.add(conversationKey);
-
-        const judgeRequest = buildReplyJudgeRequest(normalized, {
-            nameMention: trigger.mentionedByName,
-            conversationActive: trigger.activeConversation,
-            quotedBot: normalized.quotedBot === true,
-        });
-        let decision: { reply: boolean };
-        try {
-            if (!replyJudge) throw new TenBotError("F:A_RJ_JRF");
-            decision = await replyJudge.judge(judgeRequest);
-            if (!decision || typeof decision.reply !== "boolean") throw new TenBotError("F:A_RJ_IPO");
-        } catch (error) {
-            const frontError = isTenBotError(error) ? error : new TenBotError("F:A_RJ_JRF");
-            if (!hasActiveReplyCycle(normalized)) await sendFrontFailureNotice(bot, normalized, frontError);
-            return;
-        } finally {
-            pendingJudgeConversations.delete(conversationKey);
+        const candidate: JudgeCandidate = {
+            request,
+            revision,
+            signals: {
+                nameMention: trigger.mentionedByName,
+                conversationActive: trigger.activeConversation,
+                quotedBot: normalized.quotedBot === true,
+            },
+            dependencies: cycleDependencies,
+        };
+        let state = judgeAdmissionStates.get(conversationKey);
+        if (state) {
+            const previousRevision = state.latest.revision;
+            const wasWaiting = state.phase === "waiting-turn";
+            const mustInvalidateExpiredRecheck = state.recheckInFlight;
+            if (state.timer) turnWaitScheduler.clearTimeout(state.timer);
+            state.timer = undefined;
+            state.latest = candidate;
+            if (wasWaiting || mustInvalidateExpiredRecheck) state.generation++;
+            state.phase = "judging";
+            if (mustInvalidateExpiredRecheck) state.recheckInFlight = false;
+            if (wasWaiting) {
+                logger.debug(`[Front] turn wait superseded conversation=${shortId(conversationKey)} revision=${previousRevision}->${revision}`);
+            }
+            if (state.judgeInFlight) return;
+        } else {
+            state = {
+                key: conversationKey,
+                latest: candidate,
+                phase: "judging",
+                generation: 1,
+                judgeInFlight: false,
+                recheckInFlight: false,
+            };
+            judgeAdmissionStates.set(conversationKey, state);
         }
-
-        if (!decision.reply) {
-            logger.debug("[ReplyJudge] decision=pass");
-            return;
-        }
-        logger.debug("[ReplyJudge] decision=reply");
-        // A hard wake may have established a Cycle while this Judge was pending.
-        if (hasActiveReplyCycle(normalized)) return;
-        const reason = trigger.triggerKind && trigger.triggerKind !== "hard-mention"
-            ? trigger.triggerKind
-            : "reply-judge";
-        await admitConversationWake({ ...request, admission: "reply-judge" }, "soft", reason, cycleDependencies);
+        await runJudge(state, false);
     });
+    return dispose;
 }

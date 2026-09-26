@@ -142,6 +142,24 @@ export function SettingsPage() {
                     <SettingField label="超时" id="setting-judge-timeout" hint="单位：ms；允许范围 1000–30000。" error={fieldError("replyJudge.timeoutMs")}>
                         <input id="setting-judge-timeout" type="number" min="1000" max="30000" step="1" value={form.values["replyJudge.timeoutMs"]} disabled={saving} aria-invalid={Boolean(fieldError("replyJudge.timeoutMs"))} onChange={(event) => edit("replyJudge.timeoutMs", event.currentTarget.value)} />
                     </SettingField>
+                    <div className="setting-toggle-row">
+                        <div className="setting-toggle-copy">
+                            <label htmlFor="setting-judge-ipo-fallback">Judge 异常时交由主模型判断</label>
+                            <span id="setting-judge-ipo-fallback-hint">当 Judge 返回非法协议输出时交给主模型自行判断；仅处理非法输出，不处理网络或 Provider 请求失败。</span>
+                        </div>
+                        <input
+                            id="setting-judge-ipo-fallback"
+                            className="setting-toggle-input"
+                            type="checkbox"
+                            aria-describedby="setting-judge-ipo-fallback-hint"
+                            checked={form.values["replyJudge.fallbackToMainOnInvalidOutput"]}
+                            disabled={saving}
+                            onChange={(event) => edit("replyJudge.fallbackToMainOnInvalidOutput", event.currentTarget.checked)}
+                        />
+                    </div>
+                    <SettingField label="未完成发言等待时间" id="setting-judge-turn-wait" hint="单位：秒；允许范围 1–60 秒。" error={fieldError("replyJudge.turnWaitMs")}>
+                        <input id="setting-judge-turn-wait" type="number" min="1" max="60" step="0.001" value={form.values["replyJudge.turnWaitMs"]} disabled={saving} aria-invalid={Boolean(fieldError("replyJudge.turnWaitMs"))} onChange={(event) => edit("replyJudge.turnWaitMs", event.currentTarget.value)} />
+                    </SettingField>
                 </section>
 
                 <section className="panel settings-panel">

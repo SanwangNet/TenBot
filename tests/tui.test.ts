@@ -188,7 +188,7 @@ function fakeControl(calls: string[], result: ReloadResult = { ok: true, message
     };
     const config: PublicConfig = {
         aiProvider: "gpt",
-        replyJudge: { model: "judge-test", timeoutMs: 5_000 },
+        replyJudge: { model: "judge-test", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "test", reasoningEffort: "high", verbosity: "high", configured: false },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: false },
         logLevel: "info",
@@ -398,7 +398,7 @@ test("centered modal click regions follow the resized center and ignore old corn
 test("settings select and text editors create safe patches without touching a real env", () => {
     const config: PublicConfig = {
         aiProvider: "gpt",
-        replyJudge: { model: "Qwen/Qwen3.5-4B", timeoutMs: 5_000 },
+        replyJudge: { model: "Qwen/Qwen3.5-4B", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: false },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: false },
         logLevel: "info",
@@ -430,7 +430,7 @@ test("settings select and text editors create safe patches without touching a re
 test("settings render Reply Judge as an equal-width settings column with keyboard and mouse rows", () => {
     const config: PublicConfig = {
         aiProvider: "gpt",
-        replyJudge: { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000 },
+        replyJudge: { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: true },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
         logLevel: "info",
@@ -500,7 +500,7 @@ test("settings shows pending restart only when Runtime marks a non-hot-reloadabl
     };
     const config: PublicConfig = {
         aiProvider: "deepseek",
-        replyJudge: { model: "judge-test", timeoutMs: 5_000 },
+        replyJudge: { model: "judge-test", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: true },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
         logLevel: "info",

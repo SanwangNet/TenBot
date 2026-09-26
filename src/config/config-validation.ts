@@ -12,11 +12,15 @@ export const DEFAULT_GPT_VERBOSITY: ModelVerbosity = "high";
 export const DEFAULT_DEEPSEEK_REASONING_EFFORT: ReasoningEffort = "high";
 export const DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES = 4;
 export const DEFAULT_REPLY_JUDGE_TIMEOUT_MS = 5_000;
+export const DEFAULT_REPLY_JUDGE_IPO_FALLBACK_TO_MAIN = true;
+export const DEFAULT_REPLY_JUDGE_TURN_WAIT_MS = 20_000;
 export const DEFAULT_FRONT_MODE: FrontMode = "legacy";
 export const DEFAULT_WEB_HOST = "127.0.0.1";
 export const DEFAULT_WEB_PORT = 3000;
 const MIN_REPLY_JUDGE_TIMEOUT_MS = 1_000;
 const MAX_REPLY_JUDGE_TIMEOUT_MS = 30_000;
+const MIN_REPLY_JUDGE_TURN_WAIT_MS = 1_000;
+const MAX_REPLY_JUDGE_TURN_WAIT_MS = 60_000;
 
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh"];
 const VERBOSITIES: readonly ModelVerbosity[] = ["low", "medium", "high"];
@@ -147,6 +151,8 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         baseURL: parseReplyJudgeBaseURL(env.REPLY_JUDGE_BASE_URL),
         apiKey: env.REPLY_JUDGE_API_KEY?.trim() || undefined,
         timeoutMs: parseReplyJudgeTimeout(env.REPLY_JUDGE_TIMEOUT_MS),
+        fallbackToMainOnInvalidOutput: parseReplyJudgeIpoFallback(env.REPLY_JUDGE_IPO_FALLBACK_TO_MAIN),
+        turnWaitMs: parseReplyJudgeTurnWait(env.REPLY_JUDGE_TURN_WAIT_MS),
     };
     if (frontMode === "judge") {
         const missing = [
@@ -197,6 +203,8 @@ export function toPublicConfig(config: AppConfig): PublicConfig {
         replyJudge: {
             model: config.replyJudge.model ?? "",
             timeoutMs: config.replyJudge.timeoutMs,
+            fallbackToMainOnInvalidOutput: config.replyJudge.fallbackToMainOnInvalidOutput,
+            turnWaitMs: config.replyJudge.turnWaitMs,
             ...(config.replyJudge.provider ? { provider: config.replyJudge.provider } : {}),
         },
         gpt: {
@@ -239,6 +247,14 @@ export function validatePublicConfigPatch(patch: PublicConfigPatch): string {
                 throw new Error("Reply Judge 超时时间必须是 1000 到 30000 毫秒之间的安全整数");
             }
             return "REPLY_JUDGE_TIMEOUT_MS";
+        case "replyJudge.fallbackToMainOnInvalidOutput":
+            if (typeof patch.value !== "boolean") throw new Error("REPLY_JUDGE_IPO_FALLBACK_TO_MAIN must be true or false");
+            return "REPLY_JUDGE_IPO_FALLBACK_TO_MAIN";
+        case "replyJudge.turnWaitMs":
+            if (!Number.isSafeInteger(patch.value) || patch.value < MIN_REPLY_JUDGE_TURN_WAIT_MS || patch.value > MAX_REPLY_JUDGE_TURN_WAIT_MS) {
+                throw new Error("REPLY_JUDGE_TURN_WAIT_MS must be an integer between 1000 and 60000");
+            }
+            return "REPLY_JUDGE_TURN_WAIT_MS";
         case "gpt.reasoningEffort":
         case "deepseek.reasoningEffort":
             if (!REASONING_EFFORTS.includes(patch.value)) throw new Error("推理强度配置无效");
@@ -255,6 +271,25 @@ export function validatePublicConfigPatch(patch: PublicConfigPatch): string {
             }
             return "BOT_LOOP_GUARD_MAX_CYCLES";
     }
+}
+
+function parseReplyJudgeIpoFallback(value: string | undefined): boolean {
+    const normalized = value?.trim().toLowerCase();
+    if (!normalized) return DEFAULT_REPLY_JUDGE_IPO_FALLBACK_TO_MAIN;
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+    throw new Error("REPLY_JUDGE_IPO_FALLBACK_TO_MAIN must be true or false");
+}
+
+function parseReplyJudgeTurnWait(value: string | undefined): number {
+    if (value === undefined || value.trim() === "") return DEFAULT_REPLY_JUDGE_TURN_WAIT_MS;
+    const normalized = value.trim();
+    if (!/^\d+$/.test(normalized)) throw new Error("REPLY_JUDGE_TURN_WAIT_MS must be an integer between 1000 and 60000");
+    const milliseconds = Number(normalized);
+    if (!Number.isSafeInteger(milliseconds) || milliseconds < MIN_REPLY_JUDGE_TURN_WAIT_MS || milliseconds > MAX_REPLY_JUDGE_TURN_WAIT_MS) {
+        throw new Error("REPLY_JUDGE_TURN_WAIT_MS must be an integer between 1000 and 60000");
+    }
+    return milliseconds;
 }
 
 /** Checks transport input shape and primitive types before semantic validation. */
@@ -280,6 +315,10 @@ export function parsePublicConfigPatch(value: unknown): PublicConfigPatch | unde
         case "replyJudge.timeoutMs":
         case "botLoopGuard.maxCycles":
             return typeof patchValue === "number" ? { field, value: patchValue } as PublicConfigPatch : undefined;
+        case "replyJudge.fallbackToMainOnInvalidOutput":
+            return typeof patchValue === "boolean" ? { field, value: patchValue } : undefined;
+        case "replyJudge.turnWaitMs":
+            return typeof patchValue === "number" ? { field, value: patchValue } : undefined;
         default:
             return undefined;
     }

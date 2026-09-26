@@ -38,7 +38,7 @@ export type LogLevel = "debug" | "info" | "error";
 
 export interface PublicConfig {
     aiProvider: "gpt" | "deepseek";
-    replyJudge: { model: string; timeoutMs: number; provider?: string };
+    replyJudge: { model: string; timeoutMs: number; fallbackToMainOnInvalidOutput: boolean; turnWaitMs: number; provider?: string };
     gpt: { model: string; reasoningEffort: ReasoningEffort; verbosity: ModelVerbosity; configured: boolean };
     deepseek: { model: string; reasoningEffort: ReasoningEffort; configured: boolean };
     logLevel: LogLevel;
@@ -54,6 +54,8 @@ export type PublicConfigPatch =
     | { field: "deepseek.reasoningEffort"; value: ReasoningEffort }
     | { field: "replyJudge.model"; value: string }
     | { field: "replyJudge.timeoutMs"; value: number }
+    | { field: "replyJudge.fallbackToMainOnInvalidOutput"; value: boolean }
+    | { field: "replyJudge.turnWaitMs"; value: number }
     | { field: "logLevel"; value: LogLevel }
     | { field: "botLoopGuard.maxCycles"; value: number };
 

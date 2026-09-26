@@ -1,6 +1,6 @@
 import type { NormalizedQqMessage } from "./normalize-message.js";
 
-export type TriggerKind = "hard-mention" | "private-message" | "name-soft" | "active-soft" | "quoted-bot" | "reply-judge";
+export type TriggerKind = "hard-mention" | "private-message" | "name-soft" | "active-soft" | "quoted-bot" | "reply-judge" | "judge-invalid-output-fallback";
 
 export interface MessageTriggerDecision {
     isGroup: boolean;

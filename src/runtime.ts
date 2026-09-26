@@ -14,7 +14,7 @@ import { LogBuffer } from "./control/log-buffer.js";
 import { SqliteMemberRepository } from "./members/sqlite-repository.js";
 import { MemoryMemberRepository } from "./members/memory-repository.js";
 import type { MemberRepository } from "./members/repository.js";
-import { createQqBot, type QqConnectionState } from "./qq/bot.js";
+import { createQqBot, shutdownQqMessageHandler, type QqConnectionState } from "./qq/bot.js";
 import { configureMemberRepository } from "./qq/conversation/known-members.js";
 import { automatedPeerLoopGuard } from "./qq/conversation/automated-peer.js";
 import { RecentPeerRegistry } from "./qq/conversation/recent-peers.js";
@@ -175,7 +175,9 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         }, (message) => {
             if (recentPeers.observe(message)) control?.publishEvent({ type: "recent-peers-updated" });
         }, observeConversationMessage, runtimeSnapshot.appConfig.qq, replyJudge,
-        () => runtimeSnapshots.get().appConfig.frontMode);
+        () => runtimeSnapshots.get().appConfig.frontMode,
+        () => runtimeSnapshots.get().appConfig.replyJudge.fallbackToMainOnInvalidOutput,
+        () => runtimeSnapshots.get().appConfig.replyJudge.turnWaitMs);
     } catch (error) {
         logs.dispose();
         setConsoleLogOutputEnabled(true);
@@ -361,6 +363,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                 control?.publishStatus();
                 try { await webServer?.close(); }
                 catch (error) { logger.error("[Web] stop failed", error); }
+                shutdownQqMessageHandler(bot);
                 const stopCycles = shutdownReplyCoordinator();
                 try { bot.stop(); }
                 catch (error) { logger.error("[QQ] stop error", error); }

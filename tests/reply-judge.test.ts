@@ -10,12 +10,12 @@ import { loadAppConfig } from "../src/config/config-validation.js";
 import { buildReplyJudgeRequest } from "../src/front/build-reply-judge-request.js";
 import type { FrontMode } from "../src/front/wake-level.js";
 import { OpenAICompatibleReplyJudge } from "../src/front/openai-compatible-reply-judge.js";
-import { parseReplyJudgeOutput, type ReplyJudge, type ReplyJudgeRequest } from "../src/front/reply-judge.js";
+import { parseReplyJudgeOutput, type ReplyJudge, type ReplyJudgeDecision, type ReplyJudgeRequest } from "../src/front/reply-judge.js";
 import { ReplyJudgePromptStore } from "../src/front/reply-judge-prompt-store.js";
-import { registerMessageHandler } from "../src/qq/handlers/message-handler.js";
+import { registerMessageHandler, type ReplyJudgeTurnWaitScheduler } from "../src/qq/handlers/message-handler.js";
 import { MemoryMemberRepository } from "../src/members/memory-repository.js";
 import { configureMemberRepository } from "../src/qq/conversation/known-members.js";
-import { recordIncomingMessageRevision, rememberIncomingMessage } from "../src/qq/conversation/recent-context.js";
+import { getMessageRevision, recordIncomingMessageRevision, rememberIncomingMessage } from "../src/qq/conversation/recent-context.js";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 import type { QQBot, QQBotInboundMessage } from "@tencent-connect/qqbot-nodejs";
 import type { AutomatedPeerLoopGuard } from "../src/qq/conversation/automated-peer.js";
@@ -25,6 +25,7 @@ interface FakeBotState {
     bot: QQBot;
     readonly handler: (context: unknown, message: QQBotInboundMessage) => Promise<void>;
     sends: Array<{ kind: string; value: unknown }>;
+    cleanup?: () => void;
 }
 
 function fakeBot(): FakeBotState {
@@ -100,6 +101,9 @@ function register(
     judge: ReplyJudge,
     executeAi: (input: string, options: { signal: AbortSignal }) => Promise<AiResult>,
     frontMode: FrontMode | (() => FrontMode) = "judge",
+    fallbackToMainOnInvalidOutput: () => boolean = () => false,
+    getTurnWaitMs: () => number = () => 20_000,
+    turnWaitScheduler?: ReplyJudgeTurnWaitScheduler,
 ): FakeBotState["handler"] {
     const guard = {
         isAutomatedPeer: () => false,
@@ -107,11 +111,11 @@ function register(
         resetByHumanMessage() {},
         beforeNewCycle: () => ({ allowed: true, sendNotice: false }),
     } as unknown as AutomatedPeerLoopGuard;
-    registerMessageHandler(state.bot, guard, undefined, undefined, judge, {
+    state.cleanup = registerMessageHandler(state.bot, guard, undefined, undefined, judge, {
         botLoopGuard: guard,
         executeAi,
         multiMessageDelayMs: 0,
-    }, typeof frontMode === "function" ? frontMode : () => frontMode);
+    }, typeof frontMode === "function" ? frontMode : () => frontMode, fallbackToMainOnInvalidOutput, getTurnWaitMs, turnWaitScheduler);
     return state.handler;
 }
 
@@ -127,12 +131,45 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     }
 }
 
+class FakeTurnWaitScheduler implements ReplyJudgeTurnWaitScheduler {
+    private now = 0;
+    private nextId = 0;
+    private readonly tasks = new Map<number, { due: number; callback: () => void; delay: number }>();
+
+    setTimeout(callback: () => void, milliseconds: number): ReturnType<typeof setTimeout> {
+        const id = ++this.nextId;
+        this.tasks.set(id, { due: this.now + milliseconds, callback, delay: milliseconds });
+        return id as unknown as ReturnType<typeof setTimeout>;
+    }
+
+    clearTimeout(timer: ReturnType<typeof setTimeout>): void {
+        this.tasks.delete(Number(timer));
+    }
+
+    unref(): void {}
+
+    get pendingCount(): number { return this.tasks.size; }
+    get delays(): number[] { return [...this.tasks.values()].map((task) => task.delay); }
+
+    advanceBy(milliseconds: number): void {
+        this.now += milliseconds;
+        for (;;) {
+            const next = [...this.tasks.entries()]
+                .filter(([, task]) => task.due <= this.now)
+                .sort((left, right) => left[1].due - right[1].due)[0];
+            if (!next) return;
+            this.tasks.delete(next[0]);
+            next[1].callback();
+        }
+    }
+}
+
 test("hard @ bypasses Judge and the Main Model receives trusted hard metadata", async () => {
     configureMemberRepository(new MemoryMemberRepository());
     const state = fakeBot();
     let judgeCalls = 0;
     let mainCalls = 0;
-    const handler = register(state, { async judge() { judgeCalls++; return { reply: true }; } }, async (input) => {
+    const handler = register(state, { async judge() { judgeCalls++; return { decision: "reply" }; } }, async (input) => {
         mainCalls++;
         assert.match(input, /wake_level=hard/);
         assert.match(input, /admission=hard-mention/);
@@ -150,7 +187,7 @@ test("hard @ makes NO_REPLY invalid even though ordinary soft requests may choos
     const state = fakeBot();
     let judgeCalls = 0;
     let mainCalls = 0;
-    const handler = register(state, { async judge() { judgeCalls++; return { reply: false }; } }, async () => {
+    const handler = register(state, { async judge() { judgeCalls++; return { decision: "pass" }; } }, async () => {
         mainCalls++;
         return { kind: "no_reply" };
     });
@@ -168,7 +205,7 @@ test("private messages are hard in both Front modes, bypass Judge, and reject NO
         let judgeCalls = 0;
         let mainCalls = 0;
         const handler = register(state, {
-            async judge() { judgeCalls++; return { reply: false }; },
+            async judge() { judgeCalls++; return { decision: "pass" }; },
         }, async (input) => {
             mainCalls++;
             assert.match(input, /wake_level=hard/);
@@ -191,7 +228,7 @@ test("legacy Front uses local triggers and never calls Reply Judge", async () =>
     let judgeCalls = 0;
     let mainCalls = 0;
     const handler = register(state, {
-        async judge() { judgeCalls++; return { reply: true }; },
+        async judge() { judgeCalls++; return { decision: "reply" }; },
     }, async (input) => {
         mainCalls++;
         assert.match(input, /front_mode=legacy/);
@@ -227,7 +264,7 @@ test("Front hot switch applies to later messages while a pending message keeps i
     const state = fakeBot();
     let frontMode: FrontMode = "judge";
     let judgeCalls = 0;
-    let resolveJudge!: (decision: { reply: boolean }) => void;
+    let resolveJudge!: (decision: ReplyJudgeDecision) => void;
     let mainCalls = 0;
     const handler = register(state, {
         judge() {
@@ -244,7 +281,7 @@ test("Front hot switch applies to later messages while a pending message keeps i
     const inFlightJudgeMessage = handler({}, fakeMessage(group, "switch-judge-" + randomUUID(), "Ordinary message"));
     await waitFor(() => judgeCalls === 1);
     frontMode = "legacy";
-    resolveJudge({ reply: true });
+    resolveJudge({ decision: "reply" });
     await inFlightJudgeMessage;
     assert.equal(mainCalls, 1);
 
@@ -262,7 +299,7 @@ test("Judge false stays in Recent Context; Judge true becomes soft and allows NO
     const handler = register(state, {
         async judge(request) {
             judged.push(request);
-            return { reply: ++judgeCalls === 3 };
+            return { decision: ++judgeCalls === 3 ? "reply" : "pass" };
         },
     }, async (input) => {
         mainCalls++;
@@ -281,12 +318,221 @@ test("Judge false stays in Recent Context; Judge true becomes soft and allows NO
     await handler({}, fakeMessage(group, "third-" + randomUUID(), "小尘你怎么看？"));
     assert.equal(judgeCalls, 3);
     assert.equal(mainCalls, 1);
-    assert.deepEqual(judged[0]?.signals, { nameMention: false, conversationActive: false, quotedBot: false });
-    assert.deepEqual(judged[1]?.signals, { nameMention: true, conversationActive: false, quotedBot: false });
-    assert.deepEqual(judged[2]?.signals, { nameMention: true, conversationActive: false, quotedBot: false });
+    assert.deepEqual(judged[0]?.signals, { nameMention: false, conversationActive: false, quotedBot: false, turnWaitExpired: false });
+    assert.deepEqual(judged[1]?.signals, { nameMention: true, conversationActive: false, quotedBot: false, turnWaitExpired: false });
+    assert.deepEqual(judged[2]?.signals, { nameMention: true, conversationActive: false, quotedBot: false, turnWaitExpired: false });
     assert.equal(judged[2]?.conversation.length, 2);
     assert.equal(judged[1]?.conversation[0]?.content, "今天真冷");
     assert.equal(state.sends.length, 0);
+});
+
+test("Judge wait stays silent then timeout recheck carries trusted metadata and soft-admits reply", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    const scheduler = new FakeTurnWaitScheduler();
+    const requests: ReplyJudgeRequest[] = [];
+    let judgeCalls = 0;
+    let mainCalls = 0;
+    const handler = register(state, {
+        async judge(request) {
+            requests.push(request);
+            return { decision: ++judgeCalls === 1 ? "wait" : "reply" };
+        },
+    }, async (input) => {
+        mainCalls++;
+        assert.match(input, /wake_level=soft/);
+        assert.match(input, /admission=reply-judge/);
+        return { kind: "no_reply" };
+    }, "judge", () => false, () => 20_000, scheduler);
+
+    const group = randomUUID();
+    await handler({}, fakeMessage(group, "wait-start-" + randomUUID(), "我主要想说的是"));
+    assert.equal(judgeCalls, 1);
+    assert.equal(mainCalls, 0);
+    assert.equal(scheduler.pendingCount, 1);
+    assert.deepEqual(scheduler.delays, [20_000]);
+    assert.equal(requests[0]?.signals.turnWaitExpired, false);
+
+    scheduler.advanceBy(19_999);
+    assert.equal(judgeCalls, 1);
+    scheduler.advanceBy(1);
+    await waitFor(() => judgeCalls === 2);
+    await waitFor(() => mainCalls === 1);
+    assert.equal(requests[1]?.signals.turnWaitExpired, true);
+    assert.match(requests[1]?.currentMessage.content ?? "", /我主要想说的是/);
+    assert.equal(scheduler.pendingCount, 0);
+    state.cleanup?.();
+});
+
+test("timeout recheck pass does not start the Main Model", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    const scheduler = new FakeTurnWaitScheduler();
+    let judgeCalls = 0;
+    let mainCalls = 0;
+    const handler = register(state, { async judge() {
+        return { decision: ++judgeCalls === 1 ? "wait" : "pass" };
+    } }, async () => {
+        mainCalls++;
+        return reply("unexpected");
+    }, "judge", () => false, () => 20_000, scheduler);
+
+    await handler({}, fakeMessage(randomUUID(), "wait-pass-" + randomUUID(), "other members are chatting"));
+    scheduler.advanceBy(20_000);
+    await waitFor(() => judgeCalls === 2);
+    assert.equal(mainCalls, 0);
+    assert.equal(scheduler.pendingCount, 0);
+    state.cleanup?.();
+});
+
+test("timeout recheck cannot wait again and treats that result as IPO for the configured fallback", async () => {
+    for (const fallbackEnabled of [true, false]) {
+        configureMemberRepository(new MemoryMemberRepository());
+        const state = fakeBot();
+        const scheduler = new FakeTurnWaitScheduler();
+        let judgeCalls = 0;
+        let mainCalls = 0;
+        const handler = register(state, { async judge() {
+            judgeCalls++;
+            return { decision: "wait" };
+        } }, async (input) => {
+            mainCalls++;
+            assert.match(input, /wake_level=soft/);
+            assert.match(input, /admission=judge-invalid-output-fallback/);
+            return { kind: "no_reply" };
+        }, "judge", () => fallbackEnabled, () => 20_000, scheduler);
+
+        await handler({}, fakeMessage(randomUUID(), "wait-again-" + randomUUID(), "unfinished phrase"));
+        scheduler.advanceBy(20_000);
+        await waitFor(() => judgeCalls === 2);
+        if (fallbackEnabled) {
+            await waitFor(() => mainCalls === 1);
+            assert.deepEqual(state.sends, []);
+        } else {
+            await waitFor(() => state.sends.length === 1);
+            assert.deepEqual(state.sends.map((item) => item.value), ["ERROR: F:A_RJ_IPO"]);
+            assert.equal(mainCalls, 0);
+        }
+        assert.equal(scheduler.pendingCount, 0);
+        state.cleanup?.();
+    }
+});
+
+test("new input from any speaker supersedes a wait and judges the newest Context immediately", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    const scheduler = new FakeTurnWaitScheduler();
+    const requests: ReplyJudgeRequest[] = [];
+    let judgeCalls = 0;
+    const handler = register(state, { async judge(request) {
+        requests.push(request);
+        return { decision: ++judgeCalls === 1 ? "wait" : "pass" };
+    } }, async () => reply("unexpected"), "judge", () => false, () => 20_000, scheduler);
+    const group = randomUUID();
+
+    await handler({}, fakeMessage(group, "wait-a-" + randomUUID(), "A 的第一段"));
+    assert.equal(scheduler.pendingCount, 1);
+    await handler({}, fakeMessage(group, "wait-b-" + randomUUID(), "B 的补充消息"));
+    assert.equal(judgeCalls, 2);
+    assert.equal(requests[1]?.currentMessage.content, "B 的补充消息");
+    assert.deepEqual(requests[1]?.conversation.map((item) => item.content), ["A 的第一段"]);
+    assert.equal(scheduler.pendingCount, 0);
+    scheduler.advanceBy(20_000);
+    assert.equal(judgeCalls, 2, "the cancelled timer cannot trigger a stale recheck");
+    state.cleanup?.();
+});
+
+test("each new slow message restarts a full wait window; only the latest expiry rechecks", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    const scheduler = new FakeTurnWaitScheduler();
+    const requests: ReplyJudgeRequest[] = [];
+    let judgeCalls = 0;
+    const handler = register(state, { async judge(request) {
+        requests.push(request);
+        return { decision: ++judgeCalls <= 3 ? "wait" : "pass" };
+    } }, async () => reply("unexpected"), "judge", () => false, () => 20_000, scheduler);
+    const group = randomUUID();
+
+    await handler({}, fakeMessage(group, "slow-a-" + randomUUID(), "因为模型的输入规律就是"));
+    scheduler.advanceBy(9_000);
+    await handler({}, fakeMessage(group, "slow-b-" + randomUUID(), "输入-输出-输入-输出"));
+    scheduler.advanceBy(13_000);
+    assert.equal(judgeCalls, 2, "the second wait has not expired at the first wait's old deadline");
+    await handler({}, fakeMessage(group, "slow-c-" + randomUUID(), "他不存在一句话分多条发送的假设"));
+    assert.equal(scheduler.pendingCount, 1);
+    scheduler.advanceBy(19_999);
+    assert.equal(judgeCalls, 3);
+    scheduler.advanceBy(1);
+    await waitFor(() => judgeCalls === 4);
+    assert.deepEqual(requests.map((request) => request.signals.turnWaitExpired), [false, false, false, true]);
+    assert.equal(scheduler.pendingCount, 0);
+    state.cleanup?.();
+});
+
+test("a Judge already in flight stays single-flight and anchors a wait to the latest revision", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    const scheduler = new FakeTurnWaitScheduler();
+    const requests: ReplyJudgeRequest[] = [];
+    let judgeCalls = 0;
+    let concurrentJudges = 0;
+    let maxConcurrentJudges = 0;
+    let resolveFirst!: (decision: ReplyJudgeDecision) => void;
+    const handler = register(state, { async judge(request) {
+        requests.push(request);
+        judgeCalls++;
+        concurrentJudges++;
+        maxConcurrentJudges = Math.max(maxConcurrentJudges, concurrentJudges);
+        try {
+            if (judgeCalls === 1) return await new Promise<ReplyJudgeDecision>((resolve) => { resolveFirst = resolve; });
+            return { decision: "pass" };
+        } finally {
+            concurrentJudges--;
+        }
+    } }, async () => reply("unexpected"), "judge", () => false, () => 20_000, scheduler);
+    const group = randomUUID();
+
+    const firstMessage = handler({}, fakeMessage(group, "inflight-a-" + randomUUID(), "first chunk"));
+    await waitFor(() => judgeCalls === 1);
+    await handler({}, fakeMessage(group, "inflight-b-" + randomUUID(), "latest chunk"));
+    assert.equal(judgeCalls, 1, "new input is coalesced until the current request settles");
+    resolveFirst({ decision: "wait" });
+    await firstMessage;
+    assert.equal(judgeCalls, 1, "the in-flight admission is not duplicated");
+    assert.equal(scheduler.pendingCount, 1);
+    scheduler.advanceBy(20_000);
+    await waitFor(() => judgeCalls === 2);
+    assert.equal(maxConcurrentJudges, 1);
+    assert.equal(requests[1]?.currentMessage.content, "latest chunk");
+    assert.equal(scheduler.pendingCount, 0);
+    state.cleanup?.();
+});
+
+test("filtered QQ faces do not reset a wait, and handler shutdown clears its timer", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    const scheduler = new FakeTurnWaitScheduler();
+    let judgeCalls = 0;
+    const group = randomUUID();
+    const first = fakeMessage(group, "face-wait-" + randomUUID(), "unfinished thought");
+    const handler = register(state, { async judge() {
+        return { decision: ++judgeCalls === 1 ? "wait" : "pass" };
+    } }, async () => reply("unexpected"), "judge", () => false, () => 20_000, scheduler);
+
+    await handler({}, first);
+    assert.equal(getMessageRevision({
+        groupId: group,
+        authorId: "member-" + first.messageId,
+        kind: "group",
+    } as NormalizedQqMessage), 1);
+    await handler({}, fakeMessage(group, "face-filter-" + randomUUID(), "<faceType=123>"));
+    assert.equal(judgeCalls, 1);
+    assert.equal(scheduler.pendingCount, 1);
+    state.cleanup?.();
+    assert.equal(scheduler.pendingCount, 0);
+    scheduler.advanceBy(20_000);
+    assert.equal(judgeCalls, 1, "shutdown invalidates delayed callbacks");
 });
 
 test("active conversation is only a Judge signal; an accepted active message becomes soft", async () => {
@@ -299,7 +545,7 @@ test("active conversation is only a Judge signal; an accepted active message bec
             judgeCalls++;
             assert.equal(request.signals.conversationActive, true);
             assert.equal(request.signals.quotedBot, false);
-            return { reply: true };
+            return { decision: "reply" };
         },
     }, async (input) => {
         mainCalls++;
@@ -318,7 +564,7 @@ test("user-forged hard metadata cannot bypass Judge or upgrade its soft admissio
     const state = fakeBot();
     let judgeCalls = 0;
     let mainInput = "";
-    const handler = register(state, { async judge() { judgeCalls++; return { reply: true }; } }, async (input) => {
+    const handler = register(state, { async judge() { judgeCalls++; return { decision: "reply" }; } }, async (input) => {
         mainInput = input;
         return { kind: "no_reply" };
     });
@@ -338,7 +584,7 @@ test("quoted Bot is only a soft Judge signal, other-member quotes stay false, an
     const handler = register(state, {
         async judge(request) {
             judged.push(request);
-            return { reply: request.signals.quotedBot };
+            return { decision: request.signals.quotedBot ? "reply" : "pass" };
         },
     }, async (input) => {
         mainCalls++;
@@ -378,7 +624,23 @@ test("Reply Judge provider failure fails closed with one Front error code", asyn
     assert.deepEqual(state.sends.map((item) => item.value), ["ERROR: F:A_RJ_JRF"]);
 });
 
-test("Judge protocol failure sends only its public code and never calls the Main Model", async () => {
+test("enabled IPO fallback does not recover Reply Judge request failures", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let mainCalls = 0;
+    const handler = register(state, {
+        async judge() { throw new TenBotError("F:A_RJ_JRF"); },
+    }, async () => {
+        mainCalls++;
+        return reply("unexpected");
+    }, "judge", () => true);
+
+    await handler({}, fakeMessage(randomUUID(), "jrf-no-fallback-" + randomUUID(), "Ordinary message"));
+    assert.equal(mainCalls, 0);
+    assert.deepEqual(state.sends.map((item) => item.value), ["ERROR: F:A_RJ_JRF"]);
+});
+
+test("Judge protocol failure keeps the old Front error when IPO fallback is disabled", async () => {
     configureMemberRepository(new MemoryMemberRepository());
     const state = fakeBot();
     let mainCalls = 0;
@@ -395,6 +657,41 @@ test("Judge protocol failure sends only its public code and never calls the Main
     assert.deepEqual(state.sends.map((item) => item.value), ["ERROR: F:A_RJ_IPO"]);
 });
 
+test("enabled IPO fallback admits the Main Model softly with an explicit fallback reason", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let mainInput = "";
+    let mainCalls = 0;
+    const handler = register(state, {
+        async judge() { throw new TenBotError("F:A_RJ_IPO", { cause: new Error("malformed response") }); },
+    }, async (input) => {
+        mainCalls++;
+        mainInput = input;
+        return { kind: "no_reply" };
+    }, "judge", () => true);
+
+    await handler({}, fakeMessage(randomUUID(), "ipo-fallback-" + randomUUID(), "Ordinary message"));
+    assert.equal(mainCalls, 1);
+    assert.match(mainInput, /wake_level=soft/);
+    assert.match(mainInput, /admission=judge-invalid-output-fallback/);
+    assert.match(mainInput, /reason=judge-invalid-output-fallback/);
+    assert.deepEqual(state.sends, [], "soft fallback still allows the Main Model to choose NO_REPLY");
+});
+
+test("enabled IPO fallback does not override a normal Judge false decision", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    let mainCalls = 0;
+    const handler = register(state, { async judge() { return { decision: "pass" }; } }, async () => {
+        mainCalls++;
+        return reply("unexpected");
+    }, "judge", () => true);
+
+    await handler({}, fakeMessage(randomUUID(), "ipo-false-" + randomUUID(), "Ordinary message"));
+    assert.equal(mainCalls, 0);
+    assert.deepEqual(state.sends, []);
+});
+
 test("active hard Cycle bypasses Judge and keeps stale Attempt interruption immediate", async () => {
     configureMemberRepository(new MemoryMemberRepository());
     const state = fakeBot();
@@ -402,7 +699,7 @@ test("active hard Cycle bypasses Judge and keeps stale Attempt interruption imme
     const judge: ReplyJudge = {
         async judge() {
             judgeCalls++;
-            return { reply: false };
+            return { decision: "pass" };
         },
     };
     const attempts: Array<{ input: string; signal: AbortSignal }> = [];
@@ -427,20 +724,22 @@ test("active hard Cycle bypasses Judge and keeps stale Attempt interruption imme
     assert.match(attempts[1]!.input, /ordinary follow-up/);
     assert.match(attempts[1]!.input, /wake_level=hard/);
 });
-test("Reply Judge accepts only a complete object with one boolean reply field", () => {
-    assert.deepEqual(parseReplyJudgeOutput('{"reply":true}'), { reply: true });
-    assert.deepEqual(parseReplyJudgeOutput(' \n { "reply" : false } \t'), { reply: false });
+test("Reply Judge accepts only a complete one-field three-state decision object", () => {
+    assert.deepEqual(parseReplyJudgeOutput('{"decision":"reply"}'), { decision: "reply" });
+    assert.deepEqual(parseReplyJudgeOutput(' \n { "decision" : "pass" } \t'), { decision: "pass" });
+    assert.deepEqual(parseReplyJudgeOutput('{"decision":"wait"}'), { decision: "wait" });
     const fence = String.fromCharCode(96).repeat(3);
     const invalid = [
-        '{"reply":"true"}',
-        '{"reply":1}',
-        '{"reply":true,"reason":"should reply"}',
-        '{"reply":true,"reply":false}',
+        '{"reply":true}',
+        '{"decision":true}',
+        '{"decision":"maybe"}',
+        '{"decision":"reply","reason":"should reply"}',
+        '{"decision":"reply","decision":"pass"}',
         "true",
         "YES",
-        '当然应该回复 {"reply":true}',
-        '好的：{"reply":true}',
-        fence + 'json\n{"reply":true}\n' + fence,
+        '当然应该回复 {"decision":"reply"}',
+        '好的：{"decision":"reply"}',
+        fence + 'json\n{"decision":"reply"}\n' + fence,
         "",
         "[]",
         "null",
@@ -458,6 +757,17 @@ test("Reply Judge error code keeps the public and console formats distinct", () 
     const error = new TenBotError("F:A_RJ_IPO");
     assert.equal(toPublicErrorMessage(error), "ERROR: F:A_RJ_IPO");
     assert.equal(formatTenBotError(error), "[ERROR] F:A_RJ_IPO Invalid Protocol Output / 非法的协议输出");
+});
+
+test("Reply Judge prompt admits credible self-safety concerns and retains the strict JSON contract", async () => {
+    const prompt = await readFile(new URL("../prompts/reply-judge.md", import.meta.url), "utf8");
+    assert.match(prompt, /自身安全风险是谨慎参与原则的例外/);
+    assert.match(prompt, /nameMention|signal/);
+    assert.match(prompt, /\{"decision":"reply"\}/);
+    assert.match(prompt, /\{"decision":"pass"\}/);
+    assert.match(prompt, /\{"decision":"wait"\}/);
+    assert.match(prompt, /turnWaitExpired=true/);
+    assert.match(prompt, /Do not add a reason, explanation, prefix, suffix/);
 });
 
 test("Reply Judge prompt reload swaps immutable snapshots and preserves the last good snapshot", async () => {
@@ -514,10 +824,11 @@ test("Judge request keeps committed current message separate from recent convers
         nameMention: false,
         conversationActive: true,
         quotedBot: true,
+        turnWaitExpired: false,
     });
     assert.deepEqual(request.conversation, [{ speaker: "群友", content: "今天真冷" }]);
     assert.deepEqual(request.currentMessage, { speaker: "群友", content: "你怎么看" });
-    assert.deepEqual(request.signals, { nameMention: false, conversationActive: true, quotedBot: true });
+    assert.deepEqual(request.signals, { nameMention: false, conversationActive: true, quotedBot: true, turnWaitExpired: false });
 });
 
 test("Reply Judge config is independent from the main model", () => {
@@ -536,6 +847,8 @@ test("Reply Judge config is independent from the main model", () => {
         baseURL: "https://judge.example/v1",
         apiKey: "judge-secret",
         timeoutMs: 3200,
+        fallbackToMainOnInvalidOutput: true,
+        turnWaitMs: 20_000,
     });
     assert.notEqual(config.replyJudge.model, config.ai.deepseek.model);
 });
@@ -556,7 +869,7 @@ test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token c
             model: "Qwen3.5-test",
             choices: [{
                 index: 0,
-                message: { role: "assistant", content: "{\"reply\":true}" },
+                message: { role: "assistant", content: "{\"decision\":\"reply\"}" },
                 finish_reason: "stop",
             }],
         }), { status: 200, headers: { "content-type": "application/json" } });
@@ -574,10 +887,10 @@ test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token c
         const decision = await judge.judge({
             conversation: [],
             currentMessage: { speaker: "member", content: "test" },
-            signals: { nameMention: false, conversationActive: false, quotedBot: false },
+            signals: { nameMention: false, conversationActive: false, quotedBot: false, turnWaitExpired: false },
         });
 
-        assert.deepEqual(decision, { reply: true });
+        assert.deepEqual(decision, { decision: "reply" });
         assert.equal(requestCount, 1, "Reply Judge does not retry provider requests");
         assert.equal(requestBody?.enable_thinking, false);
         assert.equal(requestBody?.max_tokens, 32);
@@ -593,7 +906,7 @@ test("an active soft Cycle bypasses Judge for follow-up context and keeps NO_REP
     let judgeCalls = 0;
     const attempts: Array<{ input: string; signal: AbortSignal }> = [];
     const handler = register(state, {
-        async judge() { judgeCalls++; return { reply: true }; },
+        async judge() { judgeCalls++; return { decision: "reply" }; },
     }, async (input, options) => {
         attempts.push({ input, signal: options.signal });
         if (attempts.length === 1) {
@@ -623,7 +936,7 @@ test("an active hard Cycle bypasses Judge for passive updates and keeps NO_REPLY
     let judgeCalls = 0;
     const attempts: Array<{ input: string; signal: AbortSignal }> = [];
     const handler = register(state, {
-        async judge() { judgeCalls++; return { reply: true }; },
+        async judge() { judgeCalls++; return { decision: "reply" }; },
     }, async (input, options) => {
         attempts.push({ input, signal: options.signal });
         if (attempts.length === 1) {
@@ -653,7 +966,7 @@ test("private messages update their active hard Cycle without calling Judge", as
     let judgeCalls = 0;
     const attempts: Array<{ input: string; signal: AbortSignal }> = [];
     const handler = register(state, {
-        async judge() { judgeCalls++; return { reply: true }; },
+        async judge() { judgeCalls++; return { decision: "reply" }; },
     }, async (input, options) => {
         attempts.push({ input, signal: options.signal });
         if (attempts.length === 1) {
@@ -684,7 +997,7 @@ test("a hard mention upgrades an active soft Cycle without calling Judge", async
     let judgeCalls = 0;
     const attempts: Array<{ input: string; signal: AbortSignal }> = [];
     const handler = register(state, {
-        async judge() { judgeCalls++; return { reply: true }; },
+        async judge() { judgeCalls++; return { decision: "reply" }; },
     }, async (input, options) => {
         attempts.push({ input, signal: options.signal });
         if (attempts.length === 1) {
@@ -714,7 +1027,7 @@ test("Judge is available again after a soft NO_REPLY Cycle completes", async () 
     let judgeCalls = 0;
     let mainCalls = 0;
     const handler = register(state, {
-        async judge() { judgeCalls++; return { reply: true }; },
+        async judge() { judgeCalls++; return { decision: "reply" }; },
     }, async () => {
         mainCalls++;
         return { kind: "no_reply" };
@@ -734,7 +1047,7 @@ test("Judge is available again after a failed Cycle is cleaned up", async () => 
     let judgeCalls = 0;
     let mainCalls = 0;
     const handler = register(state, {
-        async judge() { return { reply: ++judgeCalls === 1 }; },
+        async judge() { return { decision: ++judgeCalls === 1 ? "reply" : "pass" }; },
     }, async () => {
         mainCalls++;
         throw new Error("upstream unavailable");
@@ -755,7 +1068,7 @@ test("legacy Front also bypasses new admission while a Cycle is running", async 
     let judgeCalls = 0;
     const attempts: Array<{ input: string; signal: AbortSignal }> = [];
     const handler = register(state, {
-        async judge() { judgeCalls++; return { reply: true }; },
+        async judge() { judgeCalls++; return { decision: "reply" }; },
     }, async (input, options) => {
         attempts.push({ input, signal: options.signal });
         if (attempts.length === 1) {
@@ -795,7 +1108,7 @@ test("messages arriving during send bypass Judge and keep the frozen reply plan"
         return await new Promise((resolve) => { finishSend = resolve; });
     };
     const handler = register(state, {
-        async judge() { judgeCalls++; return { reply: true }; },
+        async judge() { judgeCalls++; return { decision: "reply" }; },
     }, async () => {
         mainCalls++;
         return mainCalls === 1 ? reply("frozen reply A") : { kind: "no_reply" };
@@ -819,7 +1132,7 @@ test("one pending Judge per conversation admits from the latest committed contex
     configureMemberRepository(new MemoryMemberRepository());
     const state = fakeBot();
     let judgeCalls = 0;
-    let resolveJudge!: (decision: { reply: boolean }) => void;
+    let resolveJudge!: (decision: ReplyJudgeDecision) => void;
     let mainInput = "";
     const handler = register(state, {
         judge() {
@@ -835,7 +1148,7 @@ test("one pending Judge per conversation admits from the latest committed contex
     await waitFor(() => judgeCalls === 1);
     await handler({}, fakeMessage(group, "pending-B-" + randomUUID(), "pending message B"));
     assert.equal(judgeCalls, 1, "B does not start a parallel Judge request");
-    resolveJudge({ reply: true });
+    resolveJudge({ decision: "reply" });
     await first;
     assert.equal(judgeCalls, 1);
     assert.match(mainInput, /pending message A/);

@@ -11,6 +11,8 @@ export interface SettingsValues {
     "deepseek.reasoningEffort": PublicConfig["deepseek"]["reasoningEffort"];
     "replyJudge.model": string;
     "replyJudge.timeoutMs": string;
+    "replyJudge.fallbackToMainOnInvalidOutput": boolean;
+    "replyJudge.turnWaitMs": string;
     logLevel: PublicConfig["logLevel"];
     "botLoopGuard.maxCycles": string;
 }
@@ -30,6 +32,8 @@ const SETTINGS_FIELDS: readonly SettingsField[] = [
     "deepseek.reasoningEffort",
     "replyJudge.model",
     "replyJudge.timeoutMs",
+    "replyJudge.fallbackToMainOnInvalidOutput",
+    "replyJudge.turnWaitMs",
     "logLevel",
     "botLoopGuard.maxCycles",
 ];
@@ -46,6 +50,8 @@ export function createSettingsForm(config: PublicConfig): SettingsFormState {
             "deepseek.reasoningEffort": config.deepseek.reasoningEffort,
             "replyJudge.model": config.replyJudge.model,
             "replyJudge.timeoutMs": String(config.replyJudge.timeoutMs),
+            "replyJudge.fallbackToMainOnInvalidOutput": config.replyJudge.fallbackToMainOnInvalidOutput,
+            "replyJudge.turnWaitMs": String(config.replyJudge.turnWaitMs / 1_000),
             logLevel: config.logLevel,
             "botLoopGuard.maxCycles": String(config.botLoopGuard.maxCycles),
         },
@@ -63,6 +69,8 @@ function baselineValue(config: PublicConfig, field: SettingsField): string {
         case "deepseek.reasoningEffort": return config.deepseek.reasoningEffort;
         case "replyJudge.model": return config.replyJudge.model;
         case "replyJudge.timeoutMs": return String(config.replyJudge.timeoutMs);
+        case "replyJudge.fallbackToMainOnInvalidOutput": return String(config.replyJudge.fallbackToMainOnInvalidOutput);
+        case "replyJudge.turnWaitMs": return String(config.replyJudge.turnWaitMs / 1_000);
         case "logLevel": return config.logLevel;
         case "botLoopGuard.maxCycles": return String(config.botLoopGuard.maxCycles);
     }
@@ -84,6 +92,12 @@ export function parseTimeoutInput(value: string): number | null {
     return Number.isSafeInteger(parsed) && parsed >= 1_000 && parsed <= 30_000 ? parsed : null;
 }
 
+export function parseTurnWaitSecondsInput(value: string): number | null {
+    if (!/^\d+(?:\.\d{1,3})?$/.test(value.trim())) return null;
+    const milliseconds = Number(value.trim()) * 1_000;
+    return Number.isSafeInteger(milliseconds) && milliseconds >= 1_000 && milliseconds <= 60_000 ? milliseconds : null;
+}
+
 function parsePositiveInteger(value: string): number | null {
     if (!/^\d+$/.test(value.trim())) return null;
     const parsed = Number(value.trim());
@@ -91,11 +105,12 @@ function parsePositiveInteger(value: string): number | null {
 }
 
 export function settingsFieldError(field: SettingsField, values: SettingsValues): string | undefined {
-    const value = values[field];
+    const value = String(values[field]);
     if (field === "gpt.model" || field === "deepseek.model" || field === "replyJudge.model") {
         return value.trim() ? undefined : "请填写模型名称";
     }
     if (field === "replyJudge.timeoutMs" && parseTimeoutInput(value) === null) return "请输入 1000 到 30000 之间的整数毫秒";
+    if (field === "replyJudge.turnWaitMs" && parseTurnWaitSecondsInput(value) === null) return "请输入 1 到 60 秒之间的值，最多精确到毫秒";
     if (field === "botLoopGuard.maxCycles" && parsePositiveInteger(value) === null) return "请输入大于等于 1 的整数";
     return undefined;
 }
@@ -103,21 +118,27 @@ export function settingsFieldError(field: SettingsField, values: SettingsValues)
 export function settingsPatches(form: SettingsFormState): PublicConfigPatch[] {
     return visibleDirtySettingsFields(form).flatMap((field): PublicConfigPatch[] => {
         const value = form.values[field];
+        const textValue = String(value);
         switch (field) {
             case "aiProvider": return [{ field, value: value as PublicConfig["aiProvider"] }];
             case "gpt.model":
             case "deepseek.model":
-            case "replyJudge.model": return [{ field, value: value.trim() }];
+            case "replyJudge.model": return [{ field, value: textValue.trim() }];
             case "gpt.reasoningEffort": return [{ field, value: value as PublicConfig["gpt"]["reasoningEffort"] }];
             case "deepseek.reasoningEffort": return [{ field, value: value as PublicConfig["deepseek"]["reasoningEffort"] }];
             case "gpt.verbosity": return [{ field, value: value as PublicConfig["gpt"]["verbosity"] }];
             case "logLevel": return [{ field, value: value as PublicConfig["logLevel"] }];
             case "replyJudge.timeoutMs": {
-                const parsed = parseTimeoutInput(value);
+                const parsed = parseTimeoutInput(textValue);
+                return parsed === null ? [] : [{ field, value: parsed }];
+            }
+            case "replyJudge.fallbackToMainOnInvalidOutput": return [{ field, value: value as boolean }];
+            case "replyJudge.turnWaitMs": {
+                const parsed = parseTurnWaitSecondsInput(textValue);
                 return parsed === null ? [] : [{ field, value: parsed }];
             }
             case "botLoopGuard.maxCycles": {
-                const parsed = parsePositiveInteger(value);
+                const parsed = parsePositiveInteger(textValue);
                 return parsed === null ? [] : [{ field, value: parsed }];
             }
         }
@@ -134,7 +155,7 @@ export type SettingsFormAction =
     | { type: "saved"; config: PublicConfig; field: SettingsField }
     | { type: "reload"; config: PublicConfig };
 
-function valueFromConfig(config: PublicConfig, field: SettingsField): string {
+function valueFromConfig(config: PublicConfig, field: SettingsField): string | boolean {
     switch (field) {
         case "aiProvider": return config.aiProvider;
         case "gpt.model": return config.gpt.model;
@@ -144,6 +165,8 @@ function valueFromConfig(config: PublicConfig, field: SettingsField): string {
         case "deepseek.reasoningEffort": return config.deepseek.reasoningEffort;
         case "replyJudge.model": return config.replyJudge.model;
         case "replyJudge.timeoutMs": return String(config.replyJudge.timeoutMs);
+        case "replyJudge.fallbackToMainOnInvalidOutput": return config.replyJudge.fallbackToMainOnInvalidOutput;
+        case "replyJudge.turnWaitMs": return String(config.replyJudge.turnWaitMs / 1_000);
         case "logLevel": return config.logLevel;
         case "botLoopGuard.maxCycles": return String(config.botLoopGuard.maxCycles);
     }

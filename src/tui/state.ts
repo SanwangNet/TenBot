@@ -19,7 +19,7 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     "botLoopGuard.maxCycles",
 ];
 
-export type ConfigSelectField = Exclude<SettingsField, "gpt.model" | "deepseek.model" | "replyJudge.model" | "replyJudge.timeoutMs" | "botLoopGuard.maxCycles">;
+export type ConfigSelectField = Exclude<SettingsField, "gpt.model" | "deepseek.model" | "replyJudge.model" | "replyJudge.timeoutMs" | "replyJudge.fallbackToMainOnInvalidOutput" | "replyJudge.turnWaitMs" | "botLoopGuard.maxCycles">;
 export type ConfigTextField = "gpt.model" | "deepseek.model" | "replyJudge.model" | "replyJudge.timeoutMs" | "botLoopGuard.maxCycles";
 export type SettingsRow = SettingsField | "provider" | "apply";
 

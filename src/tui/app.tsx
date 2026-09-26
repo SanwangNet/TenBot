@@ -668,6 +668,8 @@ function configValue(config: PublicConfig, field: SettingsField): string {
         case "deepseek.reasoningEffort": return reasoningLabel(config.deepseek.reasoningEffort);
         case "replyJudge.model": return config.replyJudge.model;
         case "replyJudge.timeoutMs": return String(config.replyJudge.timeoutMs);
+        case "replyJudge.fallbackToMainOnInvalidOutput": return config.replyJudge.fallbackToMainOnInvalidOutput ? "开启" : "关闭";
+        case "replyJudge.turnWaitMs": return String(config.replyJudge.turnWaitMs);
         case "logLevel": return logLevelLabel(config.logLevel);
         case "botLoopGuard.maxCycles": return String(config.botLoopGuard.maxCycles);
     }
@@ -680,6 +682,7 @@ function displayPatchValue(patch: PublicConfigPatch): string {
         case "deepseek.reasoningEffort": return reasoningLabel(patch.value);
         case "gpt.verbosity": return verbosityLabel(patch.value);
         case "logLevel": return logLevelLabel(patch.value);
+        case "replyJudge.fallbackToMainOnInvalidOutput": return patch.value ? "开启" : "关闭";
         default: return String(patch.value);
     }
 }
@@ -726,6 +729,8 @@ export function openConfigModal(field: SettingsField, config: PublicConfig): Mod
     if (field === "deepseek.model") return textConfigModal(field, config.deepseek.model);
     if (field === "replyJudge.model") return textConfigModal(field, config.replyJudge.model);
     if (field === "replyJudge.timeoutMs") return textConfigModal(field, String(config.replyJudge.timeoutMs));
+    if (field === "replyJudge.fallbackToMainOnInvalidOutput") return { type: "config-invalid", message: "Use Web Settings to manage Judge IPO fallback" };
+    if (field === "replyJudge.turnWaitMs") return { type: "config-invalid", message: "Use Web Settings to manage Judge turn wait" };
     return textConfigModal(field, String(config.botLoopGuard.maxCycles));
 }
 

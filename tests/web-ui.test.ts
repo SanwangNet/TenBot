@@ -11,6 +11,7 @@ import {
     dirtySettingsFields,
     visibleDirtySettingsFields,
     parseTimeoutInput,
+    parseTurnWaitSecondsInput,
     settingsFormReducer,
     settingsPatches,
 } from "../web/src/settings/settings-state.js";
@@ -40,7 +41,7 @@ const status: RuntimeStatus = {
 
 const config: PublicConfig = {
     aiProvider: "gpt",
-    replyJudge: { model: "judge", timeoutMs: 5000 },
+    replyJudge: { model: "judge", timeoutMs: 5000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
     gpt: { model: "gpt-test", reasoningEffort: "high", verbosity: "high", configured: true },
     deepseek: { model: "deepseek-test", reasoningEffort: "high", configured: false },
     logLevel: "info",
@@ -89,6 +90,43 @@ test("settings form calculates dirty fields and serializable patches with numeri
     assert.equal(parseTimeoutInput("15000"), 15000);
     assert.equal(parseTimeoutInput("999"), null);
     assert.equal(parseTimeoutInput("1500.5"), null);
+});
+
+test("settings fallback toggle starts from server config, produces one boolean patch, and cleans after save", () => {
+    let form = createSettingsForm(config);
+    assert.equal(form.values["replyJudge.fallbackToMainOnInvalidOutput"], true);
+    form = settingsFormReducer(form, { type: "edit", field: "replyJudge.fallbackToMainOnInvalidOutput", value: false })!;
+    assert.deepEqual(dirtySettingsFields(form), ["replyJudge.fallbackToMainOnInvalidOutput"]);
+    assert.deepEqual(settingsPatches(form), [{ field: "replyJudge.fallbackToMainOnInvalidOutput", value: false }]);
+
+    const savedConfig: PublicConfig = {
+        ...config,
+        replyJudge: { ...config.replyJudge, fallbackToMainOnInvalidOutput: false },
+    };
+    form = settingsFormReducer(form, { type: "saved", config: savedConfig, field: "replyJudge.fallbackToMainOnInvalidOutput" })!;
+    assert.equal(form.values["replyJudge.fallbackToMainOnInvalidOutput"], false);
+    assert.deepEqual(dirtySettingsFields(form), []);
+});
+
+test("settings turn wait is edited in seconds and saved as validated milliseconds", () => {
+    let form = createSettingsForm(config);
+    assert.equal(form.values["replyJudge.turnWaitMs"], "20");
+    form = settingsFormReducer(form, { type: "edit", field: "replyJudge.turnWaitMs", value: "12.5" })!;
+    assert.deepEqual(dirtySettingsFields(form), ["replyJudge.turnWaitMs"]);
+    assert.deepEqual(settingsPatches(form), [{ field: "replyJudge.turnWaitMs", value: 12_500 }]);
+    assert.equal(parseTurnWaitSecondsInput("1"), 1_000);
+    assert.equal(parseTurnWaitSecondsInput("60"), 60_000);
+    assert.equal(parseTurnWaitSecondsInput("0"), null);
+    assert.equal(parseTurnWaitSecondsInput("60.001"), null);
+    assert.equal(parseTurnWaitSecondsInput("1.0001"), null);
+
+    const savedConfig: PublicConfig = {
+        ...config,
+        replyJudge: { ...config.replyJudge, turnWaitMs: 12_500 },
+    };
+    form = settingsFormReducer(form, { type: "saved", config: savedConfig, field: "replyJudge.turnWaitMs" })!;
+    assert.equal(form.values["replyJudge.turnWaitMs"], "12.5");
+    assert.deepEqual(dirtySettingsFields(form), []);
 });
 
 test("settings external refresh reloads clean forms and preserves dirty edits with a conflict notice", () => {

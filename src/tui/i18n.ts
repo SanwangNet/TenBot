@@ -79,6 +79,8 @@ export function settingsFieldLabel(field: SettingsField): string {
         "deepseek.reasoningEffort": "DeepSeek 推理强度",
         "replyJudge.model": "模型",
         "replyJudge.timeoutMs": "超时时间",
+        "replyJudge.fallbackToMainOnInvalidOutput": "Judge IPO 回退",
+        "replyJudge.turnWaitMs": "未完成发言等待时间",
         logLevel: "日志级别",
         "botLoopGuard.maxCycles": "自动互聊上限",
     } satisfies Record<SettingsField, string>)[field];

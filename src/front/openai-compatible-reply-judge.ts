@@ -56,7 +56,7 @@ export class OpenAICompatibleReplyJudge implements ReplyJudge {
             const content = response.choices[0]?.message?.content;
             if (typeof content !== "string") return parseReplyJudgeOutput("");
             const decision = parseReplyJudgeOutput(content);
-            logger.debug("[ReplyJudge] decision=" + (decision.reply ? "reply" : "pass"));
+            logger.debug("[ReplyJudge] decision=" + decision.decision);
             return decision;
         } catch (error) {
             if (error instanceof TenBotError) throw error;

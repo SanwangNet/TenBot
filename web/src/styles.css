@@ -276,3 +276,10 @@ button:focus-visible {
     .metric-row { gap: 7px; }
     .metric-label, .detail-row, .detail-row strong { font-size: 9px; }
 }
+
+.setting-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 0 3px; border-top: 1px solid var(--border); }
+.setting-toggle-copy { display: grid; min-width: 0; gap: 5px; }
+.setting-toggle-copy label { color: var(--text); font-size: 14px; font-weight: 500; }
+.setting-toggle-copy span { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.setting-toggle-input { width: 20px; height: 20px; flex: 0 0 20px; accent-color: var(--accent); cursor: pointer; }
+.setting-toggle-input:disabled { cursor: not-allowed; opacity: .6; }

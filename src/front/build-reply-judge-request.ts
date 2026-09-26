@@ -16,6 +16,7 @@ export function buildReplyJudgeRequest(
             nameMention: signals.nameMention,
             conversationActive: signals.conversationActive,
             quotedBot: signals.quotedBot,
+            turnWaitExpired: signals.turnWaitExpired,
         }),
     });
 }

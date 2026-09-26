@@ -79,6 +79,8 @@ test("Reply Judge model and timeout hot reload for new captures while in-flight 
             "REPLY_JUDGE_BASE_URL=https://judge.example/v1",
             "REPLY_JUDGE_API_KEY=test-secret",
             "REPLY_JUDGE_TIMEOUT_MS=5000",
+            "REPLY_JUDGE_IPO_FALLBACK_TO_MAIN=false",
+            "REPLY_JUDGE_TURN_WAIT_MS=20000",
             "CODEX_MODEL=main-model",
         ].join("\n") + "\n", "utf8");
         const configStore = createConfigStore({ envPath, environment: {} });
@@ -88,18 +90,28 @@ test("Reply Judge model and timeout hot reload for new captures while in-flight 
 
         const modelUpdate = await configStore.updatePublicConfig({ field: "replyJudge.model", value: "model-b" });
         const timeoutUpdate = await configStore.updatePublicConfig({ field: "replyJudge.timeoutMs", value: 15_000 });
+        const fallbackUpdate = await configStore.updatePublicConfig({ field: "replyJudge.fallbackToMainOnInvalidOutput", value: true });
+        const turnWaitUpdate = await configStore.updatePublicConfig({ field: "replyJudge.turnWaitMs", value: 25_000 });
         assert.equal(modelUpdate.ok, true);
         assert.equal(timeoutUpdate.ok, true);
+        assert.equal(fallbackUpdate.ok, true);
+        assert.equal(turnWaitUpdate.ok, true);
         if (modelUpdate.ok) assert.equal(modelUpdate.requiresRestart, false);
         if (timeoutUpdate.ok) assert.equal(timeoutUpdate.requiresRestart, false);
+        if (fallbackUpdate.ok) assert.equal(fallbackUpdate.requiresRestart, false);
+        if (turnWaitUpdate.ok) assert.equal(turnWaitUpdate.requiresRestart, false);
         const tuiUpdate = snapshots.replace(configStore.getAppConfig());
         assert.equal(tuiUpdate.revision, 2);
         assert.equal(captureReplyJudge().model, "model-b");
         assert.equal(captureReplyJudge().timeoutMs, 15_000);
+        assert.equal(captureReplyJudge().fallbackToMainOnInvalidOutput, true);
+        assert.equal(captureReplyJudge().turnWaitMs, 25_000);
 
         const externalEnv = (await readFile(envPath, "utf8"))
             .replace("REPLY_JUDGE_MODEL=model-b", "REPLY_JUDGE_MODEL=model-c")
-            .replace("REPLY_JUDGE_TIMEOUT_MS=15000", "REPLY_JUDGE_TIMEOUT_MS=20000");
+            .replace("REPLY_JUDGE_TIMEOUT_MS=15000", "REPLY_JUDGE_TIMEOUT_MS=20000")
+            .replace("REPLY_JUDGE_IPO_FALLBACK_TO_MAIN=true", "REPLY_JUDGE_IPO_FALLBACK_TO_MAIN=false")
+            .replace("REPLY_JUDGE_TURN_WAIT_MS=25000", "REPLY_JUDGE_TURN_WAIT_MS=30000");
         const watcher = new FileChangeWatcher(envPath, async () => {
             snapshots.replace(configStore.getAppConfig());
         }, 35);
@@ -122,10 +134,14 @@ test("Reply Judge model and timeout hot reload for new captures while in-flight 
         assert.equal(externalUpdate.revision, 3);
         assert.equal(captureReplyJudge().model, "model-c");
         assert.equal(captureReplyJudge().timeoutMs, 20_000);
+        assert.equal(captureReplyJudge().fallbackToMainOnInvalidOutput, false);
+        assert.equal(captureReplyJudge().turnWaitMs, 30_000);
         assert.equal(externalUpdate.model.id, "gpt");
         assert.equal(externalUpdate.model.model, "main-model");
         assert.equal(inFlightConfig.model, "model-a");
         assert.equal(inFlightConfig.timeoutMs, 5_000);
+        assert.equal(inFlightConfig.fallbackToMainOnInvalidOutput, false);
+        assert.equal(inFlightConfig.turnWaitMs, 20_000);
     } finally {
         await rm(directory, { recursive: true, force: true });
     }

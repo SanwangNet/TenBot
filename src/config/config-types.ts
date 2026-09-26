@@ -32,6 +32,8 @@ export interface AppConfig {
         baseURL?: string;
         apiKey?: string;
         timeoutMs: number;
+        fallbackToMainOnInvalidOutput: boolean;
+        turnWaitMs: number;
     };
     logging: {
         level: LogLevel;
@@ -51,6 +53,8 @@ export interface PublicConfig {
     replyJudge: {
         model: string;
         timeoutMs: number;
+        fallbackToMainOnInvalidOutput: boolean;
+        turnWaitMs: number;
         provider?: "openai-compatible";
     };
     gpt: {
@@ -80,6 +84,8 @@ export type PublicConfigPatch =
     | { field: "deepseek.reasoningEffort"; value: ReasoningEffort }
     | { field: "replyJudge.model"; value: string }
     | { field: "replyJudge.timeoutMs"; value: number }
+    | { field: "replyJudge.fallbackToMainOnInvalidOutput"; value: boolean }
+    | { field: "replyJudge.turnWaitMs"; value: number }
     | { field: "logLevel"; value: LogLevel }
     | { field: "botLoopGuard.maxCycles"; value: number };
 
