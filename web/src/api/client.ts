@@ -1,8 +1,12 @@
 import type {
     AutomatedPeerSummary,
+    AutomatedPeerMutationResult,
     ConfigPatchResponse,
     ConversationItem,
     ConversationSummary,
+    EditorResource,
+    EditorResourceId,
+    EditorSaveResponse,
     KnownMemberSummary,
     PublicConfig,
     PublicConfigPatch,
@@ -46,13 +50,13 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
     return parseJsonResponse<T>(response.status, await response.text());
 }
 
-async function sendJson<T>(path: string, method: "PATCH", body: unknown, signal?: AbortSignal): Promise<T> {
+async function sendJson<T>(path: string, method: "PATCH" | "POST" | "PUT" | "DELETE", body?: unknown, signal?: AbortSignal): Promise<T> {
     let response: Response;
     try {
         response = await fetch(path, {
             method,
             headers: { Accept: "application/json", "Content-Type": "application/json" },
-            body: JSON.stringify(body),
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
             signal,
         });
     } catch (cause) {
@@ -72,4 +76,12 @@ export const apiClient = {
     getKnownMembers: (signal?: AbortSignal) => getJson<KnownMemberSummary[]>("/api/known-members", signal),
     updateConfig: (patch: PublicConfigPatch, signal?: AbortSignal) =>
         sendJson<ConfigPatchResponse>("/api/config", "PATCH", patch, signal),
+    addAutomatedPeer: (id: string, signal?: AbortSignal) =>
+        sendJson<AutomatedPeerMutationResult>("/api/automated-peers", "POST", { id }, signal),
+    removeAutomatedPeer: (id: string, signal?: AbortSignal) =>
+        sendJson<AutomatedPeerMutationResult>(`/api/automated-peers/${encodeURIComponent(id)}`, "DELETE", undefined, signal),
+    getEditorResource: (id: EditorResourceId, signal?: AbortSignal) =>
+        getJson<EditorResource>(`/api/editor/resources/${encodeURIComponent(id)}`, signal),
+    saveEditorResource: (id: EditorResourceId, content: string, expectedVersion: string, signal?: AbortSignal) =>
+        sendJson<EditorSaveResponse>(`/api/editor/resources/${encodeURIComponent(id)}`, "PUT", { content, expectedVersion }, signal),
 };

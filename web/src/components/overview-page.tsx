@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useRuntime } from "../runtime/runtime-context.js";
+import { useLastRuntimeEventAt, useRuntime } from "../runtime/runtime-context.js";
 import type { RuntimeStatus } from "../api/types.js";
 
 const connectionLabels: Record<RuntimeStatus["qq"], string> = {
@@ -17,7 +17,8 @@ const connectionTone: Record<RuntimeStatus["qq"], string> = {
 };
 
 export function OverviewPage() {
-    const { status, connection, loading, lastRuntimeEventAt } = useRuntime();
+    const { status, config, connection, loading } = useRuntime();
+    const lastRuntimeEventAt = useLastRuntimeEventAt();
     const waiting = loading && !status;
 
     return (
@@ -62,7 +63,15 @@ export function OverviewPage() {
                     </div>
                 </Panel>
 
-                <Panel title="Prompt" icon="03" hint={status?.prompt.provider ?? "活动快照"}>
+                <Panel title="Reply Judge" icon="03" hint="回复判断">
+                    <div className="large-value overview-judge-model">{config?.replyJudge.model || "未配置"}</div>
+                    <div className="detail-list">
+                        <Detail label="Provider" value={config?.replyJudge.provider ?? "未配置"} />
+                        <Detail label="Timeout" value={config ? `${config.replyJudge.timeoutMs} ms` : "—"} />
+                    </div>
+                </Panel>
+
+                <Panel title="Prompt" icon="04" hint={status?.prompt.provider ?? "活动快照"}>
                     <div className="large-value">{status ? `r${status.prompt.revision}` : "—"}</div>
                     <div className="detail-list">
                         <Detail label="Provider" value={status?.prompt.provider ?? "—"} />
@@ -72,7 +81,7 @@ export function OverviewPage() {
                     </div>
                 </Panel>
 
-                <Panel title="Memes" icon="04" hint="本地知识库">
+                <Panel title="Memes" icon="05" hint="本地知识库">
                     <div className="large-value">{status?.memes.count.toLocaleString() ?? "—"}<span className="large-suffix"> 条</span></div>
                     <div className="detail-list">
                         <Detail label="Revision" value={status ? `r${status.memes.revision}` : "—"} />
@@ -80,7 +89,7 @@ export function OverviewPage() {
                     </div>
                 </Panel>
 
-                <Panel className="web-panel" title="Web Control" icon="05" hint="HTTP + SSE">
+                <Panel className="web-panel" title="Web Control" icon="06" hint="HTTP + SSE">
                     <div className="control-connection">
                         <span className={`status-dot ${connection === "online" ? "good" : connection === "offline" ? "bad" : "warning"}`} />
                         <strong>{connectionText(connection)}</strong>

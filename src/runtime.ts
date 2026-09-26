@@ -30,6 +30,7 @@ import { RuntimeConfigSnapshotStore, type RuntimeConfigSnapshot } from "./runtim
 import { toConversationIdentity } from "./control/conversation-identity.js";
 import { createIncomingConversationEvent } from "./control/conversation-timeline.js";
 import { createTenBotWebServer } from "./control/web-server.js";
+import { createEditorResourceStore } from "./control/editor-resources.js";
 import { ReplyJudgePromptStore } from "./front/reply-judge-prompt-store.js";
 import { OpenAICompatibleReplyJudge } from "./front/openai-compatible-reply-judge.js";
 
@@ -254,6 +255,13 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         };
     };
 
+    const editorResources = createEditorResourceStore({
+        "prompt:gpt": { path: promptStore.getPath("gpt"), displayName: "GPT Prompt", language: "markdown", reload: () => control!.reloadPrompt("gpt") },
+        "prompt:deepseek": { path: promptStore.getPath("deepseek"), displayName: "DeepSeek Prompt", language: "markdown", reload: () => control!.reloadPrompt("deepseek") },
+        "prompt:reply-judge": { path: replyJudgePromptStore.getPath(), displayName: "Reply Judge Prompt", language: "markdown", reload: () => control!.reloadReplyJudgePrompt() },
+        "meme:data": { path: memeStore.getPath(), displayName: "Meme Data", language: "json", reload: () => control!.reloadMemes() },
+    });
+
     control = createTenBotControl({
         getStatus: status,
         getConfig: () => {
@@ -302,6 +310,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             return { ok: result.ok, changed: result.changed, message: result.message, ...("details" in result && result.details ? { details: result.details } : {}) };
         },
         subscribeLogs: (listener) => logs.subscribe(listener),
+        getEditorResource: (id) => editorResources.get(id),
+        saveEditorResource: (id, content, expectedVersion) => editorResources.save(id, content, expectedVersion),
         async reloadPrompt(requestedProvider): Promise<ReloadResult> {
             const target = requestedProvider ?? runtimeSnapshot.model.id as PromptProvider;
             try {
@@ -329,6 +339,19 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                 logger.error("[Control] Meme reload failed; keeping the previous version", error);
                 publishReloadFailure("memes");
                 return { ok: false, message: "Meme reload failed; keeping the previous version" };
+            }
+        },
+        async reloadReplyJudgePrompt(): Promise<ReloadResult> {
+            try {
+                const prompt = await replyJudgePromptStore.reload();
+                await replyJudgePromptWatcher?.markCurrent();
+                lastReloadFailure = undefined;
+                logger.info(`[Control] Reply Judge prompt reloaded revision=${prompt.revision}`);
+                control?.publishStatus();
+                return { ok: true, message: "Reply Judge Prompt reloaded", loadedAt: prompt.loadedAt, revision: prompt.revision };
+            } catch {
+                publishReloadFailure("prompt");
+                return { ok: false, message: "Reply Judge Prompt reload failed; keeping the previous version" };
             }
         },
         async shutdown(): Promise<void> {

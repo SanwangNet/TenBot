@@ -45,7 +45,10 @@ test("Control exposes only serializable Runtime status and supports subscription
         async addAutomatedPeer() { return { ok: true, changed: true, message: "added" }; },
         async removeAutomatedPeer() { return { ok: true, changed: true, message: "removed" }; },
         async reloadPrompt() { return { ok: true, message: "Prompt reloaded", loadedAt: "2026-01-01T00:00:00.000Z" }; },
+        async reloadReplyJudgePrompt() { return { ok: true, message: "Reply Judge Prompt reloaded", loadedAt: "2026-01-01T00:00:00.000Z" }; },
         async reloadMemes() { return { ok: true, message: "Memes reloaded", loadedAt: "2026-01-01T00:00:00.000Z" }; },
+        async getEditorResource() { throw new Error("unused"); },
+        async saveEditorResource() { throw new Error("unused"); },
         async shutdown() { shutdowns++; },
         subscribeLogs: () => () => undefined,
     });

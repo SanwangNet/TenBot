@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx src/main.ts",
     "tui": "tsx src/tui/main.tsx",
-    "test": "tsx --test tests/errors.test.ts tests/reply-pipeline.test.ts tests/reply-cycle.test.ts tests/reply-judge.test.ts tests/front-policy.test.ts tests/qq-quote.test.ts tests/commands.test.ts tests/members.test.ts tests/citations.test.ts tests/meme.test.ts tests/meme-auto.test.ts tests/meme-search.test.ts tests/meme-response.test.ts tests/model-plugin.test.ts tests/automated-peer.test.ts tests/config.test.ts tests/control.test.ts tests/prompt-store.test.ts tests/meme-reload.test.ts tests/runtime-shutdown.test.ts tests/tui.test.ts tests/hot-reload.test.ts tests/web-server.test.ts tests/web-ui.test.ts",
+    "test": "tsx --test tests/errors.test.ts tests/reply-pipeline.test.ts tests/reply-cycle.test.ts tests/reply-judge.test.ts tests/front-policy.test.ts tests/qq-quote.test.ts tests/commands.test.ts tests/members.test.ts tests/citations.test.ts tests/meme.test.ts tests/meme-auto.test.ts tests/meme-search.test.ts tests/meme-response.test.ts tests/model-plugin.test.ts tests/automated-peer.test.ts tests/config.test.ts tests/control.test.ts tests/prompt-store.test.ts tests/meme-reload.test.ts tests/runtime-shutdown.test.ts tests/tui.test.ts tests/hot-reload.test.ts tests/web-server.test.ts tests/web-ui.test.ts tests/editor-resources.test.ts",
     "web:dev": "vite --config web/vite.config.ts",
     "web:build": "vite build --config web/vite.config.ts",
     "web:typecheck": "tsc --noEmit -p web/tsconfig.json",
@@ -25,10 +25,12 @@
   "packageManager": "pnpm@12.5.1",
   "type": "module",
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@tencent-connect/qqbot-nodejs": "^1.0.4",
     "dotenv": "^18.0.2",
     "ink": "^7.1.1",
     "minecraftstatuspinger": "^1.2.2",
+    "monaco-editor": "^0.57.0",
     "openai": "^7.21.0",
     "pinyin-pro": "^3.29.4",
     "react": "^19.3.0",

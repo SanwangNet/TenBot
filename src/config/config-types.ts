@@ -51,6 +51,7 @@ export interface PublicConfig {
     replyJudge: {
         model: string;
         timeoutMs: number;
+        provider?: "openai-compatible";
     };
     gpt: {
         model: string;

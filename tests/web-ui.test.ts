@@ -9,12 +9,17 @@ import { initialRuntimeState, runtimeReducer } from "../web/src/runtime/runtime-
 import {
     createSettingsForm,
     dirtySettingsFields,
+    visibleDirtySettingsFields,
     parseTimeoutInput,
     settingsFormReducer,
     settingsPatches,
 } from "../web/src/settings/settings-state.js";
 import { filterLogs, initialLogViewState, logViewReducer, MAX_WEB_LOG_ENTRIES } from "../web/src/components/log-state.js";
 import type { LogEntry } from "../web/src/api/types.js";
+import { conversationReducer, initialConversationViewState } from "../web/src/conversations/conversation-state.js";
+import { addNotice, isProminentProviderError } from "../web/src/ui/feedback-state.js";
+import { createEditorDraft, editDraft, isEditorDirty } from "../web/src/editor/editor-state.js";
+import { nextPage } from "../web/src/navigation.js";
 
 const status: RuntimeStatus = {
     qq: "connected",
@@ -97,6 +102,51 @@ test("settings external refresh reloads clean forms and preserves dirty edits wi
     assert.equal(dirty.externalConflict, true);
     assert.equal(dirty.baseline.replyJudge.model, config.replyJudge.model);
     assert.equal(dirty.values["replyJudge.model"], "my-unsaved-model");
+});
+
+test("settings preset patches only selected provider while retaining hidden draft", () => {
+    let form = createSettingsForm(config);
+    form = settingsFormReducer(form, { type: "edit", field: "deepseek.model", value: "deepseek-custom" })!;
+    form = settingsFormReducer(form, { type: "edit", field: "gpt.model", value: "gpt-custom" })!;
+    assert.deepEqual(visibleDirtySettingsFields(form), ["gpt.model"]);
+    assert.deepEqual(settingsPatches(form), [{ field: "gpt.model", value: "gpt-custom" }]);
+    form = settingsFormReducer(form, { type: "edit", field: "aiProvider", value: "deepseek" })!;
+    assert.deepEqual(visibleDirtySettingsFields(form), ["aiProvider", "deepseek.model"]);
+    assert.deepEqual(settingsPatches(form), [{ field: "aiProvider", value: "deepseek" }, { field: "deepseek.model", value: "deepseek-custom" }]);
+});
+
+test("editor dirty state and navigation guard preserve unsaved content", () => {
+    const resource = { id: "prompt:gpt" as const, displayName: "GPT", language: "markdown" as const, content: "Original", version: "v1" };
+    const draft = createEditorDraft(resource);
+    assert.equal(isEditorDirty(draft), false);
+    assert.equal(isEditorDirty(editDraft(draft, "Edited")), true);
+    assert.equal(nextPage("prompts", "models", true, false), "prompts");
+    assert.equal(nextPage("prompts", "models", true, true), "models");
+});
+
+test("conversation reducer merges live messages and attempt transitions without stale timeline overwrite", () => {
+    const start = conversationReducer(initialConversationViewState, { type: "event", event: { type: "conversation-item", conversationId: "id-1", kind: "group", label: "Group", item: { id: "m1", type: "peer-message", displayName: "Member", content: "hello", timestamp: "t1" } } });
+    assert.equal(start.summaries[0]?.label, "Group");
+    const loaded = conversationReducer(start, { type: "timeline", id: "id-1", items: [{ id: "m1", type: "peer-message", displayName: "Member", content: "hello", timestamp: "t1" }], atRevision: start.revision });
+    const attempt = { id: "a1", type: "ai-attempt" as const, attemptId: "a1", cycleId: "c1", status: "generating" as const, timestamp: "t2" };
+    const generating = conversationReducer(loaded, { type: "event", event: { type: "conversation-item", conversationId: "id-1", kind: "group", label: "Group", item: attempt } });
+    assert.equal(generating.timelines["id-1"]?.length, 2);
+    const failed = conversationReducer(generating, { type: "event", event: { type: "conversation-item", conversationId: "id-1", kind: "group", label: "Group", item: { ...attempt, status: "failed", timestamp: "t3" } } });
+    assert.equal(failed.timelines["id-1"]?.length, 2);
+    assert.equal(failed.timelines["id-1"]?.[1]?.type, "ai-attempt");
+    const completed = conversationReducer(failed, { type: "event", event: { type: "conversation-item", conversationId: "id-1", kind: "group", label: "Group", item: { ...attempt, status: "completed", timestamp: "t4" } } });
+    assert.equal(completed.timelines["id-1"]?.length, 1);
+    assert.equal(conversationReducer(failed, { type: "timeline", id: "id-1", items: [], atRevision: 0 }), failed);
+});
+
+test("provider error Class C stays quiet and duplicate A/B notice aggregates", () => {
+    const notice = { provider: "gpt", model: "gpt-test", tenbotCode: "R:A_MP_PSU", message: "safe", timestamp: "now" };
+    assert.equal(isProminentProviderError(notice), true);
+    assert.equal(isProminentProviderError({ ...notice, tenbotCode: "M:C_NS_NRL" }), false);
+    const once = addNotice([], { id: 1, tone: "error", message: "safe", count: 1, details: notice });
+    const twice = addNotice(once, { id: 2, tone: "error", message: "safe", count: 1, details: notice });
+    assert.equal(twice.length, 1);
+    assert.equal(twice[0]?.count, 2);
 });
 
 test("log reducer bounds the browser buffer, keeps append order, and clears only local entries", () => {

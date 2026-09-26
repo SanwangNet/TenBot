@@ -1,0 +1,2 @@
+.conversation-follow { align-self: flex-end; margin: -50px 20px 13px 0; padding: 8px 12px; border: 1px solid #447c9e; border-radius: 7px; background: #203a4c; color: #d0ebfb; font-size: 12px; transition: background .16s ease, transform .16s ease; }
+.conversation-follow:hover { background: #2c526b; transform: translateY(-2px); }

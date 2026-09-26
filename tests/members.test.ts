@@ -98,7 +98,10 @@ test("known member summaries aggregate groups and survive reopening SQLite", asy
             async addAutomatedPeer() { return { ok: true, changed: false, message: "" }; },
             async removeAutomatedPeer() { return { ok: true, changed: false, message: "" }; },
             async reloadPrompt() { return { ok: true, message: "", loadedAt: "now" }; },
+            async reloadReplyJudgePrompt() { return { ok: true, message: "", loadedAt: "now" }; },
             async reloadMemes() { return { ok: true, message: "", loadedAt: "now" }; },
+            async getEditorResource() { throw new Error("unused"); },
+            async saveEditorResource() { throw new Error("unused"); },
             async shutdown() {},
             subscribeLogs: () => () => undefined,
         });

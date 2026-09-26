@@ -209,7 +209,10 @@ function fakeControl(calls: string[], result: ReloadResult = { ok: true, message
         subscribeLogs: () => () => undefined,
         subscribeEvents: () => () => undefined,
         async reloadPrompt() { calls.push("prompt"); return result; },
+        async reloadReplyJudgePrompt() { return result; },
         async reloadMemes() { calls.push("memes"); return result; },
+        async getEditorResource() { throw new Error("unused"); },
+        async saveEditorResource() { throw new Error("unused"); },
         async shutdown() { calls.push("shutdown"); },
     };
 }

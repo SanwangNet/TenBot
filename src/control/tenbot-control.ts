@@ -6,6 +6,7 @@ import type { RuntimeStatus } from "./runtime-status.js";
 import type { AutomatedPeerMutationResult, AutomatedPeerSummary } from "./automated-peers.js";
 import type { KnownMemberSummary } from "./known-members.js";
 import { ConversationTimelineStore, type ConversationSummary, type ConversationItem } from "./conversation-timeline.js";
+import type { EditorResource, EditorResourceId, EditorSaveResult } from "./editor-resources.js";
 
 export const MAX_TUI_LOG_ENTRIES = 400;
 
@@ -30,7 +31,10 @@ export interface TenBotControl {
     subscribeLogs(listener: LogListener): () => void;
     subscribeEvents(listener: RuntimeEventListener): () => void;
     reloadPrompt(provider?: PromptProvider): Promise<ReloadResult>;
+    reloadReplyJudgePrompt(): Promise<ReloadResult>;
     reloadMemes(): Promise<ReloadResult>;
+    getEditorResource(id: EditorResourceId): Promise<EditorResource>;
+    saveEditorResource(id: EditorResourceId, content: string, expectedVersion: string): Promise<EditorSaveResult>;
     shutdown(): Promise<void>;
 }
 
@@ -44,7 +48,10 @@ export interface TenBotControlOperations {
     addAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
     removeAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
     reloadPrompt(provider?: PromptProvider): Promise<ReloadResult>;
+    reloadReplyJudgePrompt(): Promise<ReloadResult>;
     reloadMemes(): Promise<ReloadResult>;
+    getEditorResource(id: EditorResourceId): Promise<EditorResource>;
+    saveEditorResource(id: EditorResourceId, content: string, expectedVersion: string): Promise<EditorSaveResult>;
     shutdown(): Promise<void>;
     subscribeLogs(listener: LogListener): () => void;
 }
@@ -90,6 +97,13 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
             this.publishStatus();
             return result;
         },
+        async reloadReplyJudgePrompt() {
+            const result = await operations.reloadReplyJudgePrompt();
+            this.publishStatus();
+            return result;
+        },
+        getEditorResource: (id) => operations.getEditorResource(id),
+        saveEditorResource: (id, content, expectedVersion) => operations.saveEditorResource(id, content, expectedVersion),
         shutdown: () => operations.shutdown(),
         publishStatus() {
             const status = getStatus();

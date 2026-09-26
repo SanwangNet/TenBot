@@ -14,6 +14,7 @@ import type { AutomatedPeerSummary } from "../src/control/automated-peers.js";
 import type { KnownMemberSummary } from "../src/control/known-members.js";
 import { loadAppConfig } from "../src/config/config-validation.js";
 import type { ConfigUpdateResult, PublicConfigPatch } from "../src/config/config-types.js";
+import type { EditorResourceId } from "../src/control/editor-resources.js";
 
 const initialStatus: RuntimeStatus = {
     qq: "connected",
@@ -72,6 +73,8 @@ function createFakeControl() {
     const logListeners = new Set<(value: LogEntry) => void>();
     const eventListeners = new Set<(value: RuntimeEvent) => void>();
     const patchCalls: PublicConfigPatch[] = [];
+    const peerCalls: string[] = [];
+    const resourceCalls: string[] = [];
     let updateResult: ConfigUpdateResult = { ok: true, requiresRestart: false, changedFields: [], message: "saved" };
 
     const control = {
@@ -86,6 +89,14 @@ function createFakeControl() {
         getAutomatedPeers: () => structuredClone(registered),
         getRecentPeers: () => structuredClone(recent),
         async getKnownMembers() { return structuredClone(members); },
+        async addAutomatedPeer(id: string) { peerCalls.push(`add:${id}`); return { ok: true, changed: true, message: "added" }; },
+        async removeAutomatedPeer(id: string) { peerCalls.push(`remove:${id}`); return { ok: true, changed: true, message: "removed" }; },
+        async getEditorResource(id: EditorResourceId) { resourceCalls.push(`get:${id}`); return { id, displayName: "Prompt", language: "markdown", content: "safe prompt", version: "a".repeat(64) }; },
+        async saveEditorResource(id: EditorResourceId, content: string, expectedVersion: string) {
+            resourceCalls.push(`save:${id}:${content}:${expectedVersion}`);
+            if (expectedVersion === "b".repeat(64)) return { ok: false, reason: "conflict", message: "File changed on the server" };
+            return { ok: true, resource: { id, displayName: "Prompt", language: "markdown", content, version: "c".repeat(64) }, reload: { ok: true, message: "reloaded", loadedAt: "now" } };
+        },
         subscribeStatus(listener: (value: RuntimeStatus) => void) {
             statusListeners.add(listener);
             listener(structuredClone(status));
@@ -118,6 +129,8 @@ function createFakeControl() {
             return { status: statusListeners.size, logs: logListeners.size, events: eventListeners.size };
         },
         patchCalls,
+        peerCalls,
+        resourceCalls,
         setUpdateResult(result: ConfigUpdateResult) { updateResult = result; },
     };
 }
@@ -391,4 +404,40 @@ test("production static server returns the app entry, serves assets, and falls b
         await server.close();
         await rm(staticDirectory, { recursive: true, force: true });
     }
+});
+
+test("automated peer mutation routes call TenBotControl", async () => {
+    const fake = createFakeControl();
+    const { server, baseUrl } = await startServer(fake.control);
+    try {
+        const added = await fetch(`${baseUrl}/api/automated-peers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: "recent-peer-id" }) });
+        assert.equal(added.status, 200);
+        assert.equal((await added.json() as { changed: boolean }).changed, true);
+        const removed = await fetch(`${baseUrl}/api/automated-peers/${encodeURIComponent("stable-peer-id")}`, { method: "DELETE" });
+        assert.equal(removed.status, 200);
+        assert.deepEqual(fake.peerCalls, ["add:recent-peer-id", "remove:stable-peer-id"]);
+        const invalid = await fetch(`${baseUrl}/api/automated-peers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: 123 }) });
+        assert.equal(invalid.status, 400);
+    } finally { await server.close(); }
+});
+
+test("editor routes use allowlisted resource IDs and reject paths, secrets, and stale versions", async () => {
+    const fake = createFakeControl();
+    const { server, baseUrl } = await startServer(fake.control);
+    try {
+        const read = await fetch(`${baseUrl}/api/editor/resources/prompt%3Agpt`);
+        assert.equal(read.status, 200);
+        const body = await read.text();
+        assert.match(body, /safe prompt/);
+        assert.doesNotMatch(body, /appSecret|apiKey|baseURL|private-main-model-key/);
+        for (const id of ["unknown", "..", "C:%5C.env", ".env", "prompt%3A%2E%2E%2F.env", "REPLY_JUDGE_API_KEY"]) {
+            const result = await fetch(`${baseUrl}/api/editor/resources/${id}`);
+            assert.equal(result.status, 404, id);
+        }
+        const saved = await fetch(`${baseUrl}/api/editor/resources/prompt%3Agpt`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: "edited", expectedVersion: "a".repeat(64) }) });
+        assert.equal(saved.status, 200);
+        const conflict = await fetch(`${baseUrl}/api/editor/resources/prompt%3Agpt`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: "edited", expectedVersion: "b".repeat(64) }) });
+        assert.equal(conflict.status, 409);
+        assert.deepEqual(fake.resourceCalls, [`get:prompt:gpt`, `save:prompt:gpt:edited:${"a".repeat(64)}`, `save:prompt:gpt:edited:${"b".repeat(64)}`]);
+    } finally { await server.close(); }
 });

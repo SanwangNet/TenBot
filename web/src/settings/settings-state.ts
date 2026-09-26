@@ -72,6 +72,12 @@ export function dirtySettingsFields(form: SettingsFormState): SettingsField[] {
     return SETTINGS_FIELDS.filter((field) => String(form.values[field]) !== baselineValue(form.baseline, field));
 }
 
+/** Saving a preset never writes fields belonging to the hidden provider. */
+export function visibleDirtySettingsFields(form: SettingsFormState): SettingsField[] {
+    return dirtySettingsFields(form).filter((field) =>
+        field === "aiProvider" || (!field.startsWith("gpt.") && !field.startsWith("deepseek.")) || field.startsWith(`${form.values.aiProvider}.`));
+}
+
 export function parseTimeoutInput(value: string): number | null {
     if (!/^\d+$/.test(value.trim())) return null;
     const parsed = Number(value.trim());
@@ -95,7 +101,7 @@ export function settingsFieldError(field: SettingsField, values: SettingsValues)
 }
 
 export function settingsPatches(form: SettingsFormState): PublicConfigPatch[] {
-    return dirtySettingsFields(form).flatMap((field): PublicConfigPatch[] => {
+    return visibleDirtySettingsFields(form).flatMap((field): PublicConfigPatch[] => {
         const value = form.values[field];
         switch (field) {
             case "aiProvider": return [{ field, value: value as PublicConfig["aiProvider"] }];

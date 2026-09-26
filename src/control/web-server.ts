@@ -4,9 +4,11 @@ import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TenBotControl } from "./tenbot-control.js";
 import { logger } from "../shared/logger.js";
 import { parsePublicConfigPatch, validatePublicConfigPatch } from "../config/config-validation.js";
+import { isEditorResourceId } from "./editor-resources.js";
 
 const SSE_HEARTBEAT_MS = 25_000;
 const MAX_CONFIG_PATCH_BODY_BYTES = 16 * 1024;
+const MAX_EDITOR_BODY_BYTES = 2 * 1024 * 1024;
 
 class HttpInputError extends Error {
     constructor(readonly statusCode: number, message: string) { super(message); }
@@ -58,6 +60,7 @@ const CONTENT_TYPES: Record<string, string> = {
     ".json": "application/json; charset=utf-8",
     ".png": "image/png",
     ".svg": "image/svg+xml",
+    ".ttf": "font/ttf",
     ".txt": "text/plain; charset=utf-8",
     ".webp": "image/webp",
     ".woff2": "font/woff2",
@@ -160,9 +163,54 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
             await updateConfig(request, response);
             return;
         }
+        if (pathname === "/api/automated-peers" && request.method === "POST") {
+            await mutatePeer(request, response, "add");
+            return;
+        }
+        if (pathname.startsWith("/api/automated-peers/") && request.method === "DELETE") {
+            await mutatePeer(request, response, "remove", pathname.slice("/api/automated-peers/".length));
+            return;
+        }
+        const resourcePrefix = "/api/editor/resources/";
+        if (pathname.startsWith(resourcePrefix)) {
+            const encodedId = pathname.slice(resourcePrefix.length);
+            let id: string;
+            try { id = decodeURIComponent(encodedId); }
+            catch { error(response, 400, "Bad request"); return; }
+            if (!isEditorResourceId(id) || encodedId.includes("/")) {
+                error(response, 404, "Not found");
+                return;
+            }
+            if (request.method === "GET") {
+                try { json(response, 200, await control.getEditorResource(id)); }
+                catch { error(response, 500, "Unable to read resource"); }
+                return;
+            }
+            if (request.method === "PUT") {
+                let body: unknown;
+                try { body = await readJsonBody(request, MAX_EDITOR_BODY_BYTES); }
+                catch (cause) { error(response, cause instanceof HttpInputError ? cause.statusCode : 400, cause instanceof HttpInputError ? cause.message : "Invalid request body"); return; }
+                if (!body || typeof body !== "object" || Array.isArray(body) ||
+                    Object.keys(body).length !== 2 ||
+                    typeof (body as Record<string, unknown>).content !== "string" ||
+                    typeof (body as Record<string, unknown>).expectedVersion !== "string" ||
+                    !/^[a-f0-9]{64}$/.test((body as Record<string, string>).expectedVersion)) {
+                    error(response, 400, "Invalid resource update"); return;
+                }
+                try {
+                    const result = await control.saveEditorResource(id, (body as Record<string, string>).content, (body as Record<string, string>).expectedVersion);
+                    if (!result.ok) { error(response, result.reason === "conflict" ? 409 : 400, result.message); return; }
+                    json(response, 200, result);
+                } catch { error(response, 500, "Unable to save resource"); }
+                return;
+            }
+            response.setHeader("Allow", "GET, PUT");
+            error(response, 405, "Method not allowed");
+            return;
+        }
 
         if (request.method !== "GET") {
-            response.setHeader("Allow", pathname === "/api/config" ? "GET, PATCH" : "GET");
+            response.setHeader("Allow", pathname === "/api/config" ? "GET, PATCH" : pathname === "/api/automated-peers" ? "GET, POST" : "GET");
             error(response, 405, "Method not allowed");
             return;
         }
@@ -257,7 +305,27 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
         }
     }
 
-    async function readJsonBody(request: import("node:http").IncomingMessage): Promise<unknown> {
+    async function mutatePeer(request: import("node:http").IncomingMessage, response: ServerResponse, action: "add" | "remove", encodedId?: string): Promise<void> {
+        let id: string;
+        if (action === "add") {
+            let body: unknown;
+            try { body = await readJsonBody(request, MAX_CONFIG_PATCH_BODY_BYTES); }
+            catch (cause) { error(response, cause instanceof HttpInputError ? cause.statusCode : 400, cause instanceof HttpInputError ? cause.message : "Invalid request body"); return; }
+            id = body && typeof body === "object" && !Array.isArray(body) && typeof (body as Record<string, unknown>).id === "string"
+                ? (body as { id: string }).id : "";
+        } else {
+            try { id = decodeURIComponent(encodedId ?? ""); }
+            catch { error(response, 400, "Bad request"); return; }
+        }
+        if (!id || id.length > 256 || encodedId?.includes("/")) { error(response, 400, "Invalid peer ID"); return; }
+        try {
+            const result = action === "add" ? await control.addAutomatedPeer(id) : await control.removeAutomatedPeer(id);
+            if (!result.ok) { error(response, 400, result.message); return; }
+            json(response, 200, result);
+        } catch { error(response, 500, "Unable to update automated peer"); }
+    }
+
+    async function readJsonBody(request: import("node:http").IncomingMessage, maxBytes = MAX_CONFIG_PATCH_BODY_BYTES): Promise<unknown> {
         const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
         if (contentType !== "application/json") throw new HttpInputError(415, "Content-Type must be application/json");
         const chunks: Buffer[] = [];
@@ -266,11 +334,11 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
         for await (const chunk of request) {
             const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
             size += buffer.length;
-            if (size <= MAX_CONFIG_PATCH_BODY_BYTES) chunks.push(buffer);
+            if (size <= maxBytes) chunks.push(buffer);
             else tooLarge = true;
         }
         if (tooLarge) throw new HttpInputError(413, "Request body is too large");
-        try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown; }
+        try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown; }
         catch { throw new HttpInputError(400, "Invalid JSON body"); }
     }
 

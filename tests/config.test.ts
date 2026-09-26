@@ -159,8 +159,8 @@ test("public config exposes only safe metadata and shared defaults parse provide
     assert.equal(publicConfig.deepseek.configured, true);
     assert.equal(publicConfig.botLoopGuard.automatedPeerCount, 2);
     assert.equal(publicConfig.logLevel, "debug");
-    assert.deepEqual(publicConfig.replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000 });
-    assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example|openai-compatible/);
+    assert.deepEqual(publicConfig.replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, provider: "openai-compatible" });
+    assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example/);
 });
 
 test("Reply Judge config patches map to their env keys and validate safe model IDs and timeout bounds", async () => {

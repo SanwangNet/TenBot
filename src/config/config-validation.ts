@@ -197,6 +197,7 @@ export function toPublicConfig(config: AppConfig): PublicConfig {
         replyJudge: {
             model: config.replyJudge.model ?? "",
             timeoutMs: config.replyJudge.timeoutMs,
+            ...(config.replyJudge.provider ? { provider: config.replyJudge.provider } : {}),
         },
         gpt: {
             model: config.ai.gpt.model,

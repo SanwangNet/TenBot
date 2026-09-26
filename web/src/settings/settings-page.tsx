@@ -2,8 +2,10 @@ import { useEffect, useReducer, useState, type FormEvent, type ReactNode } from 
 import { apiClient, ApiError } from "../api/client.js";
 import type { PublicConfigPatch } from "../api/types.js";
 import { useRuntime } from "../runtime/runtime-context.js";
+import { useFeedback } from "../ui/feedback.js";
 import {
     dirtySettingsFields,
+    visibleDirtySettingsFields,
     createSettingsForm,
     settingsFieldError,
     settingsFormReducer,
@@ -23,6 +25,7 @@ const logLevelOptions = [["debug", "调试"], ["info", "信息"], ["error", "错
 
 export function SettingsPage() {
     const { config, acceptConfig } = useRuntime();
+    const { notify } = useFeedback();
     const [form, dispatch] = useReducer(settingsFormReducer, config, (initial) => initial ? createSettingsForm(initial) : null);
     const [saving, setSaving] = useState(false);
     const [feedback, setFeedback] = useState<Feedback>(null);
@@ -31,7 +34,8 @@ export function SettingsPage() {
         if (config) dispatch({ type: "server-refresh", config });
     }, [config]);
 
-    const dirtyFields = form ? dirtySettingsFields(form) : [];
+    const dirtyFields = form ? visibleDirtySettingsFields(form) : [];
+    const hiddenDirtyCount = form ? dirtySettingsFields(form).length - dirtyFields.length : 0;
     const invalidFields = form ? dirtyFields.filter((field) => settingsFieldError(field, form.values)) : [];
 
     async function save(event: FormEvent<HTMLFormElement>) {
@@ -57,12 +61,14 @@ export function SettingsPage() {
                 tone: requiresRestart ? "warning" : "success",
                 message: requiresRestart ? `${resultMessage} 部分更改需要重启。` : resultMessage,
             });
+            notify(requiresRestart ? "warning" : "success", requiresRestart ? "配置已保存，部分更改需要重启" : resultMessage);
         } catch (cause) {
             const message = cause instanceof ApiError ? cause.message : "保存配置失败";
             setFeedback({
                 tone: saved > 0 ? "warning" : "error",
                 message: saved > 0 ? `已保存 ${saved} 项，其余项目未保存：${message}` : message,
             });
+            notify(saved > 0 ? "warning" : "error", saved > 0 ? `已保存 ${saved} 项，其余项目未保存：${message}` : message);
         } finally {
             setSaving(false);
         }
@@ -93,15 +99,14 @@ export function SettingsPage() {
 
         <form className="settings-form" onSubmit={(event) => void save(event)}>
             <section className="panel settings-panel">
-                <PanelHeading index="01" title="主模型" hint="选择运行中的提供商并调整两组模型参数" />
-                <div className="settings-grid settings-grid-main">
-                    <SettingField label="当前 AI Provider" id="setting-provider" hint="切换仅在保存后生效。">
-                        <select id="setting-provider" value={form.values.aiProvider} disabled={saving} onChange={(event) => edit("aiProvider", event.currentTarget.value as SettingsValues["aiProvider"])}>
-                            <option value="gpt">GPT</option><option value="deepseek">DeepSeek</option>
-                        </select>
-                    </SettingField>
-                    <div className="model-config-card">
-                        <div className="model-config-heading"><strong>GPT</strong><span className={form.baseline.gpt.configured ? "configured-text" : "unconfigured-text"}>{form.baseline.gpt.configured ? "已配置" : "未配置"}</span></div>
+                <PanelHeading index="01" title="主模型预设" hint="选择预设后，只编辑对应模型参数" />
+                <div className="preset-selector" role="group" aria-label="主模型预设">
+                    {(["gpt", "deepseek"] as const).map((provider) => <button className={`preset-option${form.values.aiProvider === provider ? " active" : ""}`} type="button" key={provider} aria-pressed={form.values.aiProvider === provider} disabled={saving} onClick={() => edit("aiProvider", provider)}>
+                        <span className="preset-icon">{provider === "gpt" ? "G" : "D"}</span><span><strong>{provider === "gpt" ? "GPT" : "DeepSeek"}</strong><small>{form.baseline.aiProvider === provider ? "当前运行" : "备用预设"}</small></span><span className={form.baseline[provider].configured ? "configured-text" : "unconfigured-text"}>{form.baseline[provider].configured ? "已配置" : "未配置"}</span>
+                    </button>)}
+                </div>
+                <div className="preset-fields" key={form.values.aiProvider}>
+                    {form.values.aiProvider === "gpt" ? <div className="settings-grid settings-grid-preset">
                         <SettingField label="Model" id="setting-gpt-model" error={fieldError("gpt.model")}>
                             <input id="setting-gpt-model" type="text" value={form.values["gpt.model"]} disabled={saving} aria-invalid={Boolean(fieldError("gpt.model"))} onChange={(event) => edit("gpt.model", event.currentTarget.value)} />
                         </SettingField>
@@ -115,9 +120,7 @@ export function SettingsPage() {
                                 {verbosityOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                             </select>
                         </SettingField>
-                    </div>
-                    <div className="model-config-card">
-                        <div className="model-config-heading"><strong>DeepSeek</strong><span className={form.baseline.deepseek.configured ? "configured-text" : "unconfigured-text"}>{form.baseline.deepseek.configured ? "已配置" : "未配置"}</span></div>
+                    </div> : <div className="settings-grid settings-grid-preset">
                         <SettingField label="Model" id="setting-deepseek-model" error={fieldError("deepseek.model")}>
                             <input id="setting-deepseek-model" type="text" value={form.values["deepseek.model"]} disabled={saving} aria-invalid={Boolean(fieldError("deepseek.model"))} onChange={(event) => edit("deepseek.model", event.currentTarget.value)} />
                         </SettingField>
@@ -126,7 +129,7 @@ export function SettingsPage() {
                                 {reasoningOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                             </select>
                         </SettingField>
-                    </div>
+                    </div>}
                 </div>
             </section>
 
@@ -155,7 +158,7 @@ export function SettingsPage() {
             </div>
 
             <div className="settings-actions">
-                <span className="dirty-summary">{dirtyFields.length > 0 ? `${dirtyFields.length} 项未保存` : "设置已同步"}</span>
+                <span className="dirty-summary">{dirtyFields.length > 0 ? `${dirtyFields.length} 项未保存` : "当前预设已同步"}{hiddenDirtyCount > 0 ? ` · 另一预设还有 ${hiddenDirtyCount} 项草稿` : ""}</span>
                 <button className="button button-primary" type="submit" disabled={saving || patchesForSubmit.length === 0 || invalidFields.length > 0}>
                     {saving ? "保存中…" : "保存更改"}
                 </button>

@@ -38,7 +38,7 @@ export type LogLevel = "debug" | "info" | "error";
 
 export interface PublicConfig {
     aiProvider: "gpt" | "deepseek";
-    replyJudge: { model: string; timeoutMs: number };
+    replyJudge: { model: string; timeoutMs: number; provider?: string };
     gpt: { model: string; reasoningEffort: ReasoningEffort; verbosity: ModelVerbosity; configured: boolean };
     deepseek: { model: string; reasoningEffort: ReasoningEffort; configured: boolean };
     logLevel: LogLevel;
@@ -68,17 +68,15 @@ export interface ConfigPatchResponse {
 
 export interface ConversationSummary {
     conversationId: string;
-    kind: "group" | "c2c" | "dm";
+    kind: "group" | "private";
     label: string;
     lastActivityAt: string;
 }
 
-export interface ConversationItem {
-    id: string;
-    type: "peer-message" | "ai-attempt" | "ai-reply";
-    timestamp: string;
-    [key: string]: unknown;
-}
+export type ConversationItem =
+    | { id: string; type: "peer-message"; displayName: string; content: string; timestamp: string }
+    | { id: string; type: "ai-attempt"; cycleId: string; attemptId: string; timestamp: string; status: "generating" | "interrupted" | "completed" | "failed"; failureStage?: "generation" | "send" }
+    | { id: string; type: "ai-reply"; content: string; timestamp: string; sendStatus: "sent" };
 
 export interface AutomatedPeerSummary {
     id: string;
@@ -103,8 +101,32 @@ export interface LogEntry {
     text: string;
 }
 
+export interface ProviderErrorNotice {
+    provider: string;
+    model: string;
+    tenbotCode: string;
+    status?: number;
+    code?: string;
+    retryable?: boolean;
+    message: string;
+    details?: string;
+    timestamp: string;
+}
+
+export type EditorResourceId = "prompt:gpt" | "prompt:deepseek" | "prompt:reply-judge" | "meme:data";
+export interface EditorResource {
+    id: EditorResourceId;
+    displayName: string;
+    language: "markdown" | "json";
+    content: string;
+    version: string;
+}
+export interface ReloadResult { ok: boolean; message: string; revision?: number; count?: number; loadedAt?: string }
+export interface EditorSaveResponse { ok: true; resource: EditorResource; reload: ReloadResult }
+export interface AutomatedPeerMutationResult { ok: boolean; changed: boolean; message: string; details?: string }
+
 export type RuntimeEvent =
-    | { type: "provider-error"; notice: { message: string; [key: string]: unknown } }
+    | { type: "provider-error"; notice: ProviderErrorNotice }
     | { type: "recent-peers-updated" }
     | { type: "reload-failure"; target: "config" | "prompt" | "memes"; message: string; timestamp: string }
-    | { type: "conversation-item"; conversationId: string; kind: string; label: string; item: ConversationItem };
+    | { type: "conversation-item"; conversationId: string; kind: ConversationSummary["kind"]; label: string; item: ConversationItem };
