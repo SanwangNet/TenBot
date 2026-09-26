@@ -4,6 +4,7 @@ import type { LogEntry, LogListener } from "../shared/logger.js";
 import type { RuntimeEvent, RuntimeEventListener } from "./runtime-event.js";
 import type { RuntimeStatus } from "./runtime-status.js";
 import type { AutomatedPeerMutationResult, AutomatedPeerSummary } from "./automated-peers.js";
+import type { KnownMemberSummary } from "./known-members.js";
 import { ConversationTimelineStore, type ConversationSummary, type ConversationItem } from "./conversation-timeline.js";
 
 export const MAX_TUI_LOG_ENTRIES = 400;
@@ -20,6 +21,7 @@ export interface TenBotControl {
     updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
     getAutomatedPeers(): AutomatedPeerSummary[];
     getRecentPeers(): AutomatedPeerSummary[];
+    getKnownMembers(): Promise<KnownMemberSummary[]>;
     getConversations(): ConversationSummary[];
     getConversationTimeline(conversationId: string): ConversationItem[];
     addAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
@@ -38,6 +40,7 @@ export interface TenBotControlOperations {
     updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
     getAutomatedPeers(): AutomatedPeerSummary[];
     getRecentPeers(): AutomatedPeerSummary[];
+    getKnownMembers(): Promise<KnownMemberSummary[]>;
     addAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
     removeAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
     reloadPrompt(provider?: PromptProvider): Promise<ReloadResult>;
@@ -62,6 +65,7 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
         updateConfig: (patch) => operations.updateConfig(patch),
         getAutomatedPeers: () => structuredClone(operations.getAutomatedPeers()),
         getRecentPeers: () => structuredClone(operations.getRecentPeers()),
+        getKnownMembers: async () => structuredClone(await operations.getKnownMembers()),
         getConversations: () => conversations.list(),
         getConversationTimeline: (conversationId) => conversations.get(conversationId),
         addAutomatedPeer: (id) => operations.addAutomatedPeer(id),

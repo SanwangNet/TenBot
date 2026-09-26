@@ -58,8 +58,6 @@ export function registerMessageHandler(
 ): void {
     bot.on("message", async (context, message: QQBotInboundMessage) => {
         const normalized = await normalizeQqMessage(context, message);
-        try { observePeer?.(normalized); }
-        catch { /* The local TUI directory must not change message handling behavior. */ }
         debugPeerIdentity(normalized.authorName, normalized.authorId);
         const isAutomatedPeer = loopGuard.isAutomatedPeer(normalized.authorId);
         // QQ's bot flag is not reliable membership policy; unregistered IDs fail open as human activity.
@@ -70,6 +68,8 @@ export function registerMessageHandler(
 
         // Learn members and route native commands before they can affect an AI cycle.
         await rememberKnownMember(normalized);
+        try { observePeer?.(normalized); }
+        catch { /* The local TUI directory must not change message handling behavior. */ }
         if (await routeCommand(bot, normalized)) return;
 
         const input = normalized.displayContent;

@@ -6,7 +6,7 @@ import type { PublicConfig } from "../src/config/config-types.js";
 import { handleTuiKey } from "../src/tui/key-handler.js";
 import { createProviderErrorNotice } from "../src/control/provider-error.js";
 import { connectionLabel, formatTuiLogText, reasoningLabel, verbosityLabel } from "../src/tui/i18n.js";
-import { closeModal, hasPendingRestart, openConfigModal, receiveProviderError, textPatch } from "../src/tui/app.js";
+import { closeModal, hasPendingRestart, openConfigModal, readKnownMembers, receiveProviderError, textPatch } from "../src/tui/app.js";
 import { activateSidebarPage, clampLogOffset, handleLogsNavigation, initialTuiState, moveSettingsSelection, moveSidebarSelection, quitConfirmationAction, requestQuitConfirmation, toggleTuiFocus } from "../src/tui/state.js";
 import { supportsInteractiveTui } from "../src/tui/terminal-check.js";
 import { ClickableRegionRegistry, SgrMouseParser, TerminalMouseSession } from "../src/tui/mouse-input.js";
@@ -16,6 +16,8 @@ import { cycleModelProvider } from "../src/ai/model-registry.js";
 import { exitTuiProcess } from "../src/tui/process-exit.js";
 import { calculateBubbleWidth, layoutConversationViewport, measureConversationItem, moveConversationAnchor, wrapTerminalText, type ConversationScrollAnchor } from "../src/tui/conversation-layout.js";
 import { calculateCenteredModalBounds } from "../src/tui/modal-layout.js";
+import { layoutProviderErrorDetails, moveProviderErrorDetailsScroll, providerErrorSummaryPreview } from "../src/tui/provider-error-layout.js";
+import { calculateAutomatedPeersLayout } from "../src/tui/automated-peers-layout.js";
 import type { ConversationItem } from "../src/control/conversation-timeline.js";
 
 function conversationFixture(count: number, content = "short") : ConversationItem[] {
@@ -172,6 +174,7 @@ function fakeControl(calls: string[], result: ReloadResult = { ok: true, message
         async updateConfig() { return { ok: true, requiresRestart: true, changedFields: [], message: "saved" }; },
         getAutomatedPeers: () => [],
         getRecentPeers: () => [],
+        getKnownMembers: async () => [],
         getConversations: () => [],
         getConversationTimeline: () => [],
         async addAutomatedPeer() { return { ok: true, changed: true, message: "added" }; },
@@ -420,6 +423,63 @@ test("provider error notice is structured and redacts credentials and headers", 
     });
     assert.doesNotMatch(JSON.stringify(notice), /super-secret|sk-live-secret|authorization|api[_ -]?key|cookie/i);
     assert.match(notice.message, /redacted|失败|service/i);
+});
+
+test("Provider Error details wrap complete sanitized text, clamp row scrolling, and preserve actions", () => {
+    const longMessage = `safe https://api-user:api-pass@example.test/path ${"中文 mixed text 🙂 ".repeat(80)} tail-marker`;
+    const longDetails = `detail ${"ASCII 界🙂 ".repeat(90)} details-tail`;
+    const notice = createProviderErrorNotice("gpt", "gpt-6-sol", Object.assign(
+        new Error(longMessage), { status: 503, cause: new Error(`${longDetails} api_key=secret-value`),
+        authorization: "Bearer secret-value" },
+    ));
+    assert.equal(notice.message.includes("tail-marker"), true);
+    assert.doesNotMatch(JSON.stringify(notice), /secret-value|api-user|api-pass/);
+    assert.match(notice.details ?? "", /details-tail/);
+
+    const normal = layoutProviderErrorDetails(notice, 72, 22, 1, 0);
+    assert.equal(normal.compact, false);
+    assert.equal(normal.showActions, true);
+    assert.ok(normal.visibleLines.length <= normal.viewportRows);
+    assert.ok(normal.maxScrollOffset > 0);
+    assert.ok(normal.contentLines.join("\n").includes("tail-marker"));
+    assert.ok(normal.contentLines.join("\n").includes("details-tail"));
+
+    const low = layoutProviderErrorDetails(notice, 68, 12, 1, 0);
+    assert.equal(low.compact, true);
+    assert.equal(low.showActions, true);
+    assert.ok(low.viewportRows >= 1);
+    assert.ok(low.metadataLines.length <= 2);
+
+    const offset = (key: "up" | "down" | "page-up" | "page-down" | "home" | "end", current = 0) =>
+        moveProviderErrorDetailsScroll(notice, 1, 80, 24, current, key);
+    assert.equal(offset("up"), 0);
+    assert.equal(offset("down"), 1);
+    assert.ok(offset("page-down") > 1);
+    assert.equal(offset("home", 3), 0);
+    assert.equal(offset("end"), normal.maxScrollOffset);
+    assert.equal(offset("page-up", normal.maxScrollOffset), Math.max(0, normal.maxScrollOffset - normal.viewportRows));
+    assert.equal(offset("down", normal.maxScrollOffset), normal.maxScrollOffset);
+
+    const summary = providerErrorSummaryPreview(notice, 72, 22, 1);
+    assert.equal(summary.hasMore, true);
+    assert.ok(summary.lines.length > 0);
+});
+
+test("known-member page switches between stacked and two-column layouts", () => {
+    const narrow = calculateAutomatedPeersLayout(58, 8);
+    assert.equal(narrow.mode, "stacked");
+    assert.ok(narrow.leftRows < 8);
+    const medium = calculateAutomatedPeersLayout(88, 8);
+    assert.equal(medium.mode, "stacked");
+    const wide = calculateAutomatedPeersLayout(96, 8);
+    assert.equal(wide.mode, "columns");
+    assert.equal(wide.leftWidth + wide.rightWidth, 96);
+    assert.deepEqual(calculateAutomatedPeersLayout(96, 8).mode, "columns");
+});
+
+test("TUI known-member read degrades to an empty list on repository failure", async () => {
+    const failedControl = { async getKnownMembers() { throw new Error("database unavailable"); } } as unknown as TenBotControl;
+    assert.deepEqual(await readKnownMembers(failedControl), []);
 });
 
 test("provider errors open one modal and queue subsequent errors", () => {

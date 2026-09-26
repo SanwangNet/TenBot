@@ -30,11 +30,12 @@ test("error-code parsing rejects syntactically valid codes outside the catalog",
     assert.equal(parseErrorCode("ABC:XYZ"), null);
 });
 
-test("TenBotError uses its English name and emits the fixed bilingual line and bare public code", () => {
+test("TenBotError uses its English name, fixed bilingual log line, and public error prefix", () => {
     const error = new TenBotError("F:A_RJ_IPI", { cause: new Error("provider raw body must stay private") });
     assert.equal(error.message, "Invalid Protocol Input");
     assert.equal(formatTenBotError(error), "[ERROR] F:A_RJ_IPI Invalid Protocol Input / 非法的协议输入");
-    assert.equal(toPublicErrorMessage(error), "F:A_RJ_IPI");
+    assert.equal(toPublicErrorMessage(error), "ERROR: F:A_RJ_IPI");
+    assert.equal(toPublicErrorMessage(new TenBotError("R:A_MP_PSU")), "ERROR: R:A_MP_PSU");
     assert.doesNotMatch(formatTenBotError(error), /provider raw body/);
     assert.throws(() => new TenBotError("ABC:XYZ" as never), /Unknown TenBot error code/);
 });

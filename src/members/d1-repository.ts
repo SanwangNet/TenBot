@@ -41,4 +41,11 @@ export class D1MemberRepository implements MemberRepository {
         ).bind(groupOpenid).all<MemberRow>();
         return result.results.map(rowToMember);
     }
+
+    async listAll(): Promise<KnownMember[]> {
+        const result = await this.database.prepare(
+            `SELECT ${MEMBER_COLUMNS} FROM group_members ORDER BY last_seen_at DESC, member_openid, group_openid`,
+        ).bind().all<MemberRow>();
+        return result.results.map(rowToMember);
+    }
 }

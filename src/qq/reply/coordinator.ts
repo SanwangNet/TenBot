@@ -7,7 +7,7 @@ import { ToolProtocolLeakError } from "../../ai/tool-protocol.js";
 import type { AiResult } from "../../ai/reply-result.js";
 import type { MemeRuntimeSnapshot } from "../../skills/meme/store.js";
 import { normalizeQQReplyAction, type QuotePreference } from "../../skills/qq-reply/skill.js";
-import { classifyUpstreamFailure } from "../../ai/upstream-error.js";
+import { AiResponseFailure, classifyUpstreamFailure } from "../../ai/upstream-error.js";
 import { ModelAbortedError, ModelProviderError } from "../../ai/model-plugin.js";
 import { TenBotError, isTenBotError } from "../../errors/tenbot-error.js";
 import { findExplicitHttpStatus, mapConfirmedRemoteHttpError } from "../../errors/http-mapping.js";
@@ -456,6 +456,11 @@ function modelError(error: unknown, provider: string, attempt: number): TenBotEr
     });
 }
 
+function isConfirmedModelProvider5xx(error: unknown): boolean {
+    if (!(error instanceof ModelProviderError || error instanceof AiResponseFailure)) return false;
+    return mapConfirmedRemoteHttpError("MP", findExplicitHttpStatus(error)) !== undefined;
+}
+
 async function sendFailureNotice(request: ReplyRequest, error: TenBotError): Promise<void> {
     logger.error(error);
     try {
@@ -761,11 +766,18 @@ async function executeCycle(cycle: Cycle): Promise<void> {
                 if (outcome.error instanceof ModelProviderError || upstream) {
                     publishProviderError({ provider: attempt.modelPlugin.id, model: attempt.modelPlugin.model, error: outcome.error });
                 }
-                if (upstream) {
-                    logger.info("[AI] upstream error provider=" + attempt.modelPlugin.id + " status=" + (upstream.status ?? "unknown") + " retryable=yes");
-                    await sendErrorFallback(request, cycle, modelError(outcome.error, attempt.modelPlugin.id, attempt.attemptNumber), "upstream");
-                } else {
-                    await sendFailureNotice(request, modelError(outcome.error, attempt.modelPlugin.id, attempt.attemptNumber));
+                const confirmedProvider5xx = isConfirmedModelProvider5xx(outcome.error);
+                try {
+                    if (upstream) {
+                        logger.info("[AI] upstream error provider=" + attempt.modelPlugin.id + " status=" + (upstream.status ?? "unknown") + " retryable=yes");
+                        await sendErrorFallback(request, cycle, modelError(outcome.error, attempt.modelPlugin.id, attempt.attemptNumber), "upstream");
+                    } else {
+                        await sendFailureNotice(request, modelError(outcome.error, attempt.modelPlugin.id, attempt.attemptNumber));
+                    }
+                } finally {
+                    if (confirmedProvider5xx && cycle.engagementGeneration !== undefined) {
+                        stopConversation(request.message, cycle.engagementGeneration);
+                    }
                 }
                 break;
             }

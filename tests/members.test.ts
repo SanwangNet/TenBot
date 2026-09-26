@@ -11,6 +11,10 @@ import { D1MemberRepository, type D1MemberDatabase } from "../src/members/d1-rep
 import { MemoryMemberRepository } from "../src/members/memory-repository.js";
 import type { KnownMember } from "../src/members/repository.js";
 import { SqliteMemberRepository } from "../src/members/sqlite-repository.js";
+import { summarizeKnownMembers } from "../src/control/known-members.js";
+import { createTenBotControl } from "../src/control/tenbot-control.js";
+import type { RuntimeStatus } from "../src/control/runtime-status.js";
+import type { PublicConfig } from "../src/config/config-types.js";
 import {
     buildKnownMembersContext, configureMemberRepository, rememberKnownMember,
 } from "../src/qq/conversation/known-members.js";
@@ -62,6 +66,46 @@ test("SQLite keeps groups separate and returns every duplicate nickname", async 
     assert.deepEqual(matches.map((item) => item.memberOpenid), ["person-2", "person-3"]);
     assert.deepEqual((await sqlite.listByGroup("group-b")).map((item) => item.memberOpenid), ["person-1"]);
     assert.equal(await sqlite.findByOpenid("group-b", "person-2"), null);
+});
+
+test("known member summaries aggregate groups and survive reopening SQLite", async () => {
+    assert.deepEqual(summarizeKnownMembers([]), []);
+    await sqlite.upsertMember({ ...member("summary-group-a", "member-secret", "旧昵称"), lastSeenAt: 10, updatedAt: 10 });
+    await sqlite.upsertMember({ ...member("summary-group-b", "member-secret", "新昵称", "admin"), lastSeenAt: 30, updatedAt: 30 });
+
+    const reopened = new SqliteMemberRepository(join(directory, "members.db"));
+    try {
+        const rows = await reopened.listAll();
+        const summary = summarizeKnownMembers(rows).find((item) => item.displayName === "新昵称");
+        assert.ok(summary);
+        assert.equal(summary.lastSeenAt, 30);
+        assert.equal(summary.groupCount, 2);
+        assert.deepEqual(summary.roles, ["admin"]);
+        assert.doesNotMatch(JSON.stringify(summary), /member-secret|summary-group/);
+
+        const control = createTenBotControl({
+            getStatus: () => ({
+                qq: "disconnected", provider: { id: "gpt", model: "offline", webSearch: false, configured: false },
+                activeCycles: 0, contextConversations: 0,
+                memes: { count: 0, revision: 0, loadedAt: "now" },
+                prompt: { provider: "gpt", revision: 0, loadedAt: "now" }, shuttingDown: false,
+            } satisfies RuntimeStatus),
+            getConfig: () => ({} as PublicConfig),
+            async updateConfig() { return { ok: true, requiresRestart: false, changedFields: [], message: "" }; },
+            getAutomatedPeers: () => [],
+            getRecentPeers: () => [],
+            async getKnownMembers() { return summarizeKnownMembers(await reopened.listAll()); },
+            async addAutomatedPeer() { return { ok: true, changed: false, message: "" }; },
+            async removeAutomatedPeer() { return { ok: true, changed: false, message: "" }; },
+            async reloadPrompt() { return { ok: true, message: "", loadedAt: "now" }; },
+            async reloadMemes() { return { ok: true, message: "", loadedAt: "now" }; },
+            async shutdown() {},
+            subscribeLogs: () => () => undefined,
+        });
+        assert.equal((await control.getKnownMembers()).find((item) => item.displayName === "新昵称")?.groupCount, 2);
+    } finally {
+        reopened.close();
+    }
 });
 
 test("service learns author and mentions, skips bot, and resolves only unique names", async () => {
@@ -121,7 +165,7 @@ test("D1 adapter binds parameters and maps rows through its minimal binding", as
                             return (rows.get(values[0] + "/" + values[1]) ?? null) as T | null;
                         },
                         async all<T>() {
-                            const result = [...rows.values()].filter((row) => row.group_openid === values[0] &&
+                            const result = values.length === 0 ? [...rows.values()] : [...rows.values()].filter((row) => row.group_openid === values[0] &&
                                 (values.length === 1 || row.username === values[1]));
                             return { results: result as T[] };
                         },
@@ -135,5 +179,6 @@ test("D1 adapter binds parameters and maps rows through its minimal binding", as
     assert.equal((await d1.findByOpenid("g", "m"))?.username, "测试");
     assert.equal((await d1.findByUsername("g", "测试")).length, 1);
     assert.equal((await d1.listByGroup("g")).length, 1);
+    assert.equal((await d1.listAll()).length, 1);
     assert.ok(statements.every((statement) => !statement.includes("测试")));
 });

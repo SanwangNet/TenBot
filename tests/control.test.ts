@@ -9,6 +9,7 @@ import type { PublicConfig } from "../src/config/config-types.js";
 import { ConversationTimelineStore, createIncomingConversationEvent } from "../src/control/conversation-timeline.js";
 import { toConversationIdentity } from "../src/control/conversation-identity.js";
 import { getConversationKey } from "../src/qq/conversation/recent-context.js";
+import { summarizeKnownMembers } from "../src/control/known-members.js";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 
 const status: RuntimeStatus = {
@@ -37,6 +38,9 @@ test("Control exposes only serializable Runtime status and supports subscription
         async updateConfig() { return { ok: true, requiresRestart: true, changedFields: ["aiProvider"], message: "saved" }; },
         getAutomatedPeers: () => [],
         getRecentPeers: () => [],
+        async getKnownMembers() { return summarizeKnownMembers([
+            { groupOpenid: "group-secret", memberOpenid: "member-secret", username: "尘柒", firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2 },
+        ]); },
         async addAutomatedPeer() { return { ok: true, changed: true, message: "added" }; },
         async removeAutomatedPeer() { return { ok: true, changed: true, message: "removed" }; },
         async reloadPrompt() { return { ok: true, message: "Prompt reloaded", loadedAt: "2026-01-01T00:00:00.000Z" }; },
@@ -65,6 +69,9 @@ test("Control exposes only serializable Runtime status and supports subscription
     });
     unsubscribeEvent();
     assert.deepEqual(events, ["deepseek"]);
+    const knownMembers = await control.getKnownMembers();
+    assert.equal(knownMembers[0]?.displayName, "尘柒");
+    assert.doesNotMatch(JSON.stringify(knownMembers), /group-secret|member-secret/);
     await control.shutdown();
     assert.equal(shutdowns, 1);
 });

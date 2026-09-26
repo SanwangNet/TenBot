@@ -25,5 +25,5 @@ export function formatTenBotError(error: TenBotError): string {
 }
 
 export function toPublicErrorMessage(error: TenBotError): string {
-    return error.code;
+    return `ERROR: ${error.code}`;
 }

@@ -51,4 +51,11 @@ export class SqliteMemberRepository implements MemberRepository {
         ).all(groupOpenid) as unknown as MemberRow[];
         return rows.map(rowToMember);
     }
+
+    async listAll(): Promise<KnownMember[]> {
+        const rows = this.database.prepare(
+            `SELECT ${MEMBER_COLUMNS} FROM group_members ORDER BY last_seen_at DESC, member_openid, group_openid`,
+        ).all() as unknown as MemberRow[];
+        return rows.map(rowToMember);
+    }
 }

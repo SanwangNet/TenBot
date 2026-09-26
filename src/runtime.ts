@@ -7,11 +7,13 @@ import { createConfigStore } from "./config/config-store.js";
 import { toPublicConfig } from "./config/config-validation.js";
 import { createTenBotControl, type ReloadResult, type TenBotControl } from "./control/tenbot-control.js";
 import { createProviderErrorNotice } from "./control/provider-error.js";
+import { summarizeKnownMembers } from "./control/known-members.js";
 import type { AutomatedPeerSummary } from "./control/automated-peers.js";
 import type { RuntimeStatus } from "./control/runtime-status.js";
 import { LogBuffer } from "./control/log-buffer.js";
 import { SqliteMemberRepository } from "./members/sqlite-repository.js";
 import { MemoryMemberRepository } from "./members/memory-repository.js";
+import type { MemberRepository } from "./members/repository.js";
 import { createQqBot, type QqConnectionState } from "./qq/bot.js";
 import { configureMemberRepository } from "./qq/conversation/known-members.js";
 import { automatedPeerLoopGuard } from "./qq/conversation/automated-peer.js";
@@ -71,7 +73,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     let shuttingDown = false;
     let startPromise: Promise<void> | undefined;
     let shutdownPromise: Promise<void> | undefined;
-    let memberRepository: SqliteMemberRepository | undefined;
+    let memberRepository: MemberRepository = new MemoryMemberRepository();
+    let sqliteMemberRepository: SqliteMemberRepository | undefined;
     const fileWatchers: FileChangeWatcher[] = [];
     let envWatcher: FileChangeWatcher | undefined;
     let memeWatcher: FileChangeWatcher | undefined;
@@ -167,11 +170,12 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     }
 
     try {
-        memberRepository = new SqliteMemberRepository();
+        sqliteMemberRepository = new SqliteMemberRepository();
+        memberRepository = sqliteMemberRepository;
         configureMemberRepository(memberRepository);
     } catch (error) {
-        memberRepository = undefined;
-        configureMemberRepository(new MemoryMemberRepository());
+        memberRepository = new MemoryMemberRepository();
+        configureMemberRepository(memberRepository);
         logger.error("[Members] SQLite unavailable; using memory for this run", error);
     }
 
@@ -260,6 +264,13 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             const registered = new Set(configStore.getAutomatedPeerIds());
             return recentPeers.list().filter((peer) => !registered.has(peer.id)).map((peer) => toPeerSummary(peer.id));
         },
+        async getKnownMembers() {
+            try { return summarizeKnownMembers(await memberRepository.listAll()); }
+            catch (error) {
+                logger.error("[Members] summary read failed", error);
+                return [];
+            }
+        },
         async addAutomatedPeer(id) {
             const result = await configStore.addAutomatedPeer(id);
             if (result.ok) {
@@ -319,7 +330,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                 try {
                     await Promise.all([stopCycles, startPromise?.catch(() => undefined)]);
                 } finally {
-                    try { memberRepository?.close(); }
+                    try { sqliteMemberRepository?.close(); }
                     catch (error) { logger.error("[Members] SQLite close failed", error); }
                     qqState = "disconnected";
                     control?.publishStatus();

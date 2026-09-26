@@ -13,4 +13,5 @@ export interface MemberRepository {
     findByOpenid(groupOpenid: string, memberOpenid: string): Promise<KnownMember | null>;
     findByUsername(groupOpenid: string, username: string): Promise<KnownMember[]>;
     listByGroup(groupOpenid: string): Promise<KnownMember[]>;
+    listAll(): Promise<KnownMember[]>;
 }

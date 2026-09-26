@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 import type { AiResult } from "../src/ai/reply-result.js";
 import type { ModelPlugin } from "../src/ai/model-plugin.js";
+import { ModelProviderError } from "../src/ai/model-plugin.js";
 import type { AttemptRuntimeSnapshot } from "../src/ai/attempt-snapshot.js";
 import { ToolProtocolLeakError } from "../src/ai/tool-protocol.js";
 import { buildAutoMemeContext } from "../src/skills/meme/skill.js";
@@ -14,6 +15,7 @@ import { decideMessageTrigger } from "../src/qq/message/trigger.js";
 import { buildReplyCycleMemeQuery, coordinateAiReply, subscribeReplyLifecycle, type AttemptBuildContext } from "../src/qq/reply/coordinator.js";
 
 const MODEL_TIMEOUT_CODE = "M:A_MG_MTO";
+const MODEL_TIMEOUT_MESSAGE = `ERROR: ${MODEL_TIMEOUT_CODE}`;
 
 type RecordedAttempt = { input: string; signal: AbortSignal; resolve: (result: AiResult) => void };
 function message(groupId = randomUUID(), content = "A"): NormalizedQqMessage {
@@ -513,7 +515,7 @@ test("each restarted attempt gets an ordinary deadline, while timeout retry stay
     assert.equal(attempts[1].signal.aborted, true);
     assert.equal(attempts[2].signal.aborted, true);
     assert.ok(elapsed >= 90 && elapsed < 350, "the post-interruption timeout retry gets its own ordinary deadline");
-    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_CODE || (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE));
+    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_MESSAGE || (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_MESSAGE));
 });
 
 test("Reply Coordinator runs a ModelPlugin stub without constructing a provider client", async () => {
@@ -575,6 +577,80 @@ test("ordinary timeout retries once with a fresh snapshot and keeps engagement a
     assert.equal(calls[0].content, "recovered");
 });
 
+test("terminal confirmed model-provider 5xx sends one public error and stops the captured active generation", async () => {
+    for (const [status, code] of [[500, "R:A_MP_PIE"], [503, "R:A_MP_PSU"]] as const) {
+        const value = message(randomUUID(), `provider ${status}`);
+        commit(value);
+        markConversationActive(value);
+        const { bot, calls } = fakeBot();
+        let attempts = 0;
+        await coordinateAiReply(requestFor(bot, value, 1), {
+            executeAi: async () => {
+                attempts++;
+                throw new ModelProviderError("gpt", Object.assign(new Error("provider unavailable"), { status, retryable: true }));
+            },
+        });
+        const publicMessages = calls.map((call) => call.content ?? (call.payload as { markdown?: { content?: string } } | undefined)?.markdown?.content)
+            .filter((content): content is string => typeof content === "string" && content.startsWith("ERROR:"));
+        assert.equal(attempts, 1);
+        assert.deepEqual(publicMessages, [`ERROR: ${code}`]);
+        assert.equal(calls.some((call) => call.content === code), false);
+        assert.equal(calls.some((call) => call.content === "后端暂时炸了"), false);
+        assert.equal(isConversationActive(value), false);
+    }
+});
+
+test("terminal provider failure also ends active engagement during a hard mention, even when the notice send fails", async () => {
+    const value = message(randomUUID(), "@小尘回来");
+    commit(value);
+    markConversationActive(value);
+    const { bot } = fakeBot();
+    (bot as any).send = async () => { throw Object.assign(new Error("QQ send failed"), { status: 503 }); };
+    await coordinateAiReply(requestFor(bot, value, 3, false), {
+        executeAi: async () => { throw new ModelProviderError("gpt", Object.assign(new Error("provider unavailable"), { status: 503, retryable: true })); },
+    });
+    assert.equal(isConversationActive(value), false);
+});
+
+test("provider 5xx generation guard keeps a newer active generation intact", async () => {
+    const value = message(randomUUID(), "active generation");
+    commit(value);
+    markConversationActive(value);
+    const oldGeneration = getConversationGeneration(value);
+    const { bot } = fakeBot();
+    let reject!: (error: unknown) => void;
+    const pending = coordinateAiReply(requestFor(bot, value, 1), {
+        executeAi: async () => await new Promise<AiResult>((_resolve, rejectAttempt) => { reject = rejectAttempt; }),
+    });
+    await waitFor(() => Boolean(reject));
+    markConversationActive(value);
+    const newGeneration = getConversationGeneration(value);
+    assert.notEqual(newGeneration, oldGeneration);
+    reject(new ModelProviderError("gpt", Object.assign(new Error("provider unavailable"), { status: 503, retryable: true })));
+    await pending;
+    assert.equal(isConversationActive(value), true);
+    assert.equal(getConversationGeneration(value), newGeneration);
+});
+
+test("local model and QQ transport failures do not stop active engagement", async () => {
+    const local = message(randomUUID(), "local failure");
+    commit(local);
+    markConversationActive(local);
+    const { bot: localBot } = fakeBot();
+    await coordinateAiReply(requestFor(localBot, local, 1), {
+        executeAi: async () => { throw Object.assign(new Error("socket reset"), { code: "ECONNRESET" }); },
+    });
+    assert.equal(isConversationActive(local), true);
+
+    const send = message(randomUUID(), "send failure");
+    commit(send);
+    markConversationActive(send);
+    const { bot: sendBot } = fakeBot();
+    (sendBot as any).sendMarkdown = async () => { throw Object.assign(new Error("QQ send failed"), { status: 503 }); };
+    await coordinateAiReply(requestFor(sendBot, send), { executeAi: async () => reply("valid reply") });
+    assert.equal(isConversationActive(send), true);
+});
+
 test("timeout retry does not consume revision or interruption budget", async () => {
     const group = randomUUID();
     const values = ["A", "B", "C", "D", "E"].map((text) => message(group, text));
@@ -621,8 +697,8 @@ test("second timeout keeps soft silence and hard fallback", async () => {
             },
         });
         assert.equal(attempts, 2);
-        assert.equal(calls.some((call) => call.content === MODEL_TIMEOUT_CODE ||
-            (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE), expectedFallback);
+        assert.equal(calls.some((call) => call.content === MODEL_TIMEOUT_MESSAGE ||
+            (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_MESSAGE), expectedFallback);
     }
 });
 
@@ -644,8 +720,8 @@ test("a newer revision skips timeout retry", async () => {
     commit(b); // This revision reaches context before its handler updates the Cycle.
     await pending;
     assert.equal(attempts, 1);
-    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_CODE ||
-        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE));
+    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_MESSAGE ||
+        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_MESSAGE));
 });
 
 test("web-search timeout does not retry and keeps the search timeout fallback", async () => {
@@ -663,8 +739,8 @@ test("web-search timeout does not retry and keeps the search timeout fallback", 
         },
     });
     assert.equal(attempts, 1);
-    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_CODE ||
-        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE));
+    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_MESSAGE ||
+        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_MESSAGE));
 });
 
 test("late result from timed-out Attempt cannot replace the successful retry", async () => {
@@ -707,8 +783,8 @@ test("a new Cycle gets its own timeout retry", async () => {
     commit(b);
     await coordinateAiReply(requestFor(bot, b), deps);
     assert.equal(attempts, 4);
-    assert.equal(calls.filter((call) => call.content === MODEL_TIMEOUT_CODE ||
-        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE).length, 2);
+    assert.equal(calls.filter((call) => call.content === MODEL_TIMEOUT_MESSAGE ||
+        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_MESSAGE).length, 2);
 });
 
 test("web search extends one cycle to its original 120-second budget and uses the exact timeout notice", async () => {
@@ -741,10 +817,10 @@ test("web search extends one cycle to its original 120-second budget and uses th
     await waitFor(() => attempts.length === 2);
     await new Promise((resolve) => setTimeout(resolve, 60));
     assert.ok(Date.now() - started > 70);
-    assert.equal(calls.filter((item) => item.content === MODEL_TIMEOUT_CODE).length, 0);
+    assert.equal(calls.filter((item) => item.content === MODEL_TIMEOUT_MESSAGE).length, 0);
     await pending;
     assert.equal(attempts[1].signal.aborted, true);
-    assert.deepEqual(calls.map((item) => item.content ?? (item.payload as any)?.markdown?.content).filter(Boolean), ["search notice", MODEL_TIMEOUT_CODE]);
+    assert.deepEqual(calls.map((item) => item.content ?? (item.payload as any)?.markdown?.content).filter(Boolean), ["search notice", MODEL_TIMEOUT_MESSAGE]);
 });
 
 test("NO_REPLY consumes only its snapshot and a trailing name trigger gets a new cycle", async () => {
@@ -999,8 +1075,8 @@ test("deadline settles a cycle even when the upstream promise ignores abort", as
         },
     });
     assert.equal(signal.aborted, true);
-    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_CODE ||
-        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_CODE));
+    assert.ok(calls.some((call) => call.content === MODEL_TIMEOUT_MESSAGE ||
+        (call.payload as any)?.markdown?.content === MODEL_TIMEOUT_MESSAGE));
 });
 
 test("attempt setup failure does not spawn endless trailing cycles", async () => {

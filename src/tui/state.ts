@@ -35,7 +35,7 @@ export type ModalState =
     | { type: "config-invalid"; message: string }
     | { type: "config-result"; result: ConfigUpdateResult; label: string }
     | { type: "provider-error"; notice: ProviderErrorNotice; count: number }
-    | { type: "provider-error-details"; notice: ProviderErrorNotice; count: number }
+    | { type: "provider-error-details"; notice: ProviderErrorNotice; count: number; scrollOffset: number }
     | { type: "quit-confirm" }
     | { type: "automated-peer-details"; peer: AutomatedPeerSummary; registered: boolean }
     | { type: "automated-peer-confirm"; action: "add" | "remove"; peer: AutomatedPeerSummary }

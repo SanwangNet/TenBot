@@ -37,15 +37,15 @@ function collectFields(error: unknown): Fields[] {
     return fields;
 }
 
-function sanitize(value: string, maxLength = 240): string {
-    let safe = value
+function sanitize(value: string): string {
+    return value
         .replace(/\b(?:authorization|cookie|api[_ -]?key|app[_ -]?secret|client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|token|password)\b\s*[:=]\s*(?:bearer\s+)?[^\s,;}]+/gi, "[REDACTED]")
         .replace(/\b(?:bearer|qqbot)\s+[a-z0-9._~+\/-]+=*/gi, "[REDACTED]")
+        .replace(/\bhttps?:\/\/[^\s"'<>]*@[^\s"'<>]*/gi, "[credential URL redacted]")
         .replace(/https?:\/\/[^\s"'<>?]+\?[^\s"'<>]*/gi, "[URL query redacted]")
         .replace(/\b(?:sk|key)-[a-z0-9_-]{8,}\b/gi, "[REDACTED]")
         .replace(/\s+/g, " ")
         .trim();
-    return safe.length > maxLength ? `${safe.slice(0, maxLength)}…` : safe;
 }
 
 function firstString(fields: readonly Fields[], key: string): string | undefined {
@@ -69,7 +69,7 @@ function errorMessages(fields: readonly Fields[]): string[] {
 
 function safeCode(value: string | undefined): string | undefined {
     if (!value) return undefined;
-    const code = sanitize(value, 80).replace(/[^a-zA-Z0-9_.:-]/g, "");
+    const code = sanitize(value).slice(0, 80).replace(/[^a-zA-Z0-9_.:-]/g, "");
     return code || undefined;
 }
 
@@ -87,13 +87,13 @@ export function createProviderErrorNotice(provider: string, model: string, error
     const cause = asFields(root?.cause);
     const message = sanitize(messages.find((value) => value !== `${provider} provider request failed`) ?? "模型提供商请求失败");
     const stack = typeof cause?.stack === "string"
-        ? cause.stack.split("\n").slice(0, 3).map((line) => sanitize(line, 180)).join("\n")
+        ? cause.stack.split("\n").slice(0, 3).map((line) => sanitize(line)).join("\n")
         : undefined;
     const causeMessage = messages.find((value) => value !== message && value !== `${provider} provider request failed`);
     const detailParts = [causeMessage, stack].filter((value, index, all): value is string => Boolean(value) && all.indexOf(value) === index);
     return {
-        provider: sanitize(provider, 40),
-        model: sanitize(model, 100),
+        provider: sanitize(provider).slice(0, 40),
+        model: sanitize(model).slice(0, 100),
         tenbotCode,
         ...(status !== undefined ? { status } : {}),
         ...(code ? { code } : {}),

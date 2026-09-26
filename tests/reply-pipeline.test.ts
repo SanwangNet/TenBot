@@ -31,6 +31,7 @@ const { MULTI_MESSAGE_DELAY_MS, coordinateAiReply, shouldQuoteTrigger,
     "../src/qq/reply/coordinator.js"
 );
 const MODEL_TIMEOUT_CODE = "M:A_MG_MTO";
+const MODEL_TIMEOUT_MESSAGE = `ERROR: ${MODEL_TIMEOUT_CODE}`;
 
 function message(groupId: string = randomUUID(), authorId: string = randomUUID()): NormalizedQqMessage {
     const id = randomUUID();
@@ -170,7 +171,7 @@ test("a reply with no valid messages uses one safe error notice", async () => {
         executeAi: async () => reply(["", "  "]),
     });
     assert.deepEqual(calls.map((call) => call.method), ["text"]);
-    assert.equal(calls[0].args[1], "B:A_RA_IRA");
+    assert.equal(calls[0].args[1], "ERROR: B:A_RA_IRA");
     assert.equal(isConversationActive(trigger), false);
 });
 
@@ -380,7 +381,7 @@ test("two timeout attempts keep the explicit fallback and discard the late AI re
     assert.equal(signals.length, 2);
     assert.deepEqual(signals.map((signal) => signal.aborted), [true, true]);
     assert.deepEqual(calls.map((call) => call.method), ["text"]);
-    assert.equal(calls[0].args[1], MODEL_TIMEOUT_CODE);
+    assert.equal(calls[0].args[1], MODEL_TIMEOUT_MESSAGE);
     assert.match(buildChatInput(trigger, "next"), new RegExp(MODEL_TIMEOUT_CODE));
     assert.equal(isConversationActive(trigger), false);
 
@@ -442,7 +443,7 @@ test("two ordinary attempts each get their full 30-second deadline", async (t) =
     await pending;
     assert.deepEqual(signals.map((signal) => signal.aborted), [true, true]);
     assert.deepEqual(calls.map((call) => call.method), ["text"]);
-    assert.equal(calls[0].args[1], MODEL_TIMEOUT_CODE);
+    assert.equal(calls[0].args[1], MODEL_TIMEOUT_MESSAGE);
     t.mock.timers.reset();
 });
 
@@ -476,7 +477,7 @@ test("an overdue result is discarded and the retry gets a fresh deadline", async
     t.mock.timers.tick(30_000);
     await pending;
     assert.deepEqual(signals.map((signal) => signal.aborted), [true, true]);
-    assert.deepEqual(calls.map((call) => call.args[1]), [MODEL_TIMEOUT_CODE]);
+    assert.deepEqual(calls.map((call) => call.args[1]), [MODEL_TIMEOUT_MESSAGE]);
     t.mock.timers.reset();
 });
 
@@ -493,7 +494,7 @@ test("confirmed provider 503 and unclassified 520 produce their terminal error c
             executeAi: async () => { throw upstreamError; },
         });
         assert.deepEqual(calls.map((call) => call.method), ["text"]);
-        assert.equal(calls[0].args[1], expectedCode);
+        assert.equal(calls[0].args[1], `ERROR: ${expectedCode}`);
         assert.equal(isConversationActive(trigger), false);
         t.mock.timers.tick(30_001);
         assert.equal(calls.length, 1);
@@ -522,7 +523,7 @@ test("provider error code fallback keeps the existing trigger quote decision", a
     await pending;
     assert.deepEqual(calls.map((call) => call.method), ["send"]);
     const payload = calls[0].args[0] as { markdown: { content: string }; messageReference: { message_id: string } };
-    assert.equal(payload.markdown.content, "M:A_MG_MRF");
+    assert.equal(payload.markdown.content, "ERROR: M:A_MG_MRF");
     assert.equal(payload.messageReference.message_id, trigger.id);
 });
 
@@ -549,7 +550,7 @@ test("web search notice is followed by the terminal model timeout code", async (
     t.mock.timers.tick(30_000);
     await pending;
     assert.equal(signal.aborted, true);
-    assert.deepEqual(calls.map((call) => call.args[1]), ["稍等，我查一下。", MODEL_TIMEOUT_CODE]);
+    assert.deepEqual(calls.map((call) => call.args[1]), ["稍等，我查一下。", MODEL_TIMEOUT_MESSAGE]);
     t.mock.timers.reset();
 });
 
@@ -560,7 +561,7 @@ test("unknown fatal AI error gets the generic model request code", async () => {
         executeAi: async () => { throw new TypeError("local bug"); },
     });
     assert.deepEqual(calls.map((call) => call.method), ["text"]);
-    assert.equal(calls[0].args[1], "M:A_MG_MRF");
+    assert.equal(calls[0].args[1], "ERROR: M:A_MG_MRF");
 });
 
 test("recall just before the deadline wins without a fallback", async (t) => {

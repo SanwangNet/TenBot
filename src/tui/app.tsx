@@ -8,6 +8,7 @@ import type { ReloadResult, TenBotControl } from "../control/tenbot-control.js";
 import type { ProviderErrorNotice } from "../control/provider-error.js";
 import type { RuntimeEvent } from "../control/runtime-event.js";
 import type { ConversationSummary } from "../control/conversation-timeline.js";
+import type { KnownMemberSummary } from "../control/known-members.js";
 import type { LogEntry } from "../shared/logger.js";
 import { MAX_TUI_LOG_ENTRIES } from "../control/tenbot-control.js";
 import { Footer } from "./components/footer.js";
@@ -29,6 +30,7 @@ import type { AutomatedPeerSummary } from "../control/automated-peers.js";
 import { ClickableRegionRegistry, isSgrMouseSequence, type TerminalMouseSession } from "./mouse-input.js";
 import { collapseAdjacentLogs } from "./log-collapse.js";
 import { moveConversationAnchor, type ConversationScrollAnchor } from "./conversation-layout.js";
+import { moveProviderErrorDetailsScroll } from "./provider-error-layout.js";
 
 export interface TenBotTuiProps {
     control: TenBotControl;
@@ -44,8 +46,11 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const logEntriesRef = useRef<LogEntry[]>([]);
     const [ui, setUi] = useState<TuiState>(initialTuiState);
+    const uiRef = useRef(ui);
+    uiRef.current = ui;
     const [now, setNow] = useState(() => new Date());
     const [peerDirectory, setPeerDirectory] = useState(() => readPeerDirectory(control));
+    const [knownMembers, setKnownMembers] = useState<KnownMemberSummary[]>([]);
     const [conversations, setConversations] = useState<ConversationSummary[]>(() => control.getConversations());
     const [selectedConversationId, setSelectedConversationId] = useState<string>();
     const [conversationAnchor, setConversationAnchor] = useState<ConversationScrollAnchor | null>(null);
@@ -77,7 +82,10 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         });
         const unsubscribeEvents = control.subscribeEvents((event: RuntimeEvent) => {
             if (event.type === "provider-error") setUi((current) => receiveProviderError(current, event.notice));
-            else if (event.type === "recent-peers-updated") setPeerDirectory(readPeerDirectory(control));
+            else if (event.type === "recent-peers-updated") {
+                setPeerDirectory(readPeerDirectory(control));
+                if (uiRef.current.page === "automated-peers") void readKnownMembers(control).then(setKnownMembers);
+            }
             else if (event.type === "conversation-item") setConversations(control.getConversations());
         });
         return () => {
@@ -97,6 +105,15 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
 
     useEffect(() => {
         if (ui.page === "automated-peers") setPeerDirectory(readPeerDirectory(control));
+    }, [control, ui.page]);
+
+    useEffect(() => {
+        if (ui.page !== "automated-peers") return;
+        let current = true;
+        void readKnownMembers(control).then((members) => {
+            if (current) setKnownMembers(members);
+        });
+        return () => { current = false; };
     }, [control, ui.page]);
 
     useEffect(() => mouseSession?.subscribe((click) => {
@@ -326,6 +343,18 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
                 else setUi(closeModal);
                 return;
             }
+            if (ui.modal.type === "provider-error-details") {
+                const navigation = key.upArrow ? "up" : key.downArrow ? "down"
+                    : key.pageUp ? "page-up" : key.pageDown ? "page-down"
+                        : key.home ? "home" : key.end ? "end" : undefined;
+                if (navigation) setUi((current) => current.modal.type === "provider-error-details"
+                    ? { ...current, modal: { ...current.modal, scrollOffset: moveProviderErrorDetailsScroll(
+                        current.modal.notice, current.modal.count, columns, rows, current.modal.scrollOffset, navigation,
+                    ) } }
+                    : current);
+                else if (key.return) setUi((current) => providerDetailsToSummary(current));
+                return;
+            }
             if (ui.modal.type === "config-select") {
                 if (key.upArrow || key.downArrow) {
                     const delta = key.downArrow ? 1 : -1;
@@ -355,13 +384,12 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
                 return;
             }
             if (key.return) {
-                if (ui.modal.type === "provider-error-details") setUi((current) => providerDetailsToSummary(current));
-                else confirmModal();
+                confirmModal();
                 return;
             }
             if (lower === "d" && ui.modal.type === "provider-error") {
                 setUi((current) => current.modal.type === "provider-error"
-                    ? { ...current, modal: { type: "provider-error-details", notice: current.modal.notice, count: current.modal.count } }
+                    ? { ...current, modal: { type: "provider-error-details", notice: current.modal.notice, count: current.modal.count, scrollOffset: 0 } }
                     : current);
             }
             return;
@@ -451,7 +479,7 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const showPendingRestart = hasPendingRestart(status, config);
     const content = renderView(
         ui.page, status, config, logs, ui.logOffset, visibleLogLines, ui.settingsIndex, showPendingRestart,
-        peerDirectory, ui.automatedPeerIndex, visiblePeerRows, regions, editSetting, openPeerDetails,
+        peerDirectory, knownMembers, ui.automatedPeerIndex, visiblePeerRows, Math.max(1, columns - 22), regions, editSetting, openPeerDetails,
         conversations, safeConversationIndex, conversationItems, conversationAnchor, updateConversationViewport, switchConversation,
         viewedProvider, viewProvider, applyViewedProvider,
     );
@@ -460,7 +488,7 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         ? { ...current, modal: { ...current.modal, index } }
         : current);
     const openProviderDetails = () => setUi((current) => current.modal.type === "provider-error"
-        ? { ...current, modal: { type: "provider-error-details", notice: current.modal.notice, count: current.modal.count } }
+        ? { ...current, modal: { type: "provider-error-details", notice: current.modal.notice, count: current.modal.count, scrollOffset: 0 } }
         : current);
     const modalProps = {
         modal: ui.modal,
@@ -566,8 +594,10 @@ function renderView(
     settingsIndex: number,
     pendingRestart: boolean,
     peerDirectory: { registered: AutomatedPeerSummary[]; recent: AutomatedPeerSummary[] },
+    knownMembers: readonly KnownMemberSummary[],
     automatedPeerIndex: number,
     visiblePeerRows: number,
+    contentWidth: number,
     regions: ClickableRegionRegistry,
     onEditSetting: (field: SettingsField) => void,
     onOpenPeer: (index: number) => void,
@@ -589,7 +619,7 @@ function renderView(
         case "conversations": return <ConversationsView conversations={conversations} selectedIndex={conversationIndex} items={conversationItems} anchor={conversationAnchor} registry={regions} onSwitch={onSwitchConversation} onViewportMeasure={onViewportMeasure} />;
         case "logs": return <LogsView logs={logs} offset={offset} visibleLines={visibleLines} />;
         case "settings": return <SettingsView status={status} config={config} selectedIndex={settingsIndex} pendingRestart={pendingRestart} viewedProvider={viewedProvider} registry={regions} onEdit={onEditSetting} onViewProvider={onViewProvider} onApplyProvider={onApplyProvider} />;
-        case "automated-peers": return <AutomatedPeersView registered={peerDirectory.registered} recent={peerDirectory.recent} selectedIndex={automatedPeerIndex} visibleCount={visiblePeerRows} registry={regions} onOpen={onOpenPeer} />;
+        case "automated-peers": return <AutomatedPeersView registered={peerDirectory.registered} recent={peerDirectory.recent} knownMembers={knownMembers} selectedIndex={automatedPeerIndex} visibleCount={visiblePeerRows} width={contentWidth} registry={regions} onOpen={onOpenPeer} />;
     }
 }
 
@@ -599,6 +629,11 @@ function readPeerDirectory(control: TenBotControl): { registered: AutomatedPeerS
     } catch {
         return { registered: [], recent: [] };
     }
+}
+
+export async function readKnownMembers(control: TenBotControl): Promise<KnownMemberSummary[]> {
+    try { return await control.getKnownMembers(); }
+    catch { return []; }
 }
 
 const reasoningOptions: readonly ConfigOption[] = [

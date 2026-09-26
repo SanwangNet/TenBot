@@ -32,4 +32,9 @@ export class MemoryMemberRepository implements MemberRepository {
             .map((member) => ({ ...member }))
             .sort((a, b) => b.lastSeenAt - a.lastSeenAt || a.memberOpenid.localeCompare(b.memberOpenid));
     }
+
+    async listAll(): Promise<KnownMember[]> {
+        return [...this.members.values()].flatMap((group) => [...group.values()].map((member) => ({ ...member })))
+            .sort((a, b) => b.lastSeenAt - a.lastSeenAt || a.memberOpenid.localeCompare(b.memberOpenid) || a.groupOpenid.localeCompare(b.groupOpenid));
+    }
 }

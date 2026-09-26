@@ -5,6 +5,7 @@ import type { ModalState } from "../state.js";
 import { ClickableRegion } from "./clickable-region.js";
 import type { ClickableRegionRegistry } from "../mouse-input.js";
 import { calculateCenteredModalBounds } from "../modal-layout.js";
+import { layoutProviderErrorDetails, providerErrorSummaryPreview } from "../provider-error-layout.js";
 
 interface ModalActionsProps {
     registry: ClickableRegionRegistry;
@@ -61,6 +62,24 @@ interface ModalContentProps {
     maxCycles: number;
 }
 
+function ProviderErrorDetailsFrame({ modal, width, maxHeight, registry, onClose }: {
+    modal: Extract<ModalState, { type: "provider-error-details" }>;
+    width: number;
+    maxHeight: number;
+    registry: ClickableRegionRegistry;
+    onClose(): void;
+}) {
+    const layout = layoutProviderErrorDetails(modal.notice, width, maxHeight, modal.count, modal.scrollOffset);
+    return <ModalFrame title="模型提供商错误 · 详情" width={width} maxHeight={maxHeight} compact={layout.compact}>
+        {layout.metadataLines.map((line, index) => <Box key={`metadata:${index}`} height={1} flexShrink={0}><Text wrap="wrap">{line || " "}</Text></Box>)}
+        <Box height={layout.viewportRows} flexDirection="column" flexShrink={0} minHeight={0} overflow="hidden">
+            {layout.visibleLines.map((line, index) => <Box key={`${layout.scrollOffset + index}:${index}`} height={1} flexShrink={0}><Text wrap="wrap">{line || " "}</Text></Box>)}
+        </Box>
+        {layout.statusLine ? <Box height={1} flexShrink={0}><Text dimColor wrap="truncate">{layout.statusLine}</Text></Box> : null}
+        {layout.showActions ? <ModalActions registry={registry} onConfirm={onClose} confirmLabel="返回" /> : null}
+    </ModalFrame>;
+}
+
 function ModalContent({
     modal,
     width,
@@ -75,6 +94,9 @@ function ModalContent({
     maxCycles,
 }: ModalContentProps) {
     if (modal.type === "none") return null;
+    if (modal.type === "provider-error-details") {
+        return <ProviderErrorDetailsFrame modal={modal} width={width} maxHeight={maxHeight} registry={registry} onClose={onClose} />;
+    }
     if (maxHeight < 18) {
         if (modal.type === "provider-error") {
             return <ModalFrame title="模型提供商错误" width={width} maxHeight={maxHeight} compact>
@@ -148,9 +170,6 @@ function ModalContent({
         } else if (modal.type === "automated-peer-result") {
             title = modal.result.ok ? "自动账号已更新" : "操作失败";
             summary = modal.result.message;
-        } else if (modal.type === "provider-error-details") {
-            title = "模型提供商错误 · 详情";
-            summary = `${modal.notice.provider} · ${modal.notice.model}`;
         }
         return <ModalFrame title={title} width={width} maxHeight={maxHeight} compact>
             {maxHeight >= 5 ? <Text wrap="truncate">{summary}</Text> : null}
@@ -288,18 +307,7 @@ function ModalContent({
         </ModalFrame>;
     }
     const notice = modal.notice;
-    if (modal.type === "provider-error-details") {
-        return <ModalFrame title="模型提供商错误 · 详情" width={width} maxHeight={maxHeight}>
-            <Text>模型提供商  {notice.provider}</Text>
-            <Text>模型          {notice.model}</Text>
-            <Text>TenBot 错误码  {notice.tenbotCode}</Text>
-            <Text> </Text>
-            <Text wrap="truncate">{notice.details ?? "暂无更多安全详情。"}</Text>
-            {modal.count > 1 ? <Text color="yellow">另有 {modal.count - 1} 个模型错误</Text> : null}
-            <Text> </Text>
-            <ModalActions registry={registry} onConfirm={onClose} confirmLabel="返回" />
-        </ModalFrame>;
-    }
+    const preview = providerErrorSummaryPreview(notice, width, maxHeight, modal.count);
     return <ModalFrame title="模型提供商错误" width={width} maxHeight={maxHeight}>
         <Text color="red">✕ {notice.provider} 请求失败</Text>
         <Text> </Text>
@@ -309,7 +317,8 @@ function ModalContent({
         <Text>错误代码    {notice.code ?? "未知"}</Text>
         <Text>可重试      {notice.retryable === undefined ? "未知" : notice.retryable ? "是" : "否"}</Text>
         <Text> </Text>
-        <Text wrap="truncate">{notice.message}</Text>
+        {preview.lines.map((line, index) => <Box key={`summary:${index}`} height={1} flexShrink={0}><Text wrap="wrap">{line || " "}</Text></Box>)}
+        {preview.hasMore ? <Text color="yellow">正文较长；打开详情查看完整内容</Text> : null}
         {modal.count > 1 ? <Text color="yellow">另有 {modal.count - 1} 个模型错误</Text> : null}
         <Text> </Text>
         <Box flexDirection="row">
