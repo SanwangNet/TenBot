@@ -6,8 +6,10 @@ import { LogBuffer } from "../src/control/log-buffer.js";
 import { MAX_TUI_LOG_ENTRIES } from "../src/control/tenbot-control.js";
 import { getLogLevel, logger, setConsoleLogOutputEnabled, setLogLevel, subscribeLogs } from "../src/shared/logger.js";
 import type { PublicConfig } from "../src/config/config-types.js";
-import { ConversationTimelineStore } from "../src/control/conversation-timeline.js";
+import { ConversationTimelineStore, createIncomingConversationEvent } from "../src/control/conversation-timeline.js";
 import { toConversationIdentity } from "../src/control/conversation-identity.js";
+import { getConversationKey } from "../src/qq/conversation/recent-context.js";
+import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 
 const status: RuntimeStatus = {
     qq: "connected",
@@ -124,22 +126,110 @@ test("logger level can change at runtime and affects plain and subscribed logs",
 test("conversation timeline keeps interrupted attempts and bounds per-conversation history", () => {
     const store = new ConversationTimelineStore(2, 3);
     const event = (item: Parameters<ConversationTimelineStore["append"]>[0]["item"]): Parameters<ConversationTimelineStore["append"]>[0] => ({
-        type: "conversation-item", conversationId: "c-a", label: "群 A", item,
+        type: "conversation-item", conversationId: "c-a", kind: "group", label: "群 A", item,
     });
     store.append(event({ id: "attempt:a1", type: "ai-attempt", cycleId: "cycle-1", attemptId: "a1", timestamp: "1", status: "generating" }));
-    store.append(event({ id: "message:1", type: "group-message", displayName: "成员", content: "消息", timestamp: "2" }));
+    store.append(event({ id: "message:1", type: "peer-message", displayName: "成员", content: "消息", timestamp: "2" }));
     store.append(event({ id: "attempt:a1", type: "ai-attempt", cycleId: "cycle-1", attemptId: "a1", timestamp: "3", status: "interrupted" }));
     store.append(event({ id: "attempt:a2", type: "ai-attempt", cycleId: "cycle-1", attemptId: "a2", timestamp: "4", status: "generating" }));
+    store.append(event({ id: "attempt:a2", type: "ai-attempt", cycleId: "cycle-1", attemptId: "a2", timestamp: "5", status: "completed" }));
     const items = store.get("c-a");
-    assert.equal(items.length, 3);
+    assert.equal(items.length, 2);
     assert.equal(items.find((item) => item.type === "ai-attempt" && item.attemptId === "a1")?.type, "ai-attempt");
     assert.equal((items[0] as { status?: string }).status, "interrupted");
     assert.equal(store.list()[0]?.label, "群 A");
 });
 
-test("conversation DTO identity hashes internal conversation keys", () => {
-    const rawKey = "group:member_openid-sensitive-group-key";
-    const identity = toConversationIdentity(rawKey);
-    assert.match(identity.conversationId, /^c-[A-F0-9]{8}$/);
-    assert.doesNotMatch(JSON.stringify(identity), /member_openid|sensitive-group-key/);
+test("conversation timeline keeps interrupted and failed attempts but coalesces successful completion", () => {
+    const store = new ConversationTimelineStore();
+    const event = (item: Parameters<ConversationTimelineStore["append"]>[0]["item"]): Parameters<ConversationTimelineStore["append"]>[0] => ({
+        type: "conversation-item", conversationId: "c-life", kind: "private", label: "私聊 1234ABCD", item,
+    });
+    store.append(event({ id: "attempt:interrupted", type: "ai-attempt", cycleId: "c1", attemptId: "interrupted", timestamp: "1", status: "generating" }));
+    store.append(event({ id: "attempt:interrupted", type: "ai-attempt", cycleId: "c1", attemptId: "interrupted", timestamp: "2", status: "interrupted" }));
+    store.append(event({ id: "attempt:generation-failed", type: "ai-attempt", cycleId: "c2", attemptId: "generation-failed", timestamp: "3", status: "failed", failureStage: "generation" }));
+    store.append(event({ id: "attempt:send-failed", type: "ai-attempt", cycleId: "c3", attemptId: "send-failed", timestamp: "4", status: "failed", failureStage: "send" }));
+    store.append(event({ id: "attempt:success", type: "ai-attempt", cycleId: "c4", attemptId: "success", timestamp: "5", status: "generating" }));
+    store.append(event({ id: "reply:success", type: "ai-reply", content: "真正的回复", timestamp: "6", sendStatus: "sent" }));
+    store.append(event({ id: "attempt:success", type: "ai-attempt", cycleId: "c4", attemptId: "success", timestamp: "7", status: "completed" }));
+    const items = store.get("c-life");
+    assert.deepEqual(items.filter((item) => item.type === "ai-attempt").map((item) => item.type === "ai-attempt" ? [item.status, item.failureStage] : []), [
+        ["interrupted", undefined], ["failed", "generation"], ["failed", "send"],
+    ]);
+    assert.deepEqual(items.map((item) => item.type), ["ai-attempt", "ai-attempt", "ai-attempt", "ai-reply"]);
+});
+
+function normalizedMessage(kind: "group" | "c2c" | "dm", options: { groupId?: string; authorId: string; eventType?: string; displayContent?: string }): NormalizedQqMessage {
+    return {
+        source: {} as NormalizedQqMessage["source"],
+        id: "real-qq-message-id",
+        kind,
+        eventType: options.eventType ?? (kind === "group" ? "GROUP_MESSAGE" : "C2C_MESSAGE_CREATE"),
+        content: options.displayContent ?? "小尘",
+        displayContent: options.displayContent ?? "小尘",
+        ...(options.groupId ? { groupId: options.groupId } : {}),
+        author: { member_openid: options.authorId },
+        authorId: options.authorId,
+        authorName: "尘柒喵",
+        authorIsBot: false,
+        mentions: [],
+        attachments: [],
+        replyTarget: undefined as unknown as NormalizedQqMessage["replyTarget"],
+        timestamp: "2026-09-26T00:23:46.000Z",
+        raw: { member_openid: options.authorId, message_id: "real-qq-message-id" },
+    };
+}
+
+test("conversation identity distinguishes private and group keys without exposing identifiers", () => {
+    const group = toConversationIdentity("group:abc");
+    const privateConversation = toConversationIdentity("private:xyz");
+    assert.equal(group.kind, "group");
+    assert.match(group.label, /^群 [A-F0-9]{8}$/);
+    assert.equal(privateConversation.kind, "private");
+    assert.match(privateConversation.label, /^私聊 [A-F0-9]{8}$/);
+    assert.doesNotMatch(JSON.stringify([group, privateConversation]), /abc|xyz|group:|private:/);
+});
+
+test("private peer message and reply lifecycle share the Reply Cycle conversation key", () => {
+    const message = normalizedMessage("c2c", { authorId: "member_openid-private-secret" });
+    const incoming = createIncomingConversationEvent(message, "peer-sequence-1");
+    const replyIdentity = toConversationIdentity(getConversationKey(message));
+    const store = new ConversationTimelineStore();
+    store.append(incoming);
+    store.append({
+        type: "conversation-item",
+        conversationId: replyIdentity.conversationId,
+        kind: replyIdentity.kind,
+        label: replyIdentity.label,
+        item: { id: "reply-sequence-2", type: "ai-reply", content: "嗯，在的", timestamp: "2026-09-26T00:23:49.000Z", sendStatus: "sent" },
+    });
+    const summary = store.list()[0];
+    const timeline = store.get(replyIdentity.conversationId);
+    assert.equal(summary?.kind, "private");
+    assert.match(summary?.label ?? "", /^私聊 [A-F0-9]{8}$/);
+    assert.deepEqual(timeline.map((item) => item.type), ["peer-message", "ai-reply"]);
+    assert.equal(incoming.conversationId, replyIdentity.conversationId);
+    assert.doesNotMatch(JSON.stringify({ incoming, summary, timeline }), /member_openid-private-secret|real-qq-message-id|private:/);
+});
+
+test("group message and group-at peer events stay in the same conversation as AI replies", () => {
+    const first = normalizedMessage("group", { groupId: "sensitive-group-openid", authorId: "member-a", eventType: "GROUP_MESSAGE", displayContent: "普通消息" });
+    const at = normalizedMessage("group", { groupId: "sensitive-group-openid", authorId: "member-a", eventType: "GROUP_AT", displayContent: "@小尘 你好" });
+    const firstEvent = createIncomingConversationEvent(first, "peer-sequence-1");
+    const atEvent = createIncomingConversationEvent(at, "peer-sequence-2");
+    const identity = toConversationIdentity(getConversationKey(first));
+    const store = new ConversationTimelineStore();
+    store.append(firstEvent);
+    store.append(atEvent);
+    store.append({
+        type: "conversation-item",
+        conversationId: identity.conversationId,
+        kind: identity.kind,
+        label: identity.label,
+        item: { id: "reply-sequence-3", type: "ai-reply", content: "收到", timestamp: "2026-09-26T00:23:49.000Z", sendStatus: "sent" },
+    });
+    assert.equal(firstEvent.conversationId, atEvent.conversationId);
+    assert.equal(identity.kind, "group");
+    assert.deepEqual(store.get(identity.conversationId).map((item) => item.type), ["peer-message", "peer-message", "ai-reply"]);
+    assert.doesNotMatch(JSON.stringify(store.list()), /sensitive-group-openid|member-a/);
 });

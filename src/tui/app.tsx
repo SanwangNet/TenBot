@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useWindowSize } from "ink";
 import type { ConfigUpdateResult, ModelProviderId, PublicConfig, PublicConfigPatch } from "../config/config-types.js";
 import { cycleModelProvider, MODEL_PROVIDERS } from "../ai/model-registry.js";
@@ -28,6 +28,7 @@ import type { TuiPage } from "./types.js";
 import type { AutomatedPeerSummary } from "../control/automated-peers.js";
 import { ClickableRegionRegistry, isSgrMouseSequence, type TerminalMouseSession } from "./mouse-input.js";
 import { collapseAdjacentLogs } from "./log-collapse.js";
+import { moveConversationAnchor, type ConversationScrollAnchor } from "./conversation-layout.js";
 
 export interface TenBotTuiProps {
     control: TenBotControl;
@@ -47,7 +48,8 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const [peerDirectory, setPeerDirectory] = useState(() => readPeerDirectory(control));
     const [conversations, setConversations] = useState<ConversationSummary[]>(() => control.getConversations());
     const [selectedConversationId, setSelectedConversationId] = useState<string>();
-    const [conversationOffset, setConversationOffset] = useState(0);
+    const [conversationAnchor, setConversationAnchor] = useState<ConversationScrollAnchor | null>(null);
+    const [conversationViewport, setConversationViewport] = useState({ conversationId: undefined as string | undefined, viewportRows: 0, bubbleWidth: 0 });
     const quitting = useRef(false);
     const reloadRunning = useRef(false);
     const regions = useRef(new ClickableRegionRegistry()).current;
@@ -55,7 +57,6 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const columns = rawColumns || 80;
     const rows = rawRows || 24;
     const visibleLogLines = Math.max(4, rows - 10);
-    const visibleConversationItems = Math.max(1, Math.floor(Math.max(3, rows - 12) / 3));
     const visiblePeerRows = Math.max(4, rows - 16);
     const size = useRef({ columns, rows });
     if (size.current.columns !== columns || size.current.rows !== rows) {
@@ -127,11 +128,29 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const safeConversationIndex = requestedConversationIndex < 0 ? 0 : Math.min(requestedConversationIndex, Math.max(0, conversations.length - 1));
     const selectedConversation = conversations[safeConversationIndex];
     const conversationItems = selectedConversation ? control.getConversationTimeline(selectedConversation.conversationId) : [];
+    useEffect(() => setConversationAnchor(null), [selectedConversation?.conversationId]);
+    const updateConversationViewport = useCallback((conversationId: string | undefined, viewportRows: number, bubbleWidth: number) => {
+        setConversationViewport((current) => current.conversationId === conversationId && current.viewportRows === viewportRows && current.bubbleWidth === bubbleWidth
+            ? current
+            : { conversationId, viewportRows, bubbleWidth });
+    }, []);
+    const measuredConversationViewport = conversationViewport.conversationId === selectedConversation?.conversationId
+        ? conversationViewport
+        : { viewportRows: 0, bubbleWidth: 0 };
+    const scrollConversation = (navigation: "up" | "down" | "page-up" | "page-down" | "home" | "end") => {
+        setConversationAnchor((current) => moveConversationAnchor(
+            conversationItems,
+            measuredConversationViewport.bubbleWidth,
+            measuredConversationViewport.viewportRows,
+            current,
+            navigation,
+        ));
+    };
     const switchConversation = (delta: number) => {
         if (conversations.length < 2) return;
         const next = conversations[(safeConversationIndex + delta + conversations.length) % conversations.length];
         if (next) setSelectedConversationId(next.conversationId);
-        setConversationOffset(0);
+        setConversationAnchor(null);
     };
     const openPeerDetails = (index: number) => {
         const peer = allPeers[index];
@@ -385,12 +404,12 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         if (ui.page === "conversations" && ui.focus === "main") {
             if (key.leftArrow) switchConversation(-1);
             else if (key.rightArrow) switchConversation(1);
-            else if (key.upArrow) setConversationOffset((current) => Math.min(Math.max(0, conversationItems.length - 1), current + 1));
-            else if (key.downArrow) setConversationOffset((current) => Math.max(0, current - 1));
-            else if (key.pageUp) setConversationOffset((current) => Math.min(Math.max(0, conversationItems.length - visibleConversationItems), current + visibleConversationItems));
-            else if (key.pageDown) setConversationOffset((current) => Math.max(0, current - visibleConversationItems));
-            else if (key.home) setConversationOffset(Math.max(0, conversationItems.length - visibleConversationItems));
-            else if (key.end) setConversationOffset(0);
+            else if (key.upArrow) scrollConversation("up");
+            else if (key.downArrow) scrollConversation("down");
+            else if (key.pageUp) scrollConversation("page-up");
+            else if (key.pageDown) scrollConversation("page-down");
+            else if (key.home) scrollConversation("home");
+            else if (key.end) scrollConversation("end");
             return;
         }
         if (ui.page === "settings" && ui.focus === "main") {
@@ -433,7 +452,7 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const content = renderView(
         ui.page, status, config, logs, ui.logOffset, visibleLogLines, ui.settingsIndex, showPendingRestart,
         peerDirectory, ui.automatedPeerIndex, visiblePeerRows, regions, editSetting, openPeerDetails,
-        conversations, safeConversationIndex, conversationItems, conversationOffset, visibleConversationItems, columns, switchConversation, setConversationOffset,
+        conversations, safeConversationIndex, conversationItems, conversationAnchor, updateConversationViewport, switchConversation,
         viewedProvider, viewProvider, applyViewedProvider,
     );
     const closeCurrentModal = () => setUi(closeModal);
@@ -446,6 +465,7 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const modalProps = {
         modal: ui.modal,
         columns,
+        rows,
         registry: regions,
         onClose: closeCurrentModal,
         onConfirm: confirmModal,
@@ -554,11 +574,9 @@ function renderView(
     conversations: readonly ConversationSummary[],
     conversationIndex: number,
     conversationItems: ReturnType<TenBotControl["getConversationTimeline"]>,
-    conversationOffset: number,
-    visibleConversationItems: number,
-    columns: number,
+    conversationAnchor: ConversationScrollAnchor | null,
+    onViewportMeasure: (conversationId: string | undefined, viewportRows: number, bubbleWidth: number) => void,
     onSwitchConversation: (delta: number) => void,
-    onConversationScroll: (offset: number) => void,
     viewedProvider: ModelProviderId,
     onViewProvider: (delta: number) => void,
     onApplyProvider: () => void,
@@ -568,7 +586,7 @@ function renderView(
         case "model": return <ModelView status={status} />;
         case "prompt": return <PromptView status={status} />;
         case "memes": return <MemesView status={status} />;
-        case "conversations": return <ConversationsView conversations={conversations} selectedIndex={conversationIndex} items={conversationItems} offset={conversationOffset} visibleLines={visibleConversationItems} columns={columns - 24} registry={regions} onSwitch={onSwitchConversation} onScroll={onConversationScroll} />;
+        case "conversations": return <ConversationsView conversations={conversations} selectedIndex={conversationIndex} items={conversationItems} anchor={conversationAnchor} registry={regions} onSwitch={onSwitchConversation} onViewportMeasure={onViewportMeasure} />;
         case "logs": return <LogsView logs={logs} offset={offset} visibleLines={visibleLines} />;
         case "settings": return <SettingsView status={status} config={config} selectedIndex={settingsIndex} pendingRestart={pendingRestart} viewedProvider={viewedProvider} registry={regions} onEdit={onEditSetting} onViewProvider={onViewProvider} onApplyProvider={onApplyProvider} />;
         case "automated-peers": return <AutomatedPeersView registered={peerDirectory.registered} recent={peerDirectory.recent} selectedIndex={automatedPeerIndex} visibleCount={visiblePeerRows} registry={regions} onOpen={onOpenPeer} />;

@@ -26,6 +26,7 @@ import type { NormalizedQqMessage } from "./qq/message/normalize-message.js";
 import { FileChangeWatcher } from "./shared/file-change-watcher.js";
 import { RuntimeConfigSnapshotStore, type RuntimeConfigSnapshot } from "./runtime-config-snapshot.js";
 import { toConversationIdentity } from "./control/conversation-identity.js";
+import { createIncomingConversationEvent } from "./control/conversation-timeline.js";
 
 export interface TenBotRuntime {
     control: TenBotControl;
@@ -83,29 +84,15 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     let unsubscribeProviderErrors: () => void = () => undefined;
     let unsubscribeReplyLifecycle: () => void = () => undefined;
     let conversationItemSequence = 0;
-    const observeGroupMessage = (message: NormalizedQqMessage) => {
-        if (message.kind !== "group") return;
-        const key = message.groupId ? `group:${message.groupId}` : `group:unknown`;
-        const { conversationId, label } = toConversationIdentity(key);
-        const parsed = message.timestamp ? Date.parse(message.timestamp) : Number.NaN;
-        control?.publishEvent({
-            type: "conversation-item",
-            conversationId,
-            label,
-            item: {
-                id: `message-${++conversationItemSequence}`,
-                type: "group-message",
-                displayName: truncateLogText(message.authorName || "群友", 60),
-                content: truncateLogText(message.displayContent, 2000),
-                timestamp: Number.isNaN(parsed) ? new Date().toISOString() : new Date(parsed).toISOString(),
-            },
-        });
+    const observeConversationMessage = (message: NormalizedQqMessage) => {
+        if (message.kind !== "group" && message.kind !== "c2c" && message.kind !== "dm") return;
+        control?.publishEvent(createIncomingConversationEvent(message, `message-${++conversationItemSequence}`));
     };
     const observeReplyLifecycle = (signal: Parameters<Parameters<typeof subscribeReplyLifecycle>[0]>[0]) => {
-        const { conversationId, label } = toConversationIdentity(signal.conversationKey);
+        const { conversationId, kind, label } = toConversationIdentity(signal.conversationKey);
         if (signal.kind === "reply-sent") {
             control?.publishEvent({
-                type: "conversation-item", conversationId, label,
+                type: "conversation-item", conversationId, kind, label,
                 item: {
                     id: `reply-${++conversationItemSequence}`,
                     type: "ai-reply",
@@ -118,7 +105,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         }
         const status = signal.kind === "started" ? "generating" : signal.kind;
         control?.publishEvent({
-            type: "conversation-item", conversationId, label,
+            type: "conversation-item", conversationId, kind, label,
             item: {
                 id: `attempt:${signal.attemptId}`,
                 type: "ai-attempt",
@@ -172,7 +159,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             control?.publishStatus();
         }, (message) => {
             if (recentPeers.observe(message)) control?.publishEvent({ type: "recent-peers-updated" });
-        }, observeGroupMessage, runtimeSnapshot.appConfig.qq);
+        }, observeConversationMessage, runtimeSnapshot.appConfig.qq);
     } catch (error) {
         logs.dispose();
         setConsoleLogOutputEnabled(true);

@@ -28,7 +28,8 @@
     "minecraftstatuspinger": "^1.2.2",
     "openai": "^7.21.0",
     "pinyin-pro": "^3.29.4",
-    "react": "^19.3.0"
+    "react": "^19.3.0",
+    "string-width": "^8.2.2"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",

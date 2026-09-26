@@ -14,6 +14,143 @@ import { splitDisplayPath } from "../src/tui/path-display.js";
 import { collapseAdjacentLogs } from "../src/tui/log-collapse.js";
 import { cycleModelProvider } from "../src/ai/model-registry.js";
 import { exitTuiProcess } from "../src/tui/process-exit.js";
+import { calculateBubbleWidth, layoutConversationViewport, measureConversationItem, moveConversationAnchor, wrapTerminalText, type ConversationScrollAnchor } from "../src/tui/conversation-layout.js";
+import { calculateCenteredModalBounds } from "../src/tui/modal-layout.js";
+import type { ConversationItem } from "../src/control/conversation-timeline.js";
+
+function conversationFixture(count: number, content = "short") : ConversationItem[] {
+    return Array.from({ length: count }, (_, index): ConversationItem => index % 2 === 0
+        ? { id: `message-${index}`, type: "peer-message", displayName: "尘柒喵", content: `${content} ${index}`, timestamp: "2026-09-26T00:23:46.000Z" }
+        : { id: `message-${index}`, type: "ai-reply", content: `${content} ${index}`, timestamp: "2026-09-26T00:23:46.000Z", sendStatus: "sent" });
+}
+
+test("conversation rows wrap ASCII, Chinese, full-width, emoji, and combining graphemes by terminal width", () => {
+    assert.deepEqual(wrapTerminalText("abcdef", 4), ["abcd", "ef"]);
+    assert.deepEqual(wrapTerminalText("中文测试", 4), ["中文", "测试"]);
+    assert.deepEqual(wrapTerminalText("A中B", 3), ["A中", "B"]);
+    assert.deepEqual(wrapTerminalText("A🙂BC", 3), ["A🙂", "BC"]);
+    assert.deepEqual(wrapTerminalText("e\u0301ab", 2), ["e\u0301a", "b"]);
+    assert.deepEqual(wrapTerminalText("first\r\nsecond", 20), ["first", "second"]);
+});
+
+test("conversation layout budgets visual rows for variable-height messages", () => {
+    const items: ConversationItem[] = [
+        { id: "short-a", type: "peer-message", displayName: "尘柒喵", content: "A", timestamp: "2026-09-26T00:23:46.000Z" },
+        { id: "short-b", type: "ai-reply", content: "B", timestamp: "2026-09-26T00:23:47.000Z", sendStatus: "sent" },
+        { id: "long-c", type: "peer-message", displayName: "尘柒喵", content: "中文测试内容很长消息", timestamp: "2026-09-26T00:23:48.000Z" },
+        { id: "short-d", type: "ai-reply", content: "D", timestamp: "2026-09-26T00:23:49.000Z", sendStatus: "sent" },
+    ];
+    const rowsForLong = measureConversationItem(items[2]!, 8);
+    assert.equal(rowsForLong.length, 8, "header + border rows + five wrapped Chinese lines");
+    const layout = layoutConversationViewport(items, 8, 12);
+    assert.equal(layout.totalRows, 20);
+    assert.equal(layout.visibleRows.length, 12);
+    assert.ok(layout.visibleRows.length <= 12);
+});
+
+test("conversation Up and Down move one visual row and page, Home, and End clamp by rows", () => {
+    const items = conversationFixture(10, "中文消息");
+    const viewportRows = 20;
+    let anchor: ConversationScrollAnchor | null = null;
+    anchor = moveConversationAnchor(items, 14, viewportRows, anchor, "up");
+    assert.equal(layoutConversationViewport(items, 14, viewportRows, anchor).scrollRowsFromBottom, 1);
+    anchor = moveConversationAnchor(items, 14, viewportRows, anchor, "up");
+    assert.equal(layoutConversationViewport(items, 14, viewportRows, anchor).scrollRowsFromBottom, 2);
+    anchor = moveConversationAnchor(items, 14, viewportRows, anchor, "down");
+    assert.equal(layoutConversationViewport(items, 14, viewportRows, anchor).scrollRowsFromBottom, 1);
+    anchor = moveConversationAnchor(items, 14, viewportRows, anchor, "down");
+    assert.equal(layoutConversationViewport(items, 14, viewportRows, anchor).scrollRowsFromBottom, 0);
+    anchor = moveConversationAnchor(items, 14, viewportRows, anchor, "down");
+    assert.equal(layoutConversationViewport(items, 14, viewportRows, anchor).scrollRowsFromBottom, 0);
+    anchor = moveConversationAnchor(items, 14, viewportRows, anchor, "page-up");
+    assert.equal(layoutConversationViewport(items, 14, viewportRows, anchor).scrollRowsFromBottom, 20);
+    anchor = moveConversationAnchor(items, 14, viewportRows, anchor, "page-down");
+    assert.equal(layoutConversationViewport(items, 14, viewportRows, anchor).scrollRowsFromBottom, 0);
+    anchor = moveConversationAnchor(items, 14, viewportRows, anchor, "home");
+    assert.equal(layoutConversationViewport(items, 14, viewportRows, anchor).startRow, 0);
+    anchor = moveConversationAnchor(items, 14, viewportRows, anchor, "end");
+    assert.equal(anchor, null);
+    assert.equal(layoutConversationViewport(items, 14, viewportRows, anchor).scrollRowsFromBottom, 0);
+});
+
+test("conversation historical anchor stays on the same item through append and resize", () => {
+    const items = conversationFixture(10, "history");
+    const anchor = moveConversationAnchor(items, 16, 10, null, "page-up");
+    assert.ok(anchor);
+    const before = layoutConversationViewport(items, 16, 10, anchor).visibleRows[0];
+    const appended = [...items, { id: "newest", type: "ai-reply" as const, content: "new message", timestamp: "2026-09-26T00:24:00.000Z", sendStatus: "sent" as const }];
+    const afterAppend = layoutConversationViewport(appended, 16, 10, anchor).visibleRows[0];
+    assert.deepEqual([afterAppend?.itemId, afterAppend?.rowOffset], [before?.itemId, before?.rowOffset]);
+    const afterResize = layoutConversationViewport(appended, 12, 10, anchor).visibleRows[0];
+    assert.equal(afterResize?.itemId, before?.itemId);
+    assert.ok(layoutConversationViewport(appended, 12, 10, anchor).visibleRows.length <= 10);
+});
+
+test("conversation at the bottom follows newly appended messages", () => {
+    const items = conversationFixture(3);
+    const before = layoutConversationViewport(items, 16, 8, null);
+    const appended = [...items, { id: "latest", type: "ai-reply" as const, content: "latest reply", timestamp: "2026-09-26T00:24:00.000Z", sendStatus: "sent" as const }];
+    const after = layoutConversationViewport(appended, 16, 8, null);
+    assert.equal(before.scrollRowsFromBottom, 0);
+    assert.equal(after.scrollRowsFromBottom, 0);
+    assert.equal(after.visibleRows.at(-1)?.itemId, "latest");
+});
+
+test("attempt status cards retain a fixed visual footprint and omit successful completion", () => {
+    const generating: ConversationItem = { id: "attempt", type: "ai-attempt", cycleId: "cycle", attemptId: "attempt", timestamp: "2026-09-26T00:23:46.000Z", status: "generating" };
+    const interrupted = { ...generating, status: "interrupted" as const };
+    const generationFailed = { ...generating, status: "failed" as const, failureStage: "generation" as const };
+    const sendFailed = { ...generating, status: "failed" as const, failureStage: "send" as const };
+    assert.equal(measureConversationItem(generating, 20).length, measureConversationItem(interrupted, 20).length);
+    assert.ok(measureConversationItem(generating, 20).some((row) => row.text.includes("生成中")));
+    assert.ok(measureConversationItem(interrupted, 20).some((row) => row.text.includes("被中断")));
+    assert.ok(measureConversationItem(generationFailed, 20).some((row) => row.text.includes("生成失败")));
+    const sendFailureRows = measureConversationItem(sendFailed, 20)
+        .filter((row) => row.text.startsWith("│ "))
+        .map((row) => row.text.slice(2).replace(/ │$/, "").trimEnd())
+        .join("");
+    assert.match(sendFailureRows, /生成完成，发送失败/);
+    assert.deepEqual(measureConversationItem({ ...generating, status: "completed" }, 20), []);
+});
+
+test("a message taller than the viewport can be read a visual row at a time", () => {
+    const long: ConversationItem = {
+        id: "very-long",
+        type: "peer-message",
+        displayName: "尘柒喵",
+        content: "中文内容🙂".repeat(40),
+        timestamp: "2026-09-26T00:23:46.000Z",
+    };
+    const viewportRows = 5;
+    const bubbleWidth = 12;
+    const expectedContentRows = wrapTerminalText(long.content, bubbleWidth - 4).length;
+    assert.ok(measureConversationItem(long, bubbleWidth).length > viewportRows);
+    const seenContentRows = new Set<number>();
+    let anchor = moveConversationAnchor([long], bubbleWidth, viewportRows, null, "home");
+    for (let index = 0; index < measureConversationItem(long, bubbleWidth).length + 2 && anchor; index++) {
+        const layout = layoutConversationViewport([long], bubbleWidth, viewportRows, anchor);
+        assert.ok(layout.visibleRows.length <= viewportRows);
+        for (const row of layout.visibleRows) {
+            if (row.tone === "peer" && row.rowOffset >= 2 && row.rowOffset < expectedContentRows + 2) seenContentRows.add(row.rowOffset - 2);
+        }
+        const next = moveConversationAnchor([long], bubbleWidth, viewportRows, anchor, "down");
+        if (next?.itemId === anchor?.itemId && next.rowOffset === anchor?.rowOffset) break;
+        anchor = next;
+    }
+    assert.equal(seenContentRows.size, expectedContentRows);
+});
+
+test("bubble width uses the measured viewport width and tracks a terminal resize", () => {
+    assert.equal(calculateBubbleWidth(100), 78);
+    assert.equal(calculateBubbleWidth(60), 46);
+    assert.ok(measureConversationItem(conversationFixture(1)[0]!, calculateBubbleWidth(60)).every((row) => row.text.length <= 46));
+});
+
+test("modal bounds stay centered and clamp width and height after resize", () => {
+    assert.deepEqual(calculateCenteredModalBounds(120, 40, 60, 10), { left: 30, top: 15, width: 60, height: 10 });
+    assert.deepEqual(calculateCenteredModalBounds(90, 30, 80, 40), { left: 5, top: 1, width: 80, height: 28 });
+    assert.deepEqual(calculateCenteredModalBounds(60, 8, 72, 12), { left: 2, top: 1, width: 56, height: 6 });
+});
 
 function fakeControl(calls: string[], result: ReloadResult = { ok: true, message: "reloaded", loadedAt: "now" }): TenBotControl {
     const status: RuntimeStatus = {
@@ -209,6 +346,21 @@ test("active modal routes clicks only to its own registered controls", () => {
     registry.setModalActive(false);
     registry.clear();
     assert.equal(registry.dispatch({ x: 1, y: 0, button: "left" }), false);
+});
+
+test("centered modal click regions follow the resized center and ignore old corner coordinates", () => {
+    const registry = new ClickableRegionRegistry();
+    let clicked = 0;
+    const bounds = calculateCenteredModalBounds(90, 30, 60, 10);
+    registry.register({ id: "modal:confirm", x: bounds.left + 10, y: bounds.top + 8, width: 12, height: 1, modal: true, action: () => clicked++ });
+    registry.setModalActive(true);
+    assert.equal(registry.dispatch({ x: bounds.left + 11, y: bounds.top + 8, button: "left" }), true);
+    assert.equal(registry.dispatch({ x: 3, y: 3, button: "left" }), false);
+    const resized = calculateCenteredModalBounds(120, 40, 60, 10);
+    registry.clear();
+    registry.register({ id: "modal:confirm", x: resized.left + 10, y: resized.top + 8, width: 12, height: 1, modal: true, action: () => clicked++ });
+    assert.equal(registry.dispatch({ x: resized.left + 11, y: resized.top + 8, button: "left" }), true);
+    assert.equal(clicked, 2);
 });
 
 test("settings select and text editors create safe patches without touching a real env", () => {
