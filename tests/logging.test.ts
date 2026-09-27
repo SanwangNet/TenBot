@@ -7,7 +7,7 @@ import { LogBuffer } from "../src/control/log-buffer.js";
 import { logger, qqSdkLogger, getLogLevel, setConsoleLogOutputEnabled, setLogLevel, configureLogFileSink, flushLogFileSink, closeLogFileSink, sanitizeSafeDiagnostic, sanitizeSecrets } from "../src/shared/logger.js";
 import { LogFileSink } from "../src/shared/log-file-sink.js";
 import { collapseAdjacentLogs } from "../src/tui/log-collapse.js";
-import { filterLogs, initialLogViewState, logViewReducer, MAX_WEB_LOG_ENTRIES } from "../web/src/components/log-state.js";
+import { filterLogs, initialLogViewState, LogBatchQueue, logViewReducer, MAX_WEB_LOG_ENTRIES } from "../web/src/components/log-state.js";
 import type { LogEntry } from "../web/src/api/types.js";
 
 function freshWebState() {
@@ -224,6 +224,81 @@ test("Web log reducer bounds storage to 5,000 canonical rows", () => {
     assert.equal(state.entries.length, 5_000);
     assert.equal(state.entries[0]?.text, "line 1");
     assert.equal(state.entries.at(-1)?.text, "line 5000");
+});
+
+test("Web log batch append preserves order, rowId repeats, follow counts, and trims once to 5,000", () => {
+    const first: LogEntry = { timestamp: "1", level: "info", text: "same", rowId: "same-row", repeatCount: 1 };
+    let state = { ...freshWebState(), follow: false };
+    state = logViewReducer(state, { type: "append-batch", entries: [
+        first,
+        { ...first, timestamp: "3", repeatCount: 2 },
+        { timestamp: "2", level: "info", text: "middle", rowId: "middle-row", repeatCount: 1 },
+    ] });
+    assert.deepEqual(state.entries.map((entry) => entry.text), ["same", "middle"]);
+    assert.equal(state.entries[0]?.repeatCount, 2);
+    assert.equal(state.entries[0]?.timestamp, "3");
+    assert.equal(state.unseenCount, 2);
+    assert.equal(state.rowsRevision, 1);
+
+    const stressEntries = Array.from({ length: 10_000 }, (_, index): LogEntry => ({
+        timestamp: String(index), level: "debug", text: `batch ${index}`, rowId: `batch-${index}`, repeatCount: 1,
+    }));
+    let stressState = { ...freshWebState(), follow: false };
+    stressState = logViewReducer(stressState, { type: "append-batch", entries: stressEntries.slice(0, MAX_WEB_LOG_ENTRIES) });
+    assert.equal(stressState.entries.length, MAX_WEB_LOG_ENTRIES);
+    assert.equal(stressState.entries[0]?.text, "batch 0");
+    stressState = logViewReducer(stressState, { type: "append-batch", entries: stressEntries.slice(MAX_WEB_LOG_ENTRIES) });
+    assert.equal(stressState.entries.length, MAX_WEB_LOG_ENTRIES);
+    assert.equal(stressState.entries[0]?.text, "batch 5000");
+    assert.equal(stressState.entries.at(-1)?.text, "batch 9999");
+    assert.equal(stressState.unseenCount, 10_000);
+    assert.equal(state.unseenCount, 2);
+});
+
+test("log batch queue flushes a burst once and clear cancels stale pending logs", () => {
+    const scheduled = new Map<number, () => void>();
+    let nextHandle = 0;
+    let state = freshWebState();
+    let flushes = 0;
+    const queue = new LogBatchQueue((entries) => {
+        flushes++;
+        state = logViewReducer(state, { type: "append-batch", entries });
+    }, 30, (callback) => {
+        const handle = ++nextHandle;
+        scheduled.set(handle, callback);
+        return handle;
+    }, () => undefined);
+
+    for (let index = 0; index < 10_000; index++) {
+        queue.enqueue({ timestamp: String(index), level: "info", text: `queued ${index}`, rowId: `queued-${index}`, repeatCount: 1 });
+    }
+    assert.equal(scheduled.size, 1, "one timer is scheduled for the whole burst");
+    scheduled.get(1)!();
+    assert.equal(flushes, 1);
+    assert.equal(state.entries.length, MAX_WEB_LOG_ENTRIES);
+    assert.equal(state.entries[0]?.text, "queued 5000");
+    assert.equal(state.entries.at(-1)?.text, "queued 9999");
+
+    queue.enqueue({ timestamp: "stale", level: "error", text: "must not return after clear", rowId: "stale", repeatCount: 1 });
+    const staleCallback = scheduled.get(2)!;
+    queue.clear();
+    state = logViewReducer(state, { type: "clear" });
+    staleCallback();
+    assert.equal(state.entries.length, 0);
+    assert.equal(flushes, 1);
+
+    queue.enqueue({ timestamp: "after-clear", level: "info", text: "new log", rowId: "new", repeatCount: 1 });
+    scheduled.get(3)!();
+    assert.deepEqual(state.entries.map((entry) => entry.text), ["new log"]);
+    assert.equal(flushes, 2);
+
+    queue.enqueue({ timestamp: "before-pause", level: "info", text: "arrived while following", rowId: "before-pause", repeatCount: 1 });
+    queue.flushNow();
+    state = logViewReducer(state, { type: "set-follow", follow: false });
+    queue.enqueue({ timestamp: "paused", level: "info", text: "arrived while paused", rowId: "paused", repeatCount: 1 });
+    scheduled.get(5)!();
+    assert.equal(state.unseenCount, 1);
+    queue.dispose();
 });
 
 test("daily file sink routes all/info/warn categories, appends across reopen, preserves order, and flushes", async () => {

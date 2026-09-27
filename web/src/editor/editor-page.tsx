@@ -15,7 +15,7 @@ self.MonacoEnvironment = { getWorker(_moduleId, label) { return label === "json"
 loader.config({ monaco });
 
 const promptTabs: Array<{ id: EditorResourceId; label: string }> = [
-    { id: "prompt:gpt", label: "GPT" }, { id: "prompt:deepseek", label: "DeepSeek" }, { id: "prompt:reply-judge", label: "Reply Judge" },
+    { id: "prompt:gpt", label: "GPT" }, { id: "prompt:deepseek", label: "DeepSeek" }, { id: "prompt:reply-judge", label: "回复判断" },
 ];
 
 export function EditorPage({ mode, onDirtyChange }: { mode: "prompts" | "memes"; onDirtyChange(dirty: boolean): void }) {
@@ -59,7 +59,7 @@ export function EditorPage({ mode, onDirtyChange }: { mode: "prompts" | "memes";
             const result = await apiClient.saveEditorResource(draft.resource.id, draft.content, draft.resource.version);
             setDraft(createEditorDraft(result.resource));
             if (result.reload.ok) notify("success", `${result.resource.displayName} 已保存并热重载`);
-            else notify("warning", "文件已保存，但 Runtime reload 失败；当前继续使用上一份有效快照。");
+            else notify("warning", "文件已保存，但运行时重新加载失败；当前继续使用上一份有效快照。");
         } catch (cause) {
             if (cause instanceof ApiError && cause.status === 409) {
                 const reload = await confirm({ title: "文件版本冲突", message: "文件已在服务器端发生变化。重新载入会放弃当前编辑内容；取消可保留草稿。", confirmLabel: "重新载入", danger: true });
@@ -89,9 +89,9 @@ export function EditorPage({ mode, onDirtyChange }: { mode: "prompts" | "memes";
         catch { setError("JSON 格式不正确，无法格式化"); }
     }
     return <section className="editor-page">
-        <div className="page-heading"><div><div className="eyebrow">CONTROL PLANE / EDITOR</div><h1>{mode === "prompts" ? "提示词" : "梗数据"}</h1><p>{mode === "prompts" ? "编辑 Runtime 使用的 Prompt 文件。" : "编辑 Meme 知识库 JSON，保存前由服务器验证。"}</p></div>
+        <div className="page-heading"><div><div className="eyebrow">控制中心 / 编辑器</div><h1>{mode === "prompts" ? "提示词" : "梗数据"}</h1><p>{mode === "prompts" ? "编辑运行时使用的提示词文件。" : "编辑梗知识库 JSON，保存前由服务器验证。"}</p></div>
             <span className="editor-status">{dirty ? "● 未保存" : loading ? "载入中" : "✓ 已同步"}</span></div>
-        {mode === "memes" && <div className="editor-metrics"><span>条目 <strong>{status?.memes.count ?? "—"}</strong></span><span>Revision <strong>r{status?.memes.revision ?? "—"}</strong></span><span>Loaded At <strong>{status?.memes.loadedAt ? new Date(status.memes.loadedAt).toLocaleString("zh-CN") : "—"}</strong></span></div>}
+        {mode === "memes" && <div className="editor-metrics"><span>条目 <strong>{status?.memes.count ?? "—"}</strong></span><span>修订版本 <strong>r{status?.memes.revision ?? "—"}</strong></span><span>加载时间 <strong>{status?.memes.loadedAt ? new Date(status.memes.loadedAt).toLocaleString("zh-CN") : "—"}</strong></span></div>}
         <div className="editor-frame panel">
             <div className="editor-toolbar">
                 <div className="editor-tabs">{mode === "prompts" ? promptTabs.map((tab) => <button type="button" key={tab.id} className={`editor-tab${resourceId === tab.id ? " active" : ""}`} onClick={() => void chooseTab(tab.id)}>{tab.label}{resourceId === tab.id && dirty ? " •" : ""}</button>) : <span className="editor-tab active">memes.json</span>}</div>

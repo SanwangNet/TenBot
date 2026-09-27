@@ -68,7 +68,7 @@ test("registry selects GPT, DeepSeek, and defaults to GPT without requiring cred
     assert.throws(() => createModelPlugin({ AI_PROVIDER: "other" }), /不支持的 AI_PROVIDER/);
 });
 
-test("ALL records Responses request and complete stream payloads plus diagnostics before unchanged NVO", async () => {
+test("ALL keeps request and NVO diagnostics while stream events and completed response are compact", async () => {
     const oldLevel = getLogLevel();
     const entries: Array<{ level: string; text: string }> = [];
     const unsubscribe = subscribeLogs((entry) => entries.push(entry));
@@ -91,15 +91,101 @@ test("ALL records Responses request and complete stream payloads plus diagnostic
         assert.match(all, /\[AI:deepseek\] request/);
         assert.match(all, /instructions/);
         assert.match(all, /input/);
-        assert.match(all, /response\.output_item\.done/);
-        assert.match(all, /item-full-id/);
-        assert.match(all, /completed response/);
+        assert.doesNotMatch(all, /response\.output_item\.done|item-full-id|empty diagnostic payload/);
+        assert.match(all, /\[AI:deepseek\] completed/);
+        assert.match(all, /\[AI:deepseek\] stream summary/);
         assert.match(all, /final collected text/);
         assert.match(all, /protocol leak classification/);
         assert.match(all, /NVO diagnostics/);
         assert.match(all, /"outputItemCount":0/);
         assert.match(all, /"functionCallCount":0/);
         assert.match(all, /"normalizeTextReplyIsNull":true/);
+    } finally {
+        unsubscribe();
+        setLogLevel(oldLevel);
+        setConsoleLogOutputEnabled(true);
+    }
+});
+
+test("Responses batches stream diagnostics and retains final text and complete malformed tool arguments", async () => {
+    const oldLevel = getLogLevel();
+    const entries: Array<{ level: string; text: string }> = [];
+    const unsubscribe = subscribeLogs((entry) => entries.push(entry));
+    setConsoleLogOutputEnabled(false);
+    try {
+        setLogLevel("all");
+        const malformedArguments = '{"messages":[{"content":"保留原始参数"}],"mentions":[]} }}';
+        const streamEvents = [
+            ...Array.from({ length: 350 }, () => ({ type: "response.reasoning_text.delta", delta: "r" })),
+            ...Array.from({ length: 31 }, () => ({ type: "response.function_call_arguments.delta", delta: "x" })),
+            { type: "response.output_text.delta", output_index: 2, content_index: 0, delta: "He" },
+            { type: "response.output_text.delta", output_index: 2, content_index: 0, delta: "ll" },
+            { type: "response.output_text.delta", output_index: 2, content_index: 0, delta: "o" },
+            { type: "response.output_item.added", output_index: 1, item: { id: "transient-item-id", type: "function_call" } },
+            { type: "response.content_part.added", output_index: 2, content_index: 0, part: { type: "output_text", text: "temporary payload" } },
+            {
+                type: "response.completed",
+                response: {
+                    id: "resp-compact-test",
+                    status: "completed",
+                    model: "deepseek-test",
+                    instructions: "COMPLETED_ONLY_INSTRUCTIONS",
+                    tools: [{ name: "COMPLETED_ONLY_TOOL_SCHEMA" }],
+                    reasoning: "COMPLETED_ONLY_REASONING",
+                    output: [
+                        { type: "reasoning", summary: [{ type: "summary_text", text: "COMPLETED_ONLY_REASONING" }] },
+                        { type: "function_call", call_id: "call-malformed", name: "qq_reply", arguments: malformedArguments },
+                        { type: "message", content: [{ type: "output_text", text: "Hello", annotations: [] }] },
+                    ],
+                    usage: {
+                        input_tokens: 10,
+                        input_tokens_details: { cached_tokens: 3 },
+                        output_tokens: 5,
+                        output_tokens_details: { reasoning_tokens: 2 },
+                        total_tokens: 15,
+                    },
+                },
+            },
+        ];
+        let parserResult: unknown;
+        const request = {
+            ...pluginRequest(),
+            executeTool: async ({ name, arguments: toolArguments }: { name: string; arguments: string }) => {
+                assert.equal(name, "qq_reply");
+                parserResult = parseQqReplyArguments(toolArguments);
+                return { kind: "result" as const, result: { kind: "no_reply" as const } };
+            },
+        };
+        await withResponses([sse(streamEvents)], async () => {
+            const result = await createDeepSeekPlugin({ apiKey: "offline" }).generate(request, options());
+            assert.deepEqual(result, { kind: "no_reply" });
+        });
+
+        assert.equal(parserResult, null, "malformed JSON remains rejected by the qq_reply parser");
+        const all = entries.filter((entry) => entry.level === "all");
+        const summaries = all.filter((entry) => entry.text.includes("[AI:deepseek] stream summary"));
+        assert.equal(summaries.length, 1);
+        const summary = summaries[0]!.text;
+        assert.match(summary, /"events":387/);
+        assert.match(summary, /"reasoningDeltas":350/);
+        assert.match(summary, /"reasoningChars":350/);
+        assert.match(summary, /"outputTextDeltas":3/);
+        assert.match(summary, /"outputTextChars":5/);
+        assert.match(summary, /"toolArgumentDeltas":31/);
+        assert.match(summary, /"toolArgumentChars":31/);
+        assert.match(summary, /"outputItemEvents":1/);
+        assert.doesNotMatch(entries.map((entry) => entry.text).join("\n"), /response\.reasoning_text\.delta|response\.function_call_arguments\.delta|response\.content_part\.added|transient-item-id/);
+        assert.ok(!entries.some((entry) => entry.level === "debug" && entry.text.includes("] event")));
+
+        const completed = all.find((entry) => entry.text.includes("[AI:deepseek] completed"))?.text;
+        assert.ok(completed);
+        assert.match(completed, /resp-compact-test/);
+        assert.match(completed, /"cachedTokens":3/);
+        assert.match(completed, /"reasoningTokens":2/);
+        assert.doesNotMatch(completed, /COMPLETED_ONLY_INSTRUCTIONS|COMPLETED_ONLY_TOOL_SCHEMA|COMPLETED_ONLY_REASONING|保留原始参数/);
+        assert.ok(all.some((entry) => entry.text.includes("final collected text") && entry.text.includes("Hello")));
+        const escapedMalformedArguments = JSON.stringify(malformedArguments).slice(1, -1);
+        assert.ok(all.some((entry) => entry.text.includes("[AI:deepseek] tool call") && entry.text.includes(escapedMalformedArguments)));
     } finally {
         unsubscribe();
         setLogLevel(oldLevel);

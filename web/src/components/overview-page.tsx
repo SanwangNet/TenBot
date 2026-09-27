@@ -25,19 +25,19 @@ export function OverviewPage() {
         <>
             <div className="page-heading">
                 <div>
-                    <div className="eyebrow">CONTROL PLANE / OVERVIEW</div>
+                    <div className="eyebrow">控制中心 / 总览</div>
                     <h1>总览</h1>
-                    <p>查看 TenBot Runtime 当前状态与运行数据。</p>
+                    <p>查看 TenBot 运行时的当前状态与运行数据。</p>
                 </div>
                 <div className="heading-runtime"><span className={`status-dot ${connection === "online" ? "good" : connection === "offline" ? "bad" : "warning"}`} />{connectionText(connection)}</div>
             </div>
 
             <div className="overview-grid">
-                <Panel className="runtime-panel" title="Runtime" icon="01" hint="实时状态">
+                <Panel className="runtime-panel" title="运行时" icon="01" hint="实时状态">
                     <div className="metric-row">
                         <Metric label="QQ 连接" value={status ? connectionLabels[status.qq] : waiting ? "读取中" : "未知"} tone={status ? connectionTone[status.qq] : "muted"} />
-                        <Metric label="Active Reply Cycles" value={status?.activeCycles ?? "—"} />
-                        <Metric label="Context Conversations" value={status?.contextConversations ?? "—"} />
+                        <Metric label="活跃回复轮次" value={status?.activeCycles ?? "—"} />
+                        <Metric label="上下文会话数" value={status?.contextConversations ?? "—"} />
                     </div>
                     <div className="panel-divider" />
                     <div className="detail-list">
@@ -45,58 +45,58 @@ export function OverviewPage() {
                         <Detail label="热重载" value={status?.hotReload ? (status.hotReload.enabled ? "已启用" : "已停用") : "—"} />
                         <Detail label="最近配置加载" value={formatDate(status?.hotReload?.lastSuccessAt)} />
                     </div>
-                    {status?.hotReload?.requiresRestart && <div className="notice warning-notice">QQ 配置已变更，需要重启 Runtime。</div>}
-                    {status?.hotReload?.lastFailure && <div className="notice warning-notice">最近一次热重载失败，Runtime 继续使用旧配置。</div>}
+                    {status?.hotReload?.requiresRestart && <div className="notice warning-notice">QQ 配置已变更，需要重启运行时。</div>}
+                    {status?.hotReload?.lastFailure && <div className="notice warning-notice">最近一次热重载失败，运行时将继续使用旧配置。</div>}
                 </Panel>
 
-                <Panel className="model-panel" title="Main Model" icon="02" hint={status?.provider.configured ? "已配置" : status ? "未配置" : "等待数据"}>
+                <Panel className="model-panel" title="主模型" icon="02" hint={status?.provider.configured ? "已配置" : status ? "未配置" : "等待数据"}>
                     <div className="model-title">
                         <span className="provider-badge">{status?.provider.id === "deepseek" ? "DS" : "GPT"}</span>
-                        <div><strong>{status?.provider.model ?? (waiting ? "读取中" : "—")}</strong><small>{status?.provider.id ?? "当前 Provider"}</small></div>
+                        <div><strong>{status?.provider.model ?? (waiting ? "读取中" : "—")}</strong><small>{status?.provider.id ?? "当前服务商"}</small></div>
                         <span className={`configured-indicator ${status?.provider.configured ? "good" : status ? "bad" : "muted"}`} title={status?.provider.configured ? "已配置" : "未配置"} />
                     </div>
                     <div className="detail-list model-details">
-                        <Detail label="Reasoning" value={status?.provider.reasoningEffort ?? "—"} />
-                        <Detail label="Verbosity" value={status?.provider.verbosity ?? "—"} />
-                        <Detail label="Web Search" value={status ? (status.provider.webSearch ? "可用" : "不可用") : "—"} />
-                        <Detail label="配置状态" value={status ? (status.provider.configured ? "Configured" : "Not configured") : "—"} />
+                        <Detail label="推理强度" value={status?.provider.reasoningEffort ?? "—"} />
+                        <Detail label="输出详细度" value={status?.provider.verbosity ?? "—"} />
+                        <Detail label="联网搜索" value={status ? (status.provider.webSearch ? "可用" : "不可用") : "—"} />
+                        <Detail label="配置状态" value={status ? (status.provider.configured ? "已配置" : "未配置") : "—"} />
                     </div>
                 </Panel>
 
-                <Panel title="Reply Judge" icon="03" hint="回复判断">
+                <Panel title="回复判断" icon="03" hint="模型评估">
                     <div className="large-value overview-judge-model">{config?.replyJudge.model || "未配置"}</div>
                     <div className="detail-list">
-                        <Detail label="Provider" value={config?.replyJudge.provider ?? "未配置"} />
-                        <Detail label="Timeout" value={config ? `${config.replyJudge.timeoutMs} ms` : "—"} />
+                        <Detail label="服务商" value={config?.replyJudge.provider ?? "未配置"} />
+                        <Detail label="超时时间" value={config ? `${config.replyJudge.timeoutMs} 毫秒` : "—"} />
                     </div>
                 </Panel>
 
-                <Panel title="Prompt" icon="04" hint={status?.prompt.provider ?? "活动快照"}>
+                <Panel title="提示词" icon="04" hint={status?.prompt.provider ?? "当前快照"}>
                     <div className="large-value">{status ? `r${status.prompt.revision}` : "—"}</div>
                     <div className="detail-list">
-                        <Detail label="Provider" value={status?.prompt.provider ?? "—"} />
-                        <Detail label="Loaded At" value={formatDate(status?.prompt.loadedAt)} />
-                        <Detail label="Characters" value={status?.prompt.characters?.toLocaleString() ?? "—"} />
-                        <Detail label="Lines" value={status?.prompt.lines?.toLocaleString() ?? "—"} />
+                        <Detail label="服务商" value={status?.prompt.provider ?? "—"} />
+                        <Detail label="加载时间" value={formatDate(status?.prompt.loadedAt)} />
+                        <Detail label="字符数" value={status?.prompt.characters?.toLocaleString() ?? "—"} />
+                        <Detail label="行数" value={status?.prompt.lines?.toLocaleString() ?? "—"} />
                     </div>
                 </Panel>
 
-                <Panel title="Memes" icon="05" hint="本地知识库">
+                <Panel title="梗数据" icon="05" hint="本地知识库">
                     <div className="large-value">{status?.memes.count.toLocaleString() ?? "—"}<span className="large-suffix"> 条</span></div>
                     <div className="detail-list">
-                        <Detail label="Revision" value={status ? `r${status.memes.revision}` : "—"} />
-                        <Detail label="Loaded At" value={formatDate(status?.memes.loadedAt)} />
+                        <Detail label="修订版本" value={status ? `r${status.memes.revision}` : "—"} />
+                        <Detail label="加载时间" value={formatDate(status?.memes.loadedAt)} />
                     </div>
                 </Panel>
 
-                <Panel className="web-panel" title="Web Control" icon="06" hint="HTTP + SSE">
+                <Panel className="web-panel" title="网页控制" icon="06" hint="HTTP + SSE">
                     <div className="control-connection">
                         <span className={`status-dot ${connection === "online" ? "good" : connection === "offline" ? "bad" : "warning"}`} />
                         <strong>{connectionText(connection)}</strong>
                     </div>
                     <div className="detail-list">
-                        <Detail label="SSE Connection" value={connectionText(connection)} />
-                        <Detail label="最近 Runtime Event" value={formatDate(lastRuntimeEventAt)} />
+                        <Detail label="实时事件连接" value={connectionText(connection)} />
+                        <Detail label="最近运行时事件" value={formatDate(lastRuntimeEventAt)} />
                     </div>
                 </Panel>
             </div>

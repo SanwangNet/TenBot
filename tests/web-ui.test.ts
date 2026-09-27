@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createViteServer } from "vite";
 import { ApiError, parseJsonResponse } from "../web/src/api/client.js";
@@ -16,6 +18,7 @@ import {
     settingsPatches,
 } from "../web/src/settings/settings-state.js";
 import { filterLogs, initialLogViewState, logViewReducer, MAX_WEB_LOG_ENTRIES } from "../web/src/components/log-state.js";
+import { LogRows } from "../web/src/components/logs-page.js";
 import type { LogEntry } from "../web/src/api/types.js";
 import { conversationReducer, initialConversationViewState } from "../web/src/conversations/conversation-state.js";
 import { addNotice, isProminentProviderError } from "../web/src/ui/feedback-state.js";
@@ -54,7 +57,7 @@ test("API JSON response parser returns successful payloads and reports safe HTTP
     assert.deepEqual(parseJsonResponse<{ ok: boolean }>(200, "{\"ok\":true}"), { ok: true });
     assert.throws(() => parseJsonResponse(404, "{\"error\":{\"message\":\"Not found\"}}"), (error: unknown) =>
         error instanceof ApiError && error.status === 404 && error.message === "Not found");
-    assert.throws(() => parseJsonResponse(200, "not json"), /invalid JSON/i);
+    assert.throws(() => parseJsonResponse(200, "not json"), /无效 JSON/);
 });
 
 test("SSE message parser decodes JSON and rejects malformed frames", () => {
@@ -229,6 +232,18 @@ test("log filtering matches level and case-insensitive text; follow state counts
     state = logViewReducer(state, { type: "scroll-position", atBottom: true });
     assert.equal(state.follow, true);
     assert.equal(state.unseenCount, 0);
+});
+
+test("log rows render only the newest 500 matches from the complete 5,000-row cache", () => {
+    const entries: LogEntry[] = Array.from({ length: MAX_WEB_LOG_ENTRIES }, (_, index) => ({
+        timestamp: String(index), level: "info", text: `line ${index}`,
+    }));
+    assert.equal(filterLogs(entries, "info", "line").length, MAX_WEB_LOG_ENTRIES);
+    const html = renderToStaticMarkup(createElement(LogRows, { entries }));
+    assert.equal((html.match(/class="log-row /g) ?? []).length, 500);
+    assert.match(html, /line 4500/);
+    assert.match(html, /line 4999/);
+    assert.doesNotMatch(html, /line 4499/);
 });
 
 test("Vite API proxy streams SSE frames from the backend", async () => {

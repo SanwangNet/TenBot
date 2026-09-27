@@ -39,6 +39,28 @@ function providerError(provider: string, error: unknown, signal: AbortSignal): E
     return new ModelProviderError(provider, error);
 }
 
+function summarizeCompletedResponse(response: any): Record<string, unknown> {
+    const output = Array.isArray(response?.output) ? response.output : [];
+    const usage = response?.usage ?? {};
+    return {
+        id: response?.id,
+        status: response?.status,
+        model: response?.model,
+        outputTypes: output.map((item: any) => item?.type ?? "unknown"),
+        functionCalls: output.filter((item: any) => item?.type === "function_call").length,
+        messages: output.filter((item: any) => item?.type === "message").length,
+        usage: {
+            inputTokens: usage.input_tokens,
+            cachedTokens: usage.input_tokens_details?.cached_tokens,
+            outputTokens: usage.output_tokens,
+            reasoningTokens: usage.output_tokens_details?.reasoning_tokens,
+            totalTokens: usage.total_tokens,
+        },
+        createdAt: response?.created_at,
+        completedAt: response?.completed_at,
+    };
+}
+
 /** Shared low-level adapter for built-in plugins backed by Responses-compatible APIs. */
 export function createResponsesModelPlugin(config: ResponsesPluginConfig): ModelPlugin {
     let client: OpenAI | undefined;
@@ -115,6 +137,19 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                 }
 
                 await options.onEvent?.({ type: "streamStarted", elapsedMs: Date.now() - startedAt });
+                const streamStartedAt = Date.now();
+                const streamStats = {
+                    events: 0,
+                    reasoningDeltas: 0,
+                    reasoningChars: 0,
+                    outputTextDeltas: 0,
+                    outputTextChars: 0,
+                    toolArgumentDeltas: 0,
+                    toolArgumentChars: 0,
+                    webSearchEvents: 0,
+                    outputItemEvents: 0,
+                };
+                let terminalEvent = "ended";
                 type StreamTextPart = { outputIndex: number; contentIndex: number; text: string; citations: UrlCitation[] };
                 const textParts = new Map<string, StreamTextPart>();
                 let unindexedOutput = "";
@@ -136,8 +171,21 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                 try {
                     for await (const event of stream) {
                         if (options.signal.aborted) throw new ModelAbortedError();
-                        logger.debug(`[AI:${config.id}] event`, event.type);
-                        logger.all(`[AI:${config.id}] event`, event);
+                        streamStats.events++;
+                        if (event.type === "response.reasoning_text.delta") {
+                            streamStats.reasoningDeltas++;
+                            if (typeof event.delta === "string") streamStats.reasoningChars += event.delta.length;
+                        }
+                        if (event.type === "response.output_text.delta") {
+                            streamStats.outputTextDeltas++;
+                            if (typeof event.delta === "string") streamStats.outputTextChars += event.delta.length;
+                        }
+                        if (event.type === "response.function_call_arguments.delta") {
+                            streamStats.toolArgumentDeltas++;
+                            if (typeof event.delta === "string") streamStats.toolArgumentChars += event.delta.length;
+                        }
+                        if (event.type.startsWith("response.web_search_call.")) streamStats.webSearchEvents++;
+                        if (event.type.startsWith("response.output_item.")) streamStats.outputItemEvents++;
 
                         if (config.useBuiltInWebSearch && !searchNoticeSent &&
                             ["response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed"].includes(event.type)) {
@@ -162,8 +210,9 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                             }
                         }
                         if (event.type === "response.completed") {
+                            terminalEvent = "completed";
                             completedResponse = event.response;
-                            logger.all(`[AI:${config.id}] completed response`, event.response);
+                            logger.all(`[AI:${config.id}] completed`, summarizeCompletedResponse(event.response));
                             for (const [outputIndex, item] of event.response.output.entries()) {
                                 if (item.type !== "message") continue;
                                 for (const [contentIndex, content] of item.content.entries()) {
@@ -178,8 +227,18 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                             }
                             break;
                         }
-                        if (event.type === "response.failed") throw new AiResponseFailure(event.response.error);
+                        if (event.type === "response.failed") {
+                            terminalEvent = "failed";
+                            logger.all(`[AI:${config.id}] response failed`, event.response?.error);
+                            throw new AiResponseFailure(event.response.error);
+                        }
                         if (event.type === "response.incomplete") {
+                            terminalEvent = "incomplete";
+                            logger.all(`[AI:${config.id}] response incomplete`, {
+                                id: event.response?.id,
+                                status: event.response?.status,
+                                incompleteDetails: event.response?.incomplete_details,
+                            });
                             throw new TenBotError("M:A_MG_IRS", { safeDetails: { provider: config.id } });
                         }
                     }
@@ -188,6 +247,12 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                 } finally {
                     options.signal.removeEventListener("abort", handleAbort);
                     if (options.signal.aborted) abortStream();
+                    if (options.signal.aborted) terminalEvent = "aborted";
+                    logger.all(`[AI:${config.id}] stream summary`, {
+                        ...streamStats,
+                        terminal: terminalEvent,
+                        elapsedMs: Date.now() - streamStartedAt,
+                    });
                 }
 
                 if (options.signal.aborted) throw new ModelAbortedError();

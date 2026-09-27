@@ -117,7 +117,7 @@ export function MemeLibraryPage() {
 
     return <section className="meme-library-page">
         <div className="page-heading">
-            <div><div className="eyebrow">LOCAL RESOURCES / MEMES</div><h1>表情包</h1><p>管理主模型可选择并由 QQ 单独发送的本地图片资源。</p></div>
+            <div><div className="eyebrow">本地资源 / 表情包</div><h1>表情包</h1><p>管理主模型可选择并由 QQ 单独发送的本地图片资源。</p></div>
             <button className="button button-primary meme-add-button" type="button" onClick={() => setOpen(true)}>＋ 添加表情包</button>
         </div>
         {error && <div className="settings-feedback error" role="alert">{error}<button className="button button-secondary" type="button" onClick={() => void refresh().catch(() => setError("无法读取本地表情包库"))}>重试</button></div>}
@@ -132,7 +132,7 @@ export function MemeLibraryPage() {
 
         {open && <div className="meme-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDialog(); }}>
             <section className="meme-dialog" role="dialog" aria-modal="true" aria-labelledby="meme-dialog-title">
-                <header><div><div className="eyebrow">LOCAL IMAGE UPLOAD</div><h2 id="meme-dialog-title">添加表情包</h2></div><button className="meme-dialog-close" type="button" disabled={busy} aria-label="关闭" onClick={closeDialog}>×</button></header>
+                <header><div><div className="eyebrow">本地图片上传</div><h2 id="meme-dialog-title">添加表情包</h2></div><button className="meme-dialog-close" type="button" disabled={busy} aria-label="关闭" onClick={closeDialog}>×</button></header>
                 <label className={`meme-dropzone${dragging ? " dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); addFiles(event.dataTransfer.files); }}>
                     <input ref={fileInput} type="file" accept="image/jpeg,image/png,image/gif,image/webp" multiple onChange={(event) => { if (event.currentTarget.files) addFiles(event.currentTarget.files); event.currentTarget.value = ""; }} />
                     <strong>拖入图片，或点击选择文件</strong><span>支持 JPEG、PNG、GIF、WebP；可一次选择多张，单张最大 16 MB。</span>

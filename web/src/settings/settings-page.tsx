@@ -84,7 +84,7 @@ export function SettingsPage() {
     if (!form) {
         return <section className="settings-page">
             <PageHeading />
-            <div className="panel settings-loading">{config ? "正在载入设置…" : "无法连接 TenBot Runtime，设置暂不可用。"}</div>
+            <div className="panel settings-loading">{config ? "正在载入设置…" : "无法连接 TenBot 运行时，设置暂不可用。"}</div>
         </section>;
     }
 
@@ -109,7 +109,7 @@ export function SettingsPage() {
                 </div>
                 <div className="preset-fields" key={form.values.aiProvider}>
                     {form.values.aiProvider === "gpt" ? <div className="settings-grid settings-grid-preset">
-                        <SettingField label="Model" id="setting-gpt-model" error={fieldError("gpt.model")}>
+                        <SettingField label="模型" id="setting-gpt-model" error={fieldError("gpt.model")}>
                             <input id="setting-gpt-model" type="text" value={form.values["gpt.model"]} disabled={saving} aria-invalid={Boolean(fieldError("gpt.model"))} onChange={(event) => edit("gpt.model", event.currentTarget.value)} />
                         </SettingField>
                         <SettingField label="推理强度" id="setting-gpt-reasoning">
@@ -123,7 +123,7 @@ export function SettingsPage() {
                             </select>
                         </SettingField>
                     </div> : <div className="settings-grid settings-grid-preset">
-                        <SettingField label="Model" id="setting-deepseek-model" error={fieldError("deepseek.model")}>
+                        <SettingField label="模型" id="setting-deepseek-model" error={fieldError("deepseek.model")}>
                             <input id="setting-deepseek-model" type="text" value={form.values["deepseek.model"]} disabled={saving} aria-invalid={Boolean(fieldError("deepseek.model"))} onChange={(event) => edit("deepseek.model", event.currentTarget.value)} />
                         </SettingField>
                         <SettingField label="推理强度" id="setting-deepseek-reasoning">
@@ -137,17 +137,17 @@ export function SettingsPage() {
 
             <div className="settings-grid settings-grid-lower">
                 <section className="panel settings-panel">
-                    <PanelHeading index="02" title="回复判断" hint="Judge 请求模型与超时设置" />
-                    <SettingField label="Model" id="setting-judge-model" error={fieldError("replyJudge.model")}>
+                    <PanelHeading index="02" title="回复判断" hint="评估模型与超时设置" />
+                    <SettingField label="模型" id="setting-judge-model" error={fieldError("replyJudge.model")}>
                         <input id="setting-judge-model" type="text" value={form.values["replyJudge.model"]} disabled={saving} aria-invalid={Boolean(fieldError("replyJudge.model"))} onChange={(event) => edit("replyJudge.model", event.currentTarget.value)} />
                     </SettingField>
-                    <SettingField label="超时" id="setting-judge-timeout" hint="单位：ms；允许范围 1000–30000。" error={fieldError("replyJudge.timeoutMs")}>
+                    <SettingField label="超时" id="setting-judge-timeout" hint="单位：毫秒；允许范围 1000–30000。" error={fieldError("replyJudge.timeoutMs")}>
                         <input id="setting-judge-timeout" type="number" min="1000" max="30000" step="1" value={form.values["replyJudge.timeoutMs"]} disabled={saving} aria-invalid={Boolean(fieldError("replyJudge.timeoutMs"))} onChange={(event) => edit("replyJudge.timeoutMs", event.currentTarget.value)} />
                     </SettingField>
                     <div className="setting-toggle-row">
                         <div className="setting-toggle-copy">
-                            <label htmlFor="setting-judge-ipo-fallback">Judge 异常时交由主模型判断</label>
-                            <span id="setting-judge-ipo-fallback-hint">当 Judge 返回非法协议输出时交给主模型自行判断；仅处理非法输出，不处理网络或 Provider 请求失败。</span>
+                            <label htmlFor="setting-judge-ipo-fallback">评估模型异常时交由主模型判断</label>
+                            <span id="setting-judge-ipo-fallback-hint">当评估模型返回无效协议输出时交给主模型自行判断；仅处理无效输出，不处理网络或服务商请求失败。</span>
                         </div>
                         <input
                             id="setting-judge-ipo-fallback"
@@ -165,13 +165,13 @@ export function SettingsPage() {
                 </section>
 
                 <section className="panel settings-panel">
-                    <PanelHeading index="03" title="运行" hint="保存后由 Runtime 热重载应用" />
+                    <PanelHeading index="03" title="运行" hint="保存后由运行时热重载应用" />
                     <SettingField label="日志级别" id="setting-log-level" hint={form.values.logLevel === "all" ? "记录原始请求/响应，可能包含聊天与身份数据，仅建议排障时开启。" : undefined}>
                         <select id="setting-log-level" value={form.values.logLevel} disabled={saving} onChange={(event) => edit("logLevel", event.currentTarget.value as SettingsValues["logLevel"])}>
                             {logLevelOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                         </select>
                     </SettingField>
-                    <SettingField label="表情包发送大小" id="setting-meme-send-size" hint="Bot 实际发送时的最大边长；不会修改本地原始文件。">
+                    <SettingField label="表情包发送大小" id="setting-meme-send-size" hint="机器人实际发送时的最大边长；不会修改本地原始文件。">
                         <select id="setting-meme-send-size" value={form.values.memeSendMaxEdge} disabled={saving} onChange={(event) => edit("memeSendMaxEdge", event.currentTarget.value)}>
                             <option value="original">原始尺寸</option>
                             {memeSendSizeOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -192,7 +192,7 @@ export function SettingsPage() {
                             onChange={(event) => edit("memeSendMaxEdge", event.currentTarget.value)}
                         />
                     </SettingField>
-                    <SettingField label="Bot Loop Guard · maxCycles" id="setting-max-cycles" hint="最小值为 1；后端进行最终校验。" error={fieldError("botLoopGuard.maxCycles")}>
+                    <SettingField label="机器人循环保护 · 最大轮次" id="setting-max-cycles" hint="最小值为 1；后端进行最终校验。" error={fieldError("botLoopGuard.maxCycles")}>
                         <input id="setting-max-cycles" type="number" min="1" step="1" value={form.values["botLoopGuard.maxCycles"]} disabled={saving} aria-invalid={Boolean(fieldError("botLoopGuard.maxCycles"))} onChange={(event) => edit("botLoopGuard.maxCycles", event.currentTarget.value)} />
                     </SettingField>
                 </section>
@@ -205,13 +205,13 @@ export function SettingsPage() {
                 </button>
             </div>
         </form>
-        <p className="settings-note">密钥与私密连接信息不会通过 Web 设置显示或修改。</p>
+        <p className="settings-note">密钥与私密连接信息不会通过网页设置显示或修改。</p>
     </section>;
 }
 
 function PageHeading() {
     return <div className="page-heading">
-        <div><div className="eyebrow">TENBOT CONTROL / CONFIG</div><h1>设置</h1><p>管理主模型、回复判断和 Runtime 的公开配置项。</p></div>
+        <div><div className="eyebrow">TENBOT 控制台 / 配置</div><h1>设置</h1><p>管理主模型、回复判断和运行时的公开配置项。</p></div>
     </div>;
 }
 

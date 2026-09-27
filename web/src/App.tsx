@@ -67,7 +67,7 @@ export function App() {
             <aside className="sidebar" aria-label="主导航">
                 <div className="brand">
                     <span className="brand-mark" aria-hidden="true">T</span>
-                    <span className="brand-copy"><strong>TenBot</strong><small>WEB CONTROL</small></span>
+                    <span className="brand-copy"><strong>TenBot</strong><small>网页控制台</small></span>
                 </div>
                 <div className="nav-caption">控制台</div>
                 <nav className="navigation">
@@ -87,7 +87,7 @@ export function App() {
                 </nav>
                 <div className="sidebar-footer">
                     <span className="footer-dot" />
-                    <span>TenBot Runtime Control</span>
+                    <span>TenBot 运行时控制</span>
                 </div>
             </aside>
 
@@ -100,7 +100,7 @@ export function App() {
                             <span className="model-indicator" />
                             <span>{status ? `${status.provider.id} / ${status.provider.model}` : "主模型读取中"}</span>
                         </span>
-                        <StatusPill label="Runtime" value={connectionLabels[connection]} tone={connectionTone(connection)} />
+                        <StatusPill label="运行时" value={connectionLabels[connection]} tone={connectionTone(connection)} />
                     </div>
                 </header>
 

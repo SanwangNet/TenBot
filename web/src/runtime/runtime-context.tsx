@@ -3,7 +3,7 @@ import { apiClient } from "../api/client.js";
 import { connectRuntimeEvents } from "../api/events.js";
 import type { PublicConfig } from "../api/types.js";
 import { initialRuntimeState, runtimeReducer, type RuntimeState } from "./runtime-state.js";
-import { initialLogViewState, logViewReducer, type LogViewAction, type LogViewState } from "../components/log-state.js";
+import { initialLogViewState, LogBatchQueue, logViewReducer, type LogViewAction, type LogViewState } from "../components/log-state.js";
 import { conversationReducer, initialConversationViewState, type ConversationAction, type ConversationViewState } from "../conversations/conversation-state.js";
 import { useFeedback } from "../ui/feedback.js";
 import { isProminentProviderError } from "../ui/feedback-state.js";
@@ -27,10 +27,24 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     const [state, dispatch] = useReducer(runtimeReducer, initialRuntimeState);
     const [logState, setLogState] = useState<LogViewState>(() => ({ ...initialLogViewState, entries: [] }));
     const logStateRef = useRef(logState);
+    const logBatcherRef = useRef<LogBatchQueue | null>(null);
     const dispatchLog = useCallback((action: LogViewAction) => {
         // Apply the bounded in-place canonical-row update once in the SSE callback.
         // React StrictMode can replay reducer/updater functions, so this mutable hot path
         // deliberately runs outside useReducer/setState updater callbacks.
+        if (action.type === "append") {
+            if (!logBatcherRef.current) {
+                logBatcherRef.current = new LogBatchQueue((entries) => {
+                    const next = logViewReducer(logStateRef.current, { type: "append-batch", entries });
+                    logStateRef.current = next;
+                    setLogState(next);
+                });
+            }
+            logBatcherRef.current.enqueue(action.entry);
+            return;
+        }
+        if (action.type === "clear" || action.type === "snapshot") logBatcherRef.current?.clear();
+        else if (action.type === "set-follow" || action.type === "scroll-position") logBatcherRef.current?.flushNow();
         const next = logViewReducer(logStateRef.current, action);
         logStateRef.current = next;
         setLogState(next);
@@ -63,13 +77,14 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         ]).then(([status, config]) => dispatch({ type: "bootstrap-success", status, config }))
             .catch(() => {
                 if (!controller.signal.aborted) {
-                    dispatch({ type: "bootstrap-failure", message: "无法连接 TenBot Runtime" });
+                    dispatch({ type: "bootstrap-failure", message: "无法连接 TenBot 运行时" });
                 }
             });
 
         return () => {
             controller.abort();
             closeEvents();
+            logBatcherRef.current?.clear();
         };
     }, [notify]);
 

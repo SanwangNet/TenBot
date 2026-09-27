@@ -33,7 +33,7 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
             {notices.map((notice) => <div className={`toast toast-${notice.tone}`} key={notice.id} role={notice.tone === "error" ? "alert" : "status"}>
                 <span className="toast-symbol">{notice.tone === "success" ? "✓" : notice.tone === "error" ? "!" : "•"}</span>
                 <span>{notice.message}{notice.count > 1 && <strong> ×{notice.count}</strong>}</span>
-                {notice.details && <button type="button" onClick={() => void confirm({ title: "Provider Error", message: notice.details!.message, details: notice.details, confirmLabel: "关闭" })}>详情</button>}
+                {notice.details && <button type="button" onClick={() => void confirm({ title: "服务商错误", message: notice.details!.message, details: notice.details, confirmLabel: "关闭" })}>详情</button>}
                 <button type="button" aria-label="关闭提示" onClick={() => setNotices((current) => current.filter((item) => item.id !== notice.id))}>×</button>
             </div>)}
         </div>
@@ -41,9 +41,9 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
             <section className="dialog" role="dialog" aria-modal="true" aria-label={dialog.title}>
                 <h2>{dialog.title}</h2><p>{dialog.message}</p>
                 {dialog.details && <dl className="dialog-details">
-                    <dt>Provider</dt><dd>{dialog.details.provider}</dd><dt>Model</dt><dd>{dialog.details.model}</dd>
-                    <dt>TenBot Code</dt><dd>{dialog.details.tenbotCode}</dd><dt>HTTP</dt><dd>{dialog.details.status ?? "—"}</dd>
-                    <dt>Details</dt><dd>{dialog.details.details ?? "—"}</dd>
+                    <dt>服务商</dt><dd>{dialog.details.provider}</dd><dt>模型</dt><dd>{dialog.details.model}</dd>
+                    <dt>TenBot 错误码</dt><dd>{dialog.details.tenbotCode}</dd><dt>HTTP 状态码</dt><dd>{dialog.details.status ?? "—"}</dd>
+                    <dt>详细信息</dt><dd>{dialog.details.details ?? "—"}</dd>
                 </dl>}
                 <div className="dialog-actions">
                     {!dialog.details && <button className="button button-secondary" type="button" onClick={() => closeDialog(false)}>取消</button>}

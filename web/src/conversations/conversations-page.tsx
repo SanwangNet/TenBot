@@ -36,7 +36,7 @@ export function ConversationsPage() {
     useEffect(() => { if (follow && timelineRef.current) timelineRef.current.scrollTop = timelineRef.current.scrollHeight; }, [items?.length, selected, follow]);
     useEffect(() => { if (!selected && state.summaries.length) setSelected(state.summaries[0]!.conversationId); }, [selected, state.summaries]);
     return <section className="conversations-page">
-        <div className="page-heading"><div><div className="eyebrow">CONTROL PLANE / TIMELINE</div><h1>对话</h1><p>Runtime 当前保留的会话与消息时间线。</p></div><span className="page-count">{state.summaries.length} 个会话</span></div>
+        <div className="page-heading"><div><div className="eyebrow">控制中心 / 对话时间线</div><h1>对话</h1><p>运行时当前保留的会话与消息时间线。</p></div><span className="page-count">{state.summaries.length} 个会话</span></div>
         {error && <div className="settings-feedback error" role="alert">{error}</div>}
         <div className="conversation-layout panel">
             <aside className="conversation-list" aria-label="会话列表">
@@ -60,7 +60,7 @@ export function ConversationsPage() {
 }
 
 function TimelineItem({ item }: { item: ConversationItem }) {
-    if (item.type === "ai-attempt") return <div className={`attempt-row attempt-${item.status}`}><span>AI Attempt</span><strong>{attemptLabels[item.status]}{item.failureStage ? ` · ${item.failureStage}` : ""}</strong><time>{formatTime(item.timestamp)}</time></div>;
+    if (item.type === "ai-attempt") return <div className={`attempt-row attempt-${item.status}`}><span>AI 请求</span><strong>{attemptLabels[item.status]}{item.failureStage ? ` · ${item.failureStage}` : ""}</strong><time>{formatTime(item.timestamp)}</time></div>;
     const bot = item.type === "ai-reply";
     return <div className={`message-row ${bot ? "bot-message" : "peer-message"}`}>
         <div className="message-meta"><strong>{bot ? "TenBot" : item.displayName}</strong><time>{formatTime(item.timestamp)}</time></div>

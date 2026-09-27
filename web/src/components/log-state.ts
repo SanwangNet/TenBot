@@ -1,6 +1,7 @@
 import type { LogEntry } from "../api/types.js";
 
 export const MAX_WEB_LOG_ENTRIES = 5_000;
+export const MAX_RENDERED_LOG_ENTRIES = 500;
 export type LogLevelFilter = "all" | "all-level" | Exclude<LogEntry["level"], "all">;
 
 export interface LogViewState {
@@ -15,6 +16,7 @@ export const initialLogViewState: LogViewState = { entries: [], rowsRevision: 0,
 
 export type LogViewAction =
     | { type: "append"; entry: LogEntry }
+    | { type: "append-batch"; entries: LogEntry[] }
     | { type: "snapshot"; entries: LogEntry[] }
     | { type: "clear" }
     | { type: "set-follow"; follow: boolean }
@@ -22,20 +24,8 @@ export type LogViewAction =
 
 export function logViewReducer(state: LogViewState, action: LogViewAction): LogViewState {
     switch (action.type) {
-        case "append": {
-            const last = state.entries.at(-1);
-            if (last?.rowId && last.rowId === action.entry.rowId) {
-                Object.assign(last, action.entry);
-                return { ...state };
-            }
-            state.entries.push(action.entry);
-            if (state.entries.length > MAX_WEB_LOG_ENTRIES) state.entries.shift();
-            return {
-                ...state,
-                rowsRevision: state.rowsRevision + 1,
-                unseenCount: state.follow ? 0 : state.unseenCount + 1,
-            };
-        }
+        case "append": return appendLogBatch(state, [action.entry]);
+        case "append-batch": return appendLogBatch(state, action.entries);
         case "snapshot":
             return { ...state, entries: action.entries.slice(-MAX_WEB_LOG_ENTRIES), rowsRevision: state.rowsRevision + 1 };
         case "clear":
@@ -47,6 +37,71 @@ export function logViewReducer(state: LogViewState, action: LogViewAction): LogV
         default:
             return state;
     }
+}
+
+function appendLogBatch(state: LogViewState, entries: readonly LogEntry[]): LogViewState {
+    if (!entries.length) return state;
+    let appended = 0;
+    for (const entry of entries) {
+        const last = state.entries.at(-1);
+        if (last?.rowId && last.rowId === entry.rowId) {
+            Object.assign(last, entry);
+            continue;
+        }
+        state.entries.push(entry);
+        appended++;
+    }
+    const excess = state.entries.length - MAX_WEB_LOG_ENTRIES;
+    if (excess > 0) state.entries.splice(0, excess);
+    return {
+        ...state,
+        rowsRevision: state.rowsRevision + (appended > 0 ? 1 : 0),
+        unseenCount: state.follow ? 0 : state.unseenCount + appended,
+    };
+}
+
+export class LogBatchQueue {
+    private readonly pending: LogEntry[] = [];
+    private scheduledHandle: unknown;
+    private hasScheduled = false;
+    private generation = 0;
+
+    constructor(
+        private readonly flush: (entries: LogEntry[]) => void,
+        private readonly delayMs = 30,
+        private readonly schedule: (callback: () => void, delayMs: number) => unknown = (callback, delay) => setTimeout(callback, delay),
+        private readonly cancel: (handle: unknown) => void = (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    ) {}
+
+    enqueue(entry: LogEntry): void {
+        this.pending.push(entry);
+        if (this.hasScheduled) return;
+        this.hasScheduled = true;
+        const generation = this.generation;
+        this.scheduledHandle = this.schedule(() => {
+            if (generation !== this.generation) return;
+            this.hasScheduled = false;
+            const batch = this.pending.splice(0);
+            if (batch.length) this.flush(batch);
+        }, this.delayMs);
+    }
+
+    flushNow(): void {
+        this.generation++;
+        if (this.hasScheduled) this.cancel(this.scheduledHandle);
+        this.hasScheduled = false;
+        const batch = this.pending.splice(0);
+        if (batch.length) this.flush(batch);
+    }
+
+    clear(): void {
+        this.generation++;
+        this.pending.length = 0;
+        if (this.hasScheduled) this.cancel(this.scheduledHandle);
+        this.hasScheduled = false;
+    }
+
+    dispose(): void { this.clear(); }
 }
 
 export function filterLogs(entries: readonly LogEntry[], level: LogLevelFilter, query: string): LogEntry[] {

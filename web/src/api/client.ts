@@ -28,8 +28,8 @@ export function parseJsonResponse<T>(status: number, body: string): T {
     try { parsed = JSON.parse(body) as unknown; }
     catch {
         throw new ApiError(status >= 200 && status < 300
-            ? "TenBot Runtime returned invalid JSON"
-            : `Request failed (HTTP ${status})`, status);
+            ? "TenBot 运行时返回了无效 JSON"
+            : `请求失败（HTTP ${status}）`, status);
     }
 
     if (status < 200 || status >= 300) {
@@ -37,7 +37,7 @@ export function parseJsonResponse<T>(status: number, body: string): T {
             typeof parsed.error === "object" && parsed.error !== null && "message" in parsed.error &&
             typeof parsed.error.message === "string"
             ? parsed.error.message
-            : `Request failed (HTTP ${status})`;
+            : `请求失败（HTTP ${status}）`;
         throw new ApiError(message, status);
     }
     return parsed as T;
@@ -48,7 +48,7 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
     try { response = await fetch(path, { method: "GET", headers: { Accept: "application/json" }, signal }); }
     catch (cause) {
         if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
-        throw new ApiError("Unable to connect to TenBot Runtime");
+        throw new ApiError("无法连接到 TenBot 运行时");
     }
     return parseJsonResponse<T>(response.status, await response.text());
 }
@@ -64,7 +64,7 @@ async function sendJson<T>(path: string, method: "PATCH" | "POST" | "PUT" | "DEL
         });
     } catch (cause) {
         if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
-        throw new ApiError("Unable to connect to TenBot Runtime");
+        throw new ApiError("无法连接到 TenBot 运行时");
     }
     return parseJsonResponse<T>(response.status, await response.text());
 }

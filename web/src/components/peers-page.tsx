@@ -33,7 +33,7 @@ export function PeersPage() {
         finally { setBusyId(null); }
     }
     return <section className="peers-page">
-        <div className="page-heading"><div><div className="eyebrow">CONTROL PLANE / PEERS</div><h1>自动账号</h1><p>管理已登记账号，查看近期出现的账号与已知成员。</p></div></div>
+        <div className="page-heading"><div><div className="eyebrow">控制中心 / 自动账号</div><h1>自动账号</h1><p>管理已登记账号，查看近期出现的账号与已知成员。</p></div></div>
         {error && <div className="settings-feedback error" role="alert">{error}<button className="button button-secondary" onClick={() => void refresh()}>重试</button></div>}
         <div className="peers-grid">
             <section className="panel"><div className="panel-heading"><div className="panel-title"><span className="panel-index">01</span><h2>已登记自动账号</h2></div><span className="panel-hint">{directory.registered.length} 个</span></div>
@@ -43,13 +43,13 @@ export function PeersPage() {
                 {directory.recent.length ? directory.recent.map((peer) => <PeerRow key={peer.id} peer={peer} action="add" busy={busyId === peer.id} onAction={() => void mutate("add", peer)} />) : <p className="empty-message">暂无最近账号</p>}
             </section>
         </div>
-        <section className="panel known-panel"><div className="panel-heading"><div className="panel-title"><span className="panel-index">03</span><h2>Known Members</h2></div><span className="panel-hint">只读 · {directory.known.length} 位</span></div>
+        <section className="panel known-panel"><div className="panel-heading"><div className="panel-title"><span className="panel-index">03</span><h2>已知成员</h2></div><span className="panel-hint">只读 · {directory.known.length} 位</span></div>
             {directory.known.length ? <div className="known-grid">{directory.known.map((member) => <div className="known-row" key={member.id}><strong>{member.displayName}</strong><code>{member.displayId}</code><span>{member.groupCount} 个群 · {new Date(member.lastSeenAt).toLocaleString("zh-CN")}</span></div>)}</div> : <p className="empty-message">暂无已知成员</p>}
         </section>
     </section>;
 }
 
 function PeerRow({ peer, action, busy, onAction }: { peer: AutomatedPeerSummary; action: "add" | "remove"; busy: boolean; onAction(): void }) {
-    return <div className="peer-row"><div><strong>{peer.displayName}</strong><span><code>{peer.displayId}</code>{peer.platformBotHint ? " · 平台 Bot" : ""}{peer.lastSeenAt ? ` · ${new Date(peer.lastSeenAt).toLocaleString("zh-CN")}` : ""}</span></div>
+     return <div className="peer-row"><div><strong>{peer.displayName}</strong><span><code>{peer.displayId}</code>{peer.platformBotHint ? " · 平台机器人" : ""}{peer.lastSeenAt ? ` · ${new Date(peer.lastSeenAt).toLocaleString("zh-CN")}` : ""}</span></div>
         <button className={`button ${action === "add" ? "button-primary" : "button-secondary"}`} disabled={busy} type="button" onClick={onAction}>{busy ? "处理中…" : action === "add" ? "添加" : "移除"}</button></div>;
 }
