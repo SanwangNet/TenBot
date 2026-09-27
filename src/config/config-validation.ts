@@ -14,6 +14,7 @@ export const DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES = 4;
 export const DEFAULT_REPLY_JUDGE_TIMEOUT_MS = 5_000;
 export const DEFAULT_REPLY_JUDGE_IPO_FALLBACK_TO_MAIN = true;
 export const DEFAULT_REPLY_JUDGE_TURN_WAIT_MS = 20_000;
+export const DEFAULT_MEME_SEND_MAX_EDGE = 160;
 export const DEFAULT_FRONT_MODE: FrontMode = "legacy";
 export const DEFAULT_WEB_HOST = "127.0.0.1";
 export const DEFAULT_WEB_PORT = 3000;
@@ -21,6 +22,8 @@ const MIN_REPLY_JUDGE_TIMEOUT_MS = 1_000;
 const MAX_REPLY_JUDGE_TIMEOUT_MS = 30_000;
 const MIN_REPLY_JUDGE_TURN_WAIT_MS = 1_000;
 const MAX_REPLY_JUDGE_TURN_WAIT_MS = 60_000;
+const MIN_MEME_SEND_MAX_EDGE = 32;
+const MAX_MEME_SEND_MAX_EDGE = 1_024;
 
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh"];
 const VERBOSITIES: readonly ModelVerbosity[] = ["low", "medium", "high"];
@@ -87,6 +90,18 @@ export function parseWebPort(value: string | undefined): number {
 export function parseLogLevel(value: string | undefined): LogLevel {
     const normalized = value?.trim().toLowerCase();
     return LOG_LEVELS.includes(normalized as LogLevel) ? normalized as LogLevel : "info";
+}
+
+function parseMemeSendMaxEdge(value: string | undefined): number | null {
+    if (value === undefined || value.trim() === "") return DEFAULT_MEME_SEND_MAX_EDGE;
+    if (value.trim().toLowerCase() === "original") return null;
+    const normalized = value.trim();
+    if (!/^\d+$/.test(normalized)) throw new Error("MEME_SEND_MAX_EDGE must be original or an integer between 32 and 1024");
+    const edge = Number(normalized);
+    if (!Number.isSafeInteger(edge) || edge < MIN_MEME_SEND_MAX_EDGE || edge > MAX_MEME_SEND_MAX_EDGE) {
+        throw new Error("MEME_SEND_MAX_EDGE must be original or an integer between 32 and 1024");
+    }
+    return edge;
 }
 
 export function parseReasoningEffort(value: string | undefined, fallback: ReasoningEffort): ReasoningEffort {
@@ -179,6 +194,7 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     return {
         frontMode,
         botAdminIds: parseBotAdminIds(env.BOT_ADMIN_IDS),
+        memeSendMaxEdge: parseMemeSendMaxEdge(env.MEME_SEND_MAX_EDGE),
         qq: {
             appId: env.QQBOT_APP_ID,
             appSecret: env.QQBOT_APP_SECRET,
@@ -212,6 +228,7 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 export function toPublicConfig(config: AppConfig): PublicConfig {
     return {
         aiProvider: config.ai.provider,
+        memeSendMaxEdge: config.memeSendMaxEdge,
         replyJudge: {
             model: config.replyJudge.model ?? "",
             timeoutMs: config.replyJudge.timeoutMs,
@@ -243,6 +260,11 @@ export function validatePublicConfigPatch(patch: PublicConfigPatch): string {
         case "aiProvider":
             if (patch.value !== "gpt" && patch.value !== "deepseek") throw new Error("模型提供商配置无效");
             return "AI_PROVIDER";
+        case "memeSendMaxEdge":
+            if (patch.value !== null && (!Number.isSafeInteger(patch.value) || patch.value < MIN_MEME_SEND_MAX_EDGE || patch.value > MAX_MEME_SEND_MAX_EDGE)) {
+                throw new Error("表情包发送最大边长必须选择原始尺寸或 32 到 1024 之间的整数");
+            }
+            return "MEME_SEND_MAX_EDGE";
         case "gpt.model":
         case "deepseek.model":
         case "replyJudge.model": {
@@ -329,6 +351,8 @@ export function parsePublicConfigPatch(value: unknown): PublicConfigPatch | unde
             return typeof patchValue === "number" ? { field, value: patchValue } as PublicConfigPatch : undefined;
         case "replyJudge.fallbackToMainOnInvalidOutput":
             return typeof patchValue === "boolean" ? { field, value: patchValue } : undefined;
+        case "memeSendMaxEdge":
+            return patchValue === null || typeof patchValue === "number" ? { field, value: patchValue } : undefined;
         case "replyJudge.turnWaitMs":
             return typeof patchValue === "number" ? { field, value: patchValue } : undefined;
         default:
@@ -337,5 +361,6 @@ export function parsePublicConfigPatch(value: unknown): PublicConfigPatch | unde
 }
 
 export function patchValueAsString(patch: PublicConfigPatch): string {
+    if (patch.field === "memeSendMaxEdge" && patch.value === null) return "original";
     return String(patch.value).trim();
 }

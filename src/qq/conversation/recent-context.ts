@@ -16,6 +16,7 @@ import { logger, shortId } from "../../shared/logger.js";
 
 interface HistoryImage {
     url: string;
+    contentType?: string;
     width?: number;
     height?: number;
     timestamp: number;
@@ -196,6 +197,9 @@ function getImages(
         .map(
         (attachment: any) => ({
             url: attachment.url,
+            contentType:
+                attachment.content_type ??
+                attachment.contentType,
             width:
                 attachment.width,
             height:
@@ -339,12 +343,19 @@ export function rememberBotReply(
 
 /** Resolve a QQ reference index only inside this conversation's recent memory. */
 export function findRecentQuotedMessage(message: NormalizedQqMessage, refIdx: string):
-    { id?: string; authorName: string; content: string; isBotReply: boolean } | undefined {
+    { id?: string; authorName: string; content: string; isBotReply: boolean;
+        images?: Array<{ url: string; contentType?: string; width?: number; height?: number }> } | undefined {
     const items = getMemory(message).messages;
     for (let index = items.length - 1; index >= 0; index--) {
         const item = items[index];
         if (item.refIdx === refIdx) {
-            return { id: item.id, authorName: item.speaker, content: item.content, isBotReply: item.isBotReply === true };
+            return {
+                id: item.id,
+                authorName: item.speaker,
+                content: item.content,
+                isBotReply: item.isBotReply === true,
+                images: item.images?.map(({ url, contentType, width, height }) => ({ url, contentType, width, height })),
+            };
         }
     }
     return undefined;

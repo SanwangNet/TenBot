@@ -42,6 +42,7 @@ const status: RuntimeStatus = {
 
 const config: PublicConfig = {
     aiProvider: "gpt",
+    memeSendMaxEdge: 160,
     replyJudge: { model: "judge", timeoutMs: 5000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
     gpt: { model: "gpt-test", reasoningEffort: "high", verbosity: "high", configured: true },
     deepseek: { model: "deepseek-test", reasoningEffort: "high", configured: false },
@@ -91,6 +92,15 @@ test("settings form calculates dirty fields and serializable patches with numeri
     assert.equal(parseTimeoutInput("15000"), 15000);
     assert.equal(parseTimeoutInput("999"), null);
     assert.equal(parseTimeoutInput("1500.5"), null);
+});
+
+test("meme send size setting supports original size and custom values", () => {
+    let form = createSettingsForm(config);
+    assert.equal(form.values.memeSendMaxEdge, "160");
+    form = settingsFormReducer(form, { type: "edit", field: "memeSendMaxEdge", value: "original" })!;
+    assert.deepEqual(settingsPatches(form), [{ field: "memeSendMaxEdge", value: null }]);
+    form = settingsFormReducer(form, { type: "edit", field: "memeSendMaxEdge", value: "512" })!;
+    assert.deepEqual(settingsPatches(form), [{ field: "memeSendMaxEdge", value: 512 }]);
 });
 
 test("settings fallback toggle starts from server config, produces one boolean patch, and cleans after save", () => {

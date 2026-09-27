@@ -23,6 +23,7 @@ import { cancelGroupReplyCycles, getActiveReplyCycleCount, shutdownReplyCoordina
 import { getMemeRuntimeSnapshot, loadMemeRuntime, reloadMemes as reloadMemeData } from "./skills/meme/skill.js";
 import { sampleRecentMemeNames } from "./skills/meme/store.js";
 import { memeStore } from "./skills/meme/store.js";
+import { memeSendImageService } from "./skills/meme/send-image.js";
 import { logger, setConsoleLogOutputEnabled, setLogLevel, shortId, truncateLogText } from "./shared/logger.js";
 import type { NormalizedQqMessage } from "./qq/message/normalize-message.js";
 import { FileChangeWatcher } from "./shared/file-change-watcher.js";
@@ -69,6 +70,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         await promptStore.load(model.id);
         await replyJudgePromptStore.load();
         await loadMemeRuntime();
+        try { await memeSendImageService.cleanupStaleFiles(); }
+        catch { logger.error("[Meme] unable to clean stale temporary send files"); }
     } catch (error) {
         logs.dispose();
         setConsoleLogOutputEnabled(true);
@@ -201,7 +204,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         () => runtimeSnapshots.get().appConfig.replyJudge.fallbackToMainOnInvalidOutput,
         () => runtimeSnapshots.get().appConfig.replyJudge.turnWaitMs,
         groupReplyControl,
-        () => runtimeSnapshots.get().appConfig.botAdminIds);
+        () => runtimeSnapshots.get().appConfig.botAdminIds,
+        () => runtimeSnapshots.get().appConfig.memeSendMaxEdge);
     } catch (error) {
         logs.dispose();
         setConsoleLogOutputEnabled(true);

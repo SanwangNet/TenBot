@@ -39,6 +39,7 @@ export type LogLevel = "debug" | "info" | "error";
 
 export interface PublicConfig {
     aiProvider: "gpt" | "deepseek";
+    memeSendMaxEdge: number | null;
     replyJudge: { model: string; timeoutMs: number; fallbackToMainOnInvalidOutput: boolean; turnWaitMs: number; provider?: string };
     gpt: { model: string; reasoningEffort: ReasoningEffort; verbosity: ModelVerbosity; configured: boolean };
     deepseek: { model: string; reasoningEffort: ReasoningEffort; configured: boolean };
@@ -48,6 +49,7 @@ export interface PublicConfig {
 
 export type PublicConfigPatch =
     | { field: "aiProvider"; value: "gpt" | "deepseek" }
+    | { field: "memeSendMaxEdge"; value: number | null }
     | { field: "gpt.model"; value: string }
     | { field: "gpt.reasoningEffort"; value: ReasoningEffort }
     | { field: "gpt.verbosity"; value: ModelVerbosity }

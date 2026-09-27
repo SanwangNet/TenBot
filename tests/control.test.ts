@@ -24,6 +24,7 @@ const status: RuntimeStatus = {
 };
 const config: PublicConfig = {
     aiProvider: "deepseek",
+    memeSendMaxEdge: 160,
     replyJudge: { model: "judge-test", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
     gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: false },
     deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },

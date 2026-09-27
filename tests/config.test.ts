@@ -127,6 +127,29 @@ test("ConfigStore appends new managed keys and serializes concurrent writes", as
     });
 });
 
+test("meme send maximum edge defaults to 160, supports original size, and hot config patches validate bounds", async () => {
+    assert.equal(loadAppConfig({}).memeSendMaxEdge, 160);
+    assert.equal(loadAppConfig({ MEME_SEND_MAX_EDGE: "128" }).memeSendMaxEdge, 128);
+    assert.equal(loadAppConfig({ MEME_SEND_MAX_EDGE: "original" }).memeSendMaxEdge, null);
+    assert.equal(validatePublicConfigPatch({ field: "memeSendMaxEdge", value: 160 }), "MEME_SEND_MAX_EDGE");
+    assert.equal(validatePublicConfigPatch({ field: "memeSendMaxEdge", value: null }), "MEME_SEND_MAX_EDGE");
+    for (const edge of [31, 1_025, 160.5, Number.MAX_SAFE_INTEGER + 1]) {
+        assert.throws(() => validatePublicConfigPatch({ field: "memeSendMaxEdge", value: edge }), /32.*1024/);
+    }
+    for (const value of ["31", "1025", "160.5", "full"]) {
+        assert.throws(() => loadAppConfig({ MEME_SEND_MAX_EDGE: value }), /MEME_SEND_MAX_EDGE/);
+    }
+
+    await withTempEnv("AI_PROVIDER=gpt\n", async (envPath) => {
+        const store = createConfigStore({ envPath, environment: {} });
+        assert.equal((await store.updatePublicConfig({ field: "memeSendMaxEdge", value: 128 })).ok, true);
+        assert.equal(store.getAppConfig().memeSendMaxEdge, 128);
+        assert.equal((await store.updatePublicConfig({ field: "memeSendMaxEdge", value: null })).ok, true);
+        assert.match(await readFile(envPath, "utf8"), /MEME_SEND_MAX_EDGE=original/);
+        assert.equal(store.getPublicConfig().memeSendMaxEdge, null);
+    });
+});
+
 test("public config exposes only safe metadata and shared defaults parse provider settings", () => {
     const config = loadAppConfig({
         AI_PROVIDER: "gpt",

@@ -15,6 +15,8 @@ import { findExplicitHttpStatus, mapConfirmedRemoteHttpError } from "../../error
 import { toPublicErrorMessage } from "../../errors/format.js";
 import { createQqSendError } from "./error-adapter.js";
 import { logger, shortId, truncateLogText } from "../../shared/logger.js";
+import { DEFAULT_MEME_SEND_MAX_EDGE } from "../../config/config-validation.js";
+import { memeSendImageService, type MemeSendImagePreparer } from "../../skills/meme/send-image.js";
 import {
     automatedPeerLoopGuard,
     BOT_LOOP_GUARD_NOTICE,
@@ -93,6 +95,8 @@ export interface ReplyCoordinatorDependencies {
     /** Injectable snapshot source for deterministic offline runtime tests. */
     captureAttemptSnapshot?: () => AttemptRuntimeSnapshot;
     memeLibrary?: MemeLibraryService;
+    getMemeSendMaxEdge?: () => number | null;
+    memeSendImagePreparer?: MemeSendImagePreparer;
 }
 
 export interface ProviderErrorSignal {
@@ -836,16 +840,32 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
             if (action.messages.length && !await waitBetweenMessages(delay, attempt.controller.signal)) {
                 // The cycle was stopped while respecting the normal inter-message delay.
             } else if (attempt.status === "sending" && !cycle.cancelled && isGroupReplyAllowed(request)) {
+                let prepared: Awaited<ReturnType<MemeSendImagePreparer["prepare"]>> | undefined;
                 try {
-                    const response = await sendAiMeme(request.bot, request.message, memeFile.path,
+                    const maxEdge = cycle.deps.getMemeSendMaxEdge
+                        ? cycle.deps.getMemeSendMaxEdge()
+                        : DEFAULT_MEME_SEND_MAX_EDGE;
+                    try {
+                        prepared = await (cycle.deps.memeSendImagePreparer ?? memeSendImageService).prepare(memeFile, maxEdge);
+                        logger.debug(`[Meme] send name=${JSON.stringify(memeFile.filename)}` +
+                            ` original=${prepared.original.width}x${prepared.original.height}` +
+                            ` target=${prepared.target.width}x${prepared.target.height} resized=${prepared.resized}`);
+                    } catch (error) {
+                        const kind = error instanceof Error ? error.name : "unknown";
+                        logger.error(`[Meme] resize failed; falling back to original image (${kind})`);
+                    }
+                    const response = await sendAiMeme(request.bot, request.message, prepared?.localPath ?? memeFile.path,
                         () => attempt.status === "sending" && !cycle.cancelled && isGroupReplyAllowed(request));
                     if (response.sent) {
                         memeSent = true;
                         rememberBotReply(request.message, `[表情包 ${memeFile.filename}]`, response);
                         logger.info("[Meme] sent " + truncateLogText(memeFile.filename, 120));
                     }
-                } catch (error) {
-                    logger.error("[Meme] image upload or send failed", error);
+                } catch {
+                    logger.error("[Meme] image upload or send failed");
+                } finally {
+                    try { await prepared?.cleanup(); }
+                    catch { logger.error("[Meme] temporary image cleanup failed"); }
                 }
             }
         }

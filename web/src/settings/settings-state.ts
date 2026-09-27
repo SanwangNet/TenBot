@@ -4,6 +4,7 @@ export type SettingsField = PublicConfigPatch["field"];
 
 export interface SettingsValues {
     aiProvider: PublicConfig["aiProvider"];
+    memeSendMaxEdge: string;
     "gpt.model": string;
     "gpt.reasoningEffort": PublicConfig["gpt"]["reasoningEffort"];
     "gpt.verbosity": PublicConfig["gpt"]["verbosity"];
@@ -25,6 +26,7 @@ export interface SettingsFormState {
 
 const SETTINGS_FIELDS: readonly SettingsField[] = [
     "aiProvider",
+    "memeSendMaxEdge",
     "gpt.model",
     "gpt.reasoningEffort",
     "gpt.verbosity",
@@ -43,6 +45,7 @@ export function createSettingsForm(config: PublicConfig): SettingsFormState {
         baseline: config,
         values: {
             aiProvider: config.aiProvider,
+            memeSendMaxEdge: config.memeSendMaxEdge === null ? "original" : String(config.memeSendMaxEdge),
             "gpt.model": config.gpt.model,
             "gpt.reasoningEffort": config.gpt.reasoningEffort,
             "gpt.verbosity": config.gpt.verbosity,
@@ -62,6 +65,7 @@ export function createSettingsForm(config: PublicConfig): SettingsFormState {
 function baselineValue(config: PublicConfig, field: SettingsField): string {
     switch (field) {
         case "aiProvider": return config.aiProvider;
+        case "memeSendMaxEdge": return config.memeSendMaxEdge === null ? "original" : String(config.memeSendMaxEdge);
         case "gpt.model": return config.gpt.model;
         case "gpt.reasoningEffort": return config.gpt.reasoningEffort;
         case "gpt.verbosity": return config.gpt.verbosity;
@@ -106,6 +110,9 @@ function parsePositiveInteger(value: string): number | null {
 
 export function settingsFieldError(field: SettingsField, values: SettingsValues): string | undefined {
     const value = String(values[field]);
+    if (field === "memeSendMaxEdge" && value !== "original" && (!/^\d+$/.test(value) || Number(value) < 32 || Number(value) > 1_024)) {
+        return "请选择原始尺寸或 32 到 1024 px 之间的整数";
+    }
     if (field === "gpt.model" || field === "deepseek.model" || field === "replyJudge.model") {
         return value.trim() ? undefined : "请填写模型名称";
     }
@@ -121,6 +128,7 @@ export function settingsPatches(form: SettingsFormState): PublicConfigPatch[] {
         const textValue = String(value);
         switch (field) {
             case "aiProvider": return [{ field, value: value as PublicConfig["aiProvider"] }];
+            case "memeSendMaxEdge": return [{ field, value: textValue === "original" ? null : Number(textValue) }];
             case "gpt.model":
             case "deepseek.model":
             case "replyJudge.model": return [{ field, value: textValue.trim() }];
@@ -158,6 +166,7 @@ export type SettingsFormAction =
 function valueFromConfig(config: PublicConfig, field: SettingsField): string | boolean {
     switch (field) {
         case "aiProvider": return config.aiProvider;
+        case "memeSendMaxEdge": return config.memeSendMaxEdge === null ? "original" : String(config.memeSendMaxEdge);
         case "gpt.model": return config.gpt.model;
         case "gpt.reasoningEffort": return config.gpt.reasoningEffort;
         case "gpt.verbosity": return config.gpt.verbosity;

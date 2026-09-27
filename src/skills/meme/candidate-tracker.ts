@@ -213,6 +213,21 @@ export class MemeCandidateTracker {
         return readFile(candidate.localCachePath);
     }
 
+    /** Read a cached capture only when its exact QQ message ID matches the quote. */
+    async readForMessage(groupOpenid: string, messageId: string): Promise<Buffer | undefined> {
+        await this.ensureReady();
+        const candidate = [...this.candidates.values()].find((item) =>
+            item.groupOpenid === groupOpenid && item.messageId === messageId);
+        if (!candidate || candidate.messageId !== messageId || this.now() - candidate.receivedAt >= this.ttlMs) return undefined;
+        try { return await readFile(candidate.localCachePath); }
+        catch { return undefined; }
+    }
+
+    /** Download a quoted image through the same URL, size and magic-byte checks as captures. */
+    async downloadImage(url: string): Promise<Buffer> {
+        return (await this.download(url)).bytes;
+    }
+
     async dispose(): Promise<void> {
         if (this.cleanupTimer) clearInterval(this.cleanupTimer);
         this.cleanupTimer = undefined;

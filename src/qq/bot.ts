@@ -28,6 +28,7 @@ export function createQqBot(
     getReplyJudgeTurnWaitMs?: () => number,
     groupReplyControl?: GroupReplyControl,
     getBotAdminIds?: () => readonly string[],
+    getMemeSendMaxEdge?: () => number | null,
 ): QQBot {
     const appId = connectionConfig ? connectionConfig.appId : process.env.QQBOT_APP_ID;
     const appSecret = connectionConfig ? connectionConfig.appSecret : process.env.QQBOT_APP_SECRET;
@@ -64,7 +65,7 @@ export function createQqBot(
     });
 
     messageHandlerCleanup.set(bot, registerMessageHandler(bot, undefined, observePeer, observeConversationMessage,
-        replyJudge, {}, getFrontMode, getReplyJudgeIpoFallbackToMain, getReplyJudgeTurnWaitMs,
+        replyJudge, { getMemeSendMaxEdge }, getFrontMode, getReplyJudgeIpoFallbackToMain, getReplyJudgeTurnWaitMs,
         undefined, groupReplyControl, getBotAdminIds));
     registerInteractionHandler(bot);
 

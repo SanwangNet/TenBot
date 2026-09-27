@@ -28,3 +28,4 @@ Thumbs.db
 /data/*.db-wal
 /data/memes/
 /data/cache/meme-candidates/
+/data/cache/meme-send/

@@ -9,6 +9,14 @@ export interface QuotedMessage {
     realMessageId?: string;
 }
 
+export interface QuotedImage {
+    url: string;
+    contentType?: string;
+    filename?: string;
+    width?: number;
+    height?: number;
+}
+
 export interface NormalizedMention {
     memberOpenid?: string;
     ids: string[];
@@ -36,11 +44,28 @@ export interface NormalizedQqMessage {
     timestamp?: string;
     raw: any;
     quotedMessage?: QuotedMessage;
+    /** Kept out of conversational text; used only by native quote commands. */
+    quotedImages?: QuotedImage[];
     quotedBot?: boolean;
 }
 
 function stringField(value: unknown): string | undefined {
     return typeof value === "string" && value ? value : undefined;
+}
+
+function quotedImagesFrom(attachments: unknown): QuotedImage[] {
+    if (!Array.isArray(attachments)) return [];
+    return attachments.flatMap((attachment: any) => {
+        const contentType = stringField(attachment?.contentType ?? attachment?.content_type);
+        const url = stringField(attachment?.url);
+        if (!contentType?.toLowerCase().startsWith("image/") || !url) return [];
+        const image: QuotedImage = { url, contentType };
+        const filename = stringField(attachment?.filename);
+        if (filename) image.filename = filename;
+        if (typeof attachment?.width === "number") image.width = attachment.width;
+        if (typeof attachment?.height === "number") image.height = attachment.height;
+        return [image];
+    });
 }
 
 function normalizeMentions(rawMentions: unknown): NormalizedMention[] {
@@ -132,11 +157,17 @@ export async function normalizeQqMessage(
         const recent = findRecentQuotedMessage(normalized, message.refMsgIdx);
         const resolved = (context as MiddlewareContext | null)?.state?.quote as ResolvedQuote | undefined;
         const quotedElement = message.msgElements?.[0];
-        const attachments = resolved?.attachments ?? quotedElement?.attachments?.map((attachment) => ({
-            contentType: attachment.content_type,
-        })) ?? [];
+        const resolvedImages = quotedImagesFrom(resolved?.attachments);
+        const recentImages = quotedImagesFrom(recent?.images);
+        const elementImages = quotedImagesFrom(quotedElement?.attachments);
+        normalized.quotedImages = resolvedImages.length > 0 ? resolvedImages
+            : recentImages.length > 0 ? recentImages : elementImages;
+        const attachments = resolved?.attachments?.length ? resolved.attachments
+            : quotedElement?.attachments?.map((attachment) => ({
+                contentType: attachment.content_type,
+            })) ?? [];
         const media = attachments.map((attachment) => {
-            const type = attachment.contentType.toLowerCase();
+            const type = typeof attachment.contentType === "string" ? attachment.contentType.toLowerCase() : "";
             if (type.startsWith("image/")) return "[图片]";
             if (type.startsWith("audio/")) return "[语音]";
             if (type.startsWith("video/")) return "[视频]";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,14 +13,19 @@ import { computeResizeDimensions, shouldPreserveOriginalForAnimation } from "../
 
 const gif = Buffer.from("GIF89a\x01\x00\x01\x00\x00\x00\x00", "binary");
 const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
-function message(options: { group?: string; user?: string; command?: string; attachment?: Record<string, unknown> } = {}): NormalizedQqMessage {
+function message(options: {
+    group?: string; user?: string; command?: string; attachment?: Record<string, unknown>;
+    id?: string; refIdx?: string; quotedImages?: NormalizedQqMessage["quotedImages"];
+    quotedMessage?: NormalizedQqMessage["quotedMessage"];
+} = {}): NormalizedQqMessage {
     const content = options.command ?? "image";
     return {
-        source: {} as never, id: "message-id", kind: "group", eventType: "GROUP_AT_MESSAGE_CREATE",
+        source: { refMsgIdx: options.refIdx } as never, id: options.id ?? "message-id", kind: "group", eventType: "GROUP_AT_MESSAGE_CREATE",
         content, displayContent: content, groupId: options.group ?? "group-a", author: null,
         authorId: options.user ?? "owner-a", authorName: "member", authorIsBot: false,
         mentions: [], attachments: options.attachment ? [options.attachment] : [],
-        replyTarget: { scope: "group", targetId: options.group ?? "group-a", msgId: "message-id" }, raw: {},
+        replyTarget: { scope: "group", targetId: options.group ?? "group-a", msgId: options.id ?? "message-id" }, raw: {},
+        quotedImages: options.quotedImages, quotedMessage: options.quotedMessage,
     } as NormalizedQqMessage;
 }
 function response(bytes: Uint8Array): Response {
@@ -180,6 +185,172 @@ test("/添加表情 has fixed owner outcomes and failed adds retain the candidat
         assert.equal(calls.at(-1), "已添加表情包");
         await routeCommand(bot, command("第三个"), services);
         assert.equal(calls.at(-1), "未找到你最近发送的表情包");
+        await tracker.dispose();
+    } finally {
+        await rm(cache, { recursive: true, force: true });
+        await rm(libraryRoot, { recursive: true, force: true });
+    }
+});
+
+test("quoted /添加表情 uses the exact local image and allows another member's image", async () => {
+    const cache = await mkdtemp(join(tmpdir(), "tenbot-quote-cache-"));
+    const libraryRoot = await mkdtemp(join(tmpdir(), "tenbot-quote-library-"));
+    const downloads: string[] = [];
+    try {
+        const tracker = new MemeCandidateTracker({ cacheDirectory: cache, fetcher: async (url) => {
+            downloads.push(url);
+            return response(url.endsWith("friend") ? png : gif);
+        } });
+        const library = new MemeLibraryService(libraryRoot);
+        const calls: string[] = [];
+        const bot = { async sendText(_target: unknown, text: string) { calls.push(text); } } as unknown as QQBot;
+        const services = { isOwner: (id: string | undefined) => id === "owner-a", memeCandidates: tracker, memeLibrary: library };
+        await tracker.remember(message({ id: "own-image", attachment: {
+            content_type: "image/gif", url: "https://cdn.example/own", filename: "own.gif",
+        } }), true);
+
+        const ownQuote = message({ command: "/添加表情 自己的图", refIdx: "quote-own", quotedMessage: {
+            realMessageId: "own-image",
+        }, quotedImages: [{ url: "https://cdn.example/own", contentType: "image/gif" }] });
+        await routeCommand(bot, ownQuote, services);
+        assert.equal(calls.at(-1), "已添加表情包");
+        assert.deepEqual(await readFile((await library.get("自己的图.gif")).path), gif);
+        assert.deepEqual(downloads, ["https://cdn.example/own"], "the quote reads its exact local cache without another download");
+
+        const friendQuote = message({ command: "/添加表情 群友图", refIdx: "quote-friend", quotedMessage: {
+            realMessageId: "friend-message",
+        }, quotedImages: [{ url: "https://cdn.example/friend", contentType: "image/png" }] });
+        await routeCommand(bot, friendQuote, services);
+        assert.equal(calls.at(-1), "已添加表情包");
+        assert.ok((await library.list()).includes("群友图.png"));
+        await tracker.dispose();
+    } finally {
+        await rm(cache, { recursive: true, force: true });
+        await rm(libraryRoot, { recursive: true, force: true });
+    }
+});
+
+test("quoted images take priority; empty quotes never fall back, while no-quote commands consume latest", async () => {
+    const cache = await mkdtemp(join(tmpdir(), "tenbot-quote-priority-cache-"));
+    const libraryRoot = await mkdtemp(join(tmpdir(), "tenbot-quote-priority-library-"));
+    try {
+        const tracker = new MemeCandidateTracker({ cacheDirectory: cache, fetcher: async (url) => response(url.endsWith("quoted-B") ? png : gif) });
+        const library = new MemeLibraryService(libraryRoot);
+        const calls: string[] = [];
+        const bot = { async sendText(_target: unknown, text: string) { calls.push(text); } } as unknown as QQBot;
+        const services = { isOwner: (id: string | undefined) => id === "owner-a", memeCandidates: tracker, memeLibrary: library };
+        await tracker.remember(message({ id: "candidate-A", attachment: {
+            content_type: "image/gif", url: "https://cdn.example/candidate-A",
+        } }), true);
+
+        await routeCommand(bot, message({ command: "/添加表情 引用B", refIdx: "ref-B", quotedMessage: {
+            realMessageId: "quoted-B",
+        }, quotedImages: [{ url: "https://cdn.example/quoted-B", contentType: "image/png" }] }), services);
+        assert.equal(calls.at(-1), "已添加表情包");
+        assert.ok((await library.list()).includes("引用B.png"), "the quoted image wins over candidate A");
+        assert.ok(await tracker.latest("group-a", "owner-a"), "quoted success preserves the owner's candidate");
+
+        await routeCommand(bot, message({ command: "/添加表情 普通文字引用", refIdx: "ref-text", quotedImages: [] }), services);
+        assert.equal(calls.at(-1), "引用的消息没有可添加的图片");
+        await routeCommand(bot, message({ command: "/添加表情 商城表情", refIdx: "ref-shop", quotedImages: [] }), services);
+        assert.equal(calls.at(-1), "引用的消息没有可添加的图片");
+        assert.ok(await tracker.latest("group-a", "owner-a"), "non-image quotes never consume or use the candidate");
+
+        await routeCommand(bot, message({ command: "/添加表情 无引用" }), services);
+        assert.equal(calls.at(-1), "已添加表情包");
+        assert.ok((await library.list()).includes("无引用.gif"));
+        assert.equal(await tracker.latest("group-a", "owner-a"), undefined, "legacy success consumes latest");
+        await tracker.dispose();
+    } finally {
+        await rm(cache, { recursive: true, force: true });
+        await rm(libraryRoot, { recursive: true, force: true });
+    }
+});
+
+test("quoted download does not wait for an unrelated owner candidate capture", async () => {
+    const cache = await mkdtemp(join(tmpdir(), "tenbot-quote-race-cache-"));
+    const libraryRoot = await mkdtemp(join(tmpdir(), "tenbot-quote-race-library-"));
+    let finishCandidate!: (value: Response) => void;
+    let signalCandidateStarted!: () => void;
+    const candidateStarted = new Promise<void>((resolve) => { signalCandidateStarted = resolve; });
+    try {
+        const tracker = new MemeCandidateTracker({ cacheDirectory: cache, fetcher: async (url) => {
+            if (url.endsWith("candidate-A")) {
+                signalCandidateStarted();
+                return await new Promise<Response>((resolve) => { finishCandidate = resolve; });
+            }
+            return response(png);
+        } });
+        const library = new MemeLibraryService(libraryRoot);
+        const calls: string[] = [];
+        const bot = { async sendText(_target: unknown, text: string) { calls.push(text); } } as unknown as QQBot;
+        const services = { isOwner: (id: string | undefined) => id === "owner-a", memeCandidates: tracker, memeLibrary: library };
+        const candidate = tracker.remember(message({ id: "candidate-A-message", attachment: {
+            content_type: "image/gif", url: "https://cdn.example/candidate-A",
+        } }), true);
+        await candidateStarted;
+        const quotedSend = routeCommand(bot, message({ command: "/添加表情 引用B", refIdx: "ref-B", quotedMessage: {
+            realMessageId: "quoted-B",
+        }, quotedImages: [{ url: "https://cdn.example/quoted-B", contentType: "image/png" }] }), services);
+        const completed = await Promise.race([
+            quotedSend.then(() => true),
+            new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+        ]);
+        assert.equal(completed, true, "quote processing must not wait for candidate A's network request");
+        assert.equal(calls.at(-1), "已添加表情包");
+        finishCandidate(response(gif));
+        await candidate;
+        assert.ok(await tracker.latest("group-a", "owner-a"));
+        await tracker.dispose();
+    } finally {
+        await rm(cache, { recursive: true, force: true });
+        await rm(libraryRoot, { recursive: true, force: true });
+    }
+});
+
+test("quoted GIF uses detected bytes even when QQ reports a jpg filename and JPEG content type", async () => {
+    const cache = await mkdtemp(join(tmpdir(), "tenbot-quote-gif-cache-"));
+    const libraryRoot = await mkdtemp(join(tmpdir(), "tenbot-quote-gif-library-"));
+    try {
+        const tracker = new MemeCandidateTracker({ cacheDirectory: cache, fetcher: async () => response(gif) });
+        const library = new MemeLibraryService(libraryRoot);
+        const calls: string[] = [];
+        const bot = { async sendText(_target: unknown, text: string) { calls.push(text); } } as unknown as QQBot;
+        const services = { isOwner: (id: string | undefined) => id === "owner-a", memeCandidates: tracker, memeLibrary: library };
+        await routeCommand(bot, message({ command: "/添加表情 动态引用", refIdx: "ref-gif", quotedImages: [{
+            url: "https://cdn.example/animated", contentType: "image/jpeg", filename: "xxx.jpg",
+        }] }), services);
+        assert.equal(calls.at(-1), "已添加表情包");
+        const file = await library.get("动态引用.gif");
+        assert.deepEqual(await readFile(file.path), gif);
+        await tracker.dispose();
+    } finally {
+        await rm(cache, { recursive: true, force: true });
+        await rm(libraryRoot, { recursive: true, force: true });
+    }
+});
+
+test("quoted download failure reports an explicit error and never falls back", async () => {
+    const cache = await mkdtemp(join(tmpdir(), "tenbot-quote-failure-cache-"));
+    const libraryRoot = await mkdtemp(join(tmpdir(), "tenbot-quote-failure-library-"));
+    try {
+        const tracker = new MemeCandidateTracker({ cacheDirectory: cache, fetcher: async (url) => {
+            if (url.endsWith("expired")) throw new Error("expired");
+            return response(gif);
+        } });
+        const library = new MemeLibraryService(libraryRoot);
+        const calls: string[] = [];
+        const bot = { async sendText(_target: unknown, text: string) { calls.push(text); } } as unknown as QQBot;
+        const services = { isOwner: (id: string | undefined) => id === "owner-a", memeCandidates: tracker, memeLibrary: library };
+        await tracker.remember(message({ id: "candidate-A", attachment: {
+            content_type: "image/gif", url: "https://cdn.example/candidate-A",
+        } }), true);
+        await routeCommand(bot, message({ command: "/添加表情 下载失败", refIdx: "ref-expired", quotedImages: [{
+            url: "https://cdn.example/expired", contentType: "image/png",
+        }] }), services);
+        assert.equal(calls.at(-1), "引用的图片已失效或无法下载");
+        assert.deepEqual(await library.list(), []);
+        assert.ok(await tracker.latest("group-a", "owner-a"), "failed quote retains latest but does not use it");
         await tracker.dispose();
     } finally {
         await rm(cache, { recursive: true, force: true });

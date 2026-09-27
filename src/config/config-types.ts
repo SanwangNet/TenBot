@@ -7,6 +7,7 @@ export type ModelProviderId = "gpt" | "deepseek";
 export interface AppConfig {
     frontMode: FrontMode;
     botAdminIds: readonly string[];
+    memeSendMaxEdge: number | null;
     qq: {
         appId?: string;
         appSecret?: string;
@@ -51,6 +52,7 @@ export interface AppConfig {
 
 export interface PublicConfig {
     aiProvider: ModelProviderId;
+    memeSendMaxEdge: number | null;
     replyJudge: {
         model: string;
         timeoutMs: number;
@@ -78,6 +80,7 @@ export interface PublicConfig {
 
 export type PublicConfigPatch =
     | { field: "aiProvider"; value: ModelProviderId }
+    | { field: "memeSendMaxEdge"; value: number | null }
     | { field: "gpt.model"; value: string }
     | { field: "gpt.reasoningEffort"; value: ReasoningEffort }
     | { field: "gpt.verbosity"; value: ModelVerbosity }

@@ -76,14 +76,28 @@ test("meme-only replies send an image; missing or failed memes do not discard te
         const library = new MemeLibraryService(directory);
         const gif = Buffer.from("GIF89a\x01\x00\x01\x00\x00\x00\x00", "binary");
         await library.add("reaction", gif);
+
+        const ordinary = message();
+        commit(ordinary);
+        const ordinaryReply = fakeBot();
+        await coordinateAiReply(requestFor(ordinaryReply.bot, ordinary, 2), {
+            memeLibrary: library, multiMessageDelayMs: 0,
+            executeAi: async () => ({ kind: "reply", action: { messages: [], mentions: [], meme: "reaction.gif" } }),
+        });
+        assert.deepEqual(ordinaryReply.calls.map((call) => call.method), ["image"]);
+        assert.equal(isConversationActive(ordinary), true);
+
         const memeOnly = message();
         commit(memeOnly);
         const first = fakeBot();
-        await coordinateAiReply(requestFor(first.bot, memeOnly), {
+        const hardRequest = requestFor(first.bot, memeOnly);
+        assert.equal(hardRequest.wakeLevel, "hard");
+        await coordinateAiReply(hardRequest, {
             memeLibrary: library, multiMessageDelayMs: 0,
             executeAi: async () => ({ kind: "reply", action: { messages: [], mentions: [], meme: "reaction.gif" } }),
         });
         assert.deepEqual(first.calls.map((call) => call.method), ["image"]);
+        assert.equal(isConversationActive(memeOnly), true);
 
         const unknown = message();
         commit(unknown);
@@ -109,6 +123,15 @@ test("meme-only replies send an image; missing or failed memes do not discard te
         assert.equal(executions, 1);
         assert.deepEqual(third.calls.map((call) => call.method), ["markdown"]);
     } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a hard reply cannot complete with neither text nor a meme", async () => {
+    const value = message();
+    commit(value);
+    const { bot, calls } = fakeBot();
+    await coordinateAiReply(requestFor(bot, value), { executeAi: async () => ({ kind: "no_reply" }) });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.method, "text");
 });
 function requestFor(bot: QQBot, value: NormalizedQqMessage, priority: 0 | 1 | 2 | 3 = 3) {
     const wakeLevel = priority === 3 ? "hard" as const : priority === 0 ? "pass" as const : "soft" as const;

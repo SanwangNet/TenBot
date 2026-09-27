@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { QQBot, QQBotInboundMessage } from "@tencent-connect/qqbot-nodejs";
 
 import { normalizeTextReply, type AiResult } from "../src/ai/reply-result.js";
-import { normalizeQQReplyAction, parseQqReplyArguments, qqReplyTool } from "../src/skills/qq-reply/skill.js";
+import { MAX_REPLY_MESSAGES, normalizeQQReplyAction, parseQqReplyArguments, qqReplyTool } from "../src/skills/qq-reply/skill.js";
 import { AiResponseFailure, classifyUpstreamFailure } from "../src/ai/upstream-error.js";
 import { isConversationActive } from "../src/qq/conversation/engagement.js";
 import { MemoryMemberRepository } from "../src/members/memory-repository.js";
@@ -121,6 +121,7 @@ test("plain output_text and code blocks always normalize to one message", () => 
 
 test("qq_reply schema and parser limit clean messages to three", () => {
     assert.equal(MULTI_MESSAGE_DELAY_MS, 450);
+    assert.equal(MAX_REPLY_MESSAGES, 3);
     const schema = qqReplyTool.parameters.properties.messages;
     assert.equal(schema.minItems, 0);
     assert.equal(schema.maxItems, 3);
@@ -130,6 +131,16 @@ test("qq_reply schema and parser limit clean messages to three", () => {
     }))?.messages.map((message) => message.content), ["放心", "毕竟我没身体", "第三句"]);
     assert.equal(parseQqReplyArguments('{"messages":["",42]}'), null);
     assert.equal(parseQqReplyArguments('{"messages":"hello"}'), null);
+
+    const threeWithMeme = parseQqReplyArguments(JSON.stringify({
+        messages: ["one", "two", "three", "ignored"], mentions: [], meme: "reaction.gif",
+    }));
+    assert.deepEqual(threeWithMeme?.messages.map((message) => message.content), ["one", "two", "three"]);
+    assert.equal(threeWithMeme?.meme, "reaction.gif", "meme does not consume a text message slot");
+    assert.deepEqual(parseQqReplyArguments(JSON.stringify({ messages: [], mentions: [], meme: "reaction.gif" })), {
+        messages: [], mentions: [], meme: "reaction.gif",
+    });
+    assert.equal(normalizeQQReplyAction({ messages: [], mentions: [], meme: null }), null);
 });
 
 test("QQ Reply Skill keeps only semantic fields", () => {

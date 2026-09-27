@@ -110,6 +110,42 @@ const commands: BotCommand[] = [
             }
             if (!services) throw new Error("Meme services are unavailable");
 
+            if (message.source.refMsgIdx) {
+                const quotedImage = message.quotedImages?.[0];
+                let bytes: Buffer | undefined;
+                const realMessageId = message.quotedMessage?.realMessageId;
+                if (realMessageId) {
+                    try {
+                        bytes = await services.memeCandidates.readForMessage(message.groupId, realMessageId);
+                    } catch { /* Try the quoted CDN URL if an exact local cache cannot be read. */ }
+                }
+                if (!bytes && !quotedImage) {
+                    await bot.sendText(message.replyTarget, "引用的消息没有可添加的图片");
+                    return;
+                }
+                try {
+                    if (!bytes && quotedImage) bytes = await services.memeCandidates.downloadImage(quotedImage.url);
+                } catch {
+                    await bot.sendText(message.replyTarget, "引用的图片已失效或无法下载");
+                    return;
+                }
+
+                try {
+                    await services.memeLibrary.add(args.trim(), bytes!);
+                    await bot.sendText(message.replyTarget, "已添加表情包");
+                } catch (error) {
+                    if (error instanceof MemeLibraryError) {
+                        await bot.sendText(message.replyTarget, error.code === "duplicate" ? "表情包已存在"
+                            : error.code === "invalid-name" ? "表情包名称无效"
+                            : error.code === "unsupported-image" || error.code === "too-large" ? "表情处理失败"
+                            : "添加表情包失败");
+                        return;
+                    }
+                    throw error;
+                }
+                return;
+            }
+
             const claim = await services.memeCandidates.claim(message.groupId, message.authorId);
             if (claim.kind === "missing") {
                 await bot.sendText(message.replyTarget, "未找到你最近发送的表情包");

@@ -360,6 +360,38 @@ test("quoted image uses a placeholder without exposing or fetching its URL", asy
     assert.doesNotMatch(text, /private-image/);
 });
 
+test("quoted SDK image attachment is available to native commands without exposing the URL to chat text", async () => {
+    const group = randomUUID();
+    const raw = inbound(group, "quoted-image-current", "command", "quoted-image-command", "quoted-image-index");
+    raw.msgElements = [{ msg_idx: "quoted-image-index", content: "", attachments: [
+        { content_type: "image/png", url: "https://cdn.example/exact-image", filename: "photo.png", width: 640, height: 480 },
+    ] }];
+    const ctx = context(raw);
+    await quoteRef()(ctx, async () => {});
+    const normalized = await normalizeQqMessage(ctx, raw);
+    assert.deepEqual(normalized.quotedImages, [{
+        url: "https://cdn.example/exact-image", contentType: "image/png", filename: "photo.png",
+    }]);
+    assert.doesNotMatch(buildReplyCycleSnapshot(normalized).text, /exact-image|cdn\.example/);
+});
+
+test("Recent Context exposes exact quoted image metadata without its vision age limit", async () => {
+    const group = randomUUID();
+    const target = inbound(group, "image-real", "", "quoted-image-idx");
+    target.timestamp = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    target.attachments = [{ content_type: "image/gif", url: "https://cdn.example/old-image", width: 240, height: 180 }];
+    const normalizedTarget = await normalizeQqMessage({}, target);
+    rememberIncomingMessage(normalizedTarget, normalizedTarget.displayContent);
+
+    const quotedRaw = inbound(group, "command-real", "/添加表情 old", "command-idx", "quoted-image-idx");
+    quotedRaw.msgElements = [];
+    const normalizedQuote = await normalizeQqMessage({}, quotedRaw);
+    assert.deepEqual(normalizedQuote.quotedImages, [{
+        url: "https://cdn.example/old-image", contentType: "image/gif", width: 240, height: 180,
+    }]);
+    assert.equal(normalizedQuote.quotedMessage?.realMessageId, "image-real");
+});
+
 test("quoted Bot reply is identified from its send response and only direct relation is expanded", async () => {
     const group = randomUUID();
     const a = await normalizeQqMessage({}, inbound(group, "real-A", "起因", "idx-A"));
