@@ -44,7 +44,7 @@ function fakeBot() {
 
 test("registry is the only source of help entries", async () => {
     const names = listCommands().map((command) => command.name);
-    assert.deepEqual(names, ["help", "mc", "members", "at"]);
+    assert.deepEqual(names, ["help", "mc", "members", "添加表情", "at"]);
     const { bot, sent } = fakeBot();
     assert.equal(await routeCommand(bot, message("/help")), true);
     assert.equal(sent.length, 1);

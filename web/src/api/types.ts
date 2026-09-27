@@ -98,6 +98,10 @@ export interface KnownMemberSummary {
     roles?: string[];
 }
 
+export interface MemeLibraryResponse { files: string[] }
+export interface MemeUploadResponse { filename: string }
+export interface MemeDeleteResponse { deleted: true; filename: string }
+
 export interface LogEntry {
     timestamp: string;
     level: "info" | "debug" | "error";

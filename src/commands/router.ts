@@ -5,11 +5,20 @@ import { getKnownMembers } from "../qq/conversation/known-members.js";
 import type { NormalizedQqMessage } from "../qq/message/normalize-message.js";
 import { renderMentions } from "../qq/reply/mentions.js";
 import { sendMinecraftStatus } from "../qq/minecraft-status.js";
+import { MemeLibraryError, type MemeLibraryService } from "../skills/meme/library-service.js";
+import type { MemeCandidateTracker } from "../skills/meme/candidate-tracker.js";
 
 export interface CommandContext {
     bot: QQBot;
     message: NormalizedQqMessage;
     args: string;
+    services?: CommandServices;
+}
+
+export interface CommandServices {
+    isOwner(memberOpenid: string | undefined): boolean;
+    memeCandidates: MemeCandidateTracker;
+    memeLibrary: MemeLibraryService;
 }
 
 export interface BotCommand {
@@ -84,6 +93,51 @@ const commands: BotCommand[] = [
         },
     },
     {
+        name: "添加表情",
+        description: "将最近发送的图片加入表情包库",
+        async execute({ bot, message, args, services }) {
+            if (!services?.isOwner(message.authorId)) {
+                await bot.sendText(message.replyTarget, "无权限");
+                return;
+            }
+            if (message.kind !== "group" || !message.groupId || !message.authorId) {
+                await bot.sendText(message.replyTarget, "请在群聊中使用 /添加表情");
+                return;
+            }
+            if (!args.trim()) {
+                await bot.sendText(message.replyTarget, "用法：/添加表情 名称");
+                return;
+            }
+            if (!services) throw new Error("Meme services are unavailable");
+
+            const claim = await services.memeCandidates.claim(message.groupId, message.authorId);
+            if (claim.kind === "missing") {
+                await bot.sendText(message.replyTarget, "未找到你最近发送的表情包");
+                return;
+            }
+            if (claim.kind === "busy") {
+                await bot.sendText(message.replyTarget, "正在添加这张表情包，请稍后再试");
+                return;
+            }
+            try {
+                const bytes = await services.memeCandidates.read(claim.candidate);
+                await services.memeLibrary.add(args.trim(), bytes);
+                await services.memeCandidates.consume(claim.candidate);
+                await bot.sendText(message.replyTarget, "已添加表情包");
+            } catch (error) {
+                services.memeCandidates.release(claim.candidate);
+                if (error instanceof MemeLibraryError) {
+                    await bot.sendText(message.replyTarget, error.code === "duplicate" ? "表情包已存在"
+                        : error.code === "invalid-name" ? "表情包名称无效"
+                        : error.code === "unsupported-image" || error.code === "too-large" ? "表情处理失败"
+                        : "添加表情包失败");
+                    return;
+                }
+                throw error;
+            }
+        },
+    },
+    {
         name: "at",
         description: "测试 @ 已知群成员",
         async execute({ bot, message, args }) {
@@ -110,7 +164,7 @@ export function listCommands(): readonly BotCommand[] {
 }
 
 /** Returns true for every slash input, including unknown or failed commands. */
-export async function routeCommand(bot: QQBot, message: NormalizedQqMessage): Promise<boolean> {
+export async function routeCommand(bot: QQBot, message: NormalizedQqMessage, services?: CommandServices): Promise<boolean> {
     const parsed = parseCommand(message);
     if (!parsed) return false;
     const command = registry.get(parsed.name);
@@ -128,7 +182,7 @@ export async function routeCommand(bot: QQBot, message: NormalizedQqMessage): Pr
 
     logger.info("[Command] /" + command.name);
     try {
-        await command.execute({ bot, message, args: parsed.args });
+        await command.execute({ bot, message, args: parsed.args, services });
     } catch (error) {
         logger.error("[Command] /" + command.name + " error", error);
         try {

@@ -6,6 +6,7 @@ import { captureAttemptRuntimeSnapshot, type AttemptRuntimeSnapshot } from "../.
 import { ToolProtocolLeakError } from "../../ai/tool-protocol.js";
 import type { AiResult } from "../../ai/reply-result.js";
 import type { MemeRuntimeSnapshot } from "../../skills/meme/store.js";
+import { memeLibrary, type MemeLibraryService } from "../../skills/meme/library-service.js";
 import { normalizeQQReplyAction, type QuotePreference } from "../../skills/qq-reply/skill.js";
 import { AiResponseFailure, classifyUpstreamFailure } from "../../ai/upstream-error.js";
 import { ModelAbortedError, ModelProviderError } from "../../ai/model-plugin.js";
@@ -13,7 +14,7 @@ import { TenBotError, isTenBotError } from "../../errors/tenbot-error.js";
 import { findExplicitHttpStatus, mapConfirmedRemoteHttpError } from "../../errors/http-mapping.js";
 import { toPublicErrorMessage } from "../../errors/format.js";
 import { createQqSendError } from "./error-adapter.js";
-import { logger, shortId } from "../../shared/logger.js";
+import { logger, shortId, truncateLogText } from "../../shared/logger.js";
 import {
     automatedPeerLoopGuard,
     BOT_LOOP_GUARD_NOTICE,
@@ -25,7 +26,7 @@ import type { NormalizedQqMessage } from "../message/normalize-message.js";
 import type { TriggerKind } from "../message/trigger.js";
 import { wakeLevelRank, type FrontMode, type WakeAdmission, type WakeLevel, type WakeReason } from "../../front/wake-level.js";
 import { prepareAiReply } from "./renderer.js";
-import { getTriggerMessageId, sendAiReply, sendTimeoutReply } from "./sender.js";
+import { getTriggerMessageId, sendAiMeme, sendAiReply, sendTimeoutReply } from "./sender.js";
 
 export const AI_REQUEST_TIMEOUT_MS = 30_000;
 export const AI_WEB_SEARCH_TIMEOUT_MS = 120_000;
@@ -91,6 +92,7 @@ export interface ReplyCoordinatorDependencies {
     botLoopGuard?: AutomatedPeerLoopGuard;
     /** Injectable snapshot source for deterministic offline runtime tests. */
     captureAttemptSnapshot?: () => AttemptRuntimeSnapshot;
+    memeLibrary?: MemeLibraryService;
 }
 
 export interface ProviderErrorSignal {
@@ -791,11 +793,22 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
         return;
     }
 
+    const memeService = cycle.deps.memeLibrary ?? memeLibrary;
+    let memeFile: Awaited<ReturnType<typeof memeService.get>> | undefined;
+    if (action.meme) {
+        try { memeFile = await memeService.get(action.meme); }
+        catch {
+            logger.info(`[Meme] skipped missing file=${truncateLogText(action.meme, 120)}`);
+        }
+    }
+    if (cycle.cancelled || cycle.currentAttempt !== attempt || attempt.status !== "completed" || !isGroupReplyAllowed(request)) return;
+
     attempt.status = "sending";
     clearAttemptTimer(attempt);
     // Freeze every transport target before the first send or 450ms delay.
     const quoteIds = action.messages.map((message) => quoteDecision(request, cycle, attempt, message.quote));
     let sent = 0;
+    let memeSent = false;
     let failed = false;
     const delay = cycle.deps.multiMessageDelayMs ?? MULTI_MESSAGE_DELAY_MS;
     try {
@@ -819,12 +832,29 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
                 break;
             }
         }
+        if (!failed && memeFile && attempt.status === "sending" && !cycle.cancelled && isGroupReplyAllowed(request)) {
+            if (action.messages.length && !await waitBetweenMessages(delay, attempt.controller.signal)) {
+                // The cycle was stopped while respecting the normal inter-message delay.
+            } else if (attempt.status === "sending" && !cycle.cancelled && isGroupReplyAllowed(request)) {
+                try {
+                    const response = await sendAiMeme(request.bot, request.message, memeFile.path,
+                        () => attempt.status === "sending" && !cycle.cancelled && isGroupReplyAllowed(request));
+                    if (response.sent) {
+                        memeSent = true;
+                        rememberBotReply(request.message, `[表情包 ${memeFile.filename}]`, response);
+                        logger.info("[Meme] sent " + truncateLogText(memeFile.filename, 120));
+                    }
+                } catch (error) {
+                    logger.error("[Meme] image upload or send failed", error);
+                }
+            }
+        }
     } catch (error) { failed = true; logger.error("[Reply] render error", error); }
     finally {
         if (attempt.status === "sending") attempt.status = failed ? "failed" : "completed";
         if (attempt.status === "failed") publishReplyLifecycle(cycle, attempt, { kind: "failed", failureStage: "send" });
         else if (attempt.status === "completed") publishReplyLifecycle(cycle, attempt, { kind: "completed" });
-        if (sent > 0 && request.isGroup && cycles.get(cycle.key) === cycle) markConversationActive(request.message);
+        if ((sent > 0 || memeSent) && request.isGroup && cycles.get(cycle.key) === cycle) markConversationActive(request.message);
     }
 }
 function finishCycle(cycle: Cycle): void {

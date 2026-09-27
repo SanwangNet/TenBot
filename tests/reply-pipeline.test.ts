@@ -122,7 +122,7 @@ test("plain output_text and code blocks always normalize to one message", () => 
 test("qq_reply schema and parser limit clean messages to three", () => {
     assert.equal(MULTI_MESSAGE_DELAY_MS, 450);
     const schema = qqReplyTool.parameters.properties.messages;
-    assert.equal(schema.minItems, 1);
+    assert.equal(schema.minItems, 0);
     assert.equal(schema.maxItems, 3);
     assert.deepEqual(parseQqReplyArguments(JSON.stringify({
         messages: [" 放心 ", "", " 毕竟我没身体 ", "第三句", "第四句"],
@@ -133,7 +133,7 @@ test("qq_reply schema and parser limit clean messages to three", () => {
 });
 
 test("QQ Reply Skill keeps only semantic fields", () => {
-    assert.deepEqual(Object.keys(qqReplyTool.parameters.properties), ["messages", "mentions"]);
+    assert.deepEqual(Object.keys(qqReplyTool.parameters.properties), ["messages", "mentions", "meme"]);
     assert.deepEqual(normalizeQQReplyAction({
         messages: ["你好"], mentions: ["芷"], quote: "trigger",
         msg_type: 2, msg_id: "raw-id", member_openid: "raw-openid", localPath: "C:\\secret.png",

@@ -10,6 +10,7 @@ export interface QQReplyMessage {
 export interface QQReplyAction {
     messages: QQReplyMessage[];
     mentions: string[];
+    meme?: string | null;
 }
 
 export const MAX_REPLY_MESSAGES = 3;
@@ -52,12 +53,17 @@ export function normalizeQQReplyAction(value: unknown): QQReplyAction | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const data = value as Record<string, unknown>;
     const messages = normalizeReplyMessages(data.messages, data.quote);
-    if (!messages.length || (messages.length > 1 && messages.some((message) => message.content === "<NO_REPLY>"))) return null;
+    const rawMeme = data.meme;
+    if (rawMeme !== undefined && rawMeme !== null &&
+        (typeof rawMeme !== "string" || rawMeme.length > 255 || /[\r\n\x00-\x1f]/.test(rawMeme))) return null;
+    const meme = typeof rawMeme === "string" && rawMeme.trim() ? rawMeme.trim() : null;
+    const containsNoReply = messages.some((message) => message.content === "<NO_REPLY>");
+    if ((!messages.length && !meme) || (containsNoReply && (messages.length !== 1 || meme !== null))) return null;
     if (data.mentions !== undefined &&
         (!Array.isArray(data.mentions) || !data.mentions.every((name) => typeof name === "string"))) return null;
     const mentions = ((data.mentions as string[] | undefined) ?? [])
         .map((name) => name.trim()).filter(Boolean);
-    return { messages, mentions };
+    return meme === null ? { messages, mentions } : { messages, mentions, meme };
 }
 
 const quoteSchema = {
@@ -74,13 +80,13 @@ export const qqReplyTool = {
     type: "function" as const,
     name: "qq_reply",
     description:
-        "表达最终 QQ 回复意图。messages 放 1～3 条，每条都有独立的 content 和 quote；mentions 是整次回复共享的已知群友昵称，仅第一条实际 @。每条 quote 独立选择：auto 由系统按当前会话时序决定（发送延迟期间目标会冻结），none 表示不引用；如果一句话明显对应 Recent Context 中某条消息，优先用 quote.message 并填写对应 [mN]；只是自然补充时用 none；没有特定对象、但延迟发送时可能需要系统帮助避免语义漂移时用 auto。每条最多引用一个目标；想分别回应多条消息时拆成多条回复。只能选当前输入中实际展示的 [mN]，不可自造 mN、暴露或猜真实 QQ 消息 ID，也不要把 [mN] 写进正文。不要填写任何腾讯 API 字段。若决定不回复，直接输出 <NO_REPLY>。",
+        "表达最终 QQ 回复意图。messages 放 0～3 条独立文本，每条都有 content 和 quote；meme 为 null 或当前输入“可用表情包文件”列表中的完整文件名（必须含扩展名），一轮最多选一个，不要虚构文件名；可以只发表情包或只发文字。表情包会作为单独 QQ 消息在所有文本之后发送。mentions 是整次回复共享的已知群友昵称，仅第一条实际 @。每条 quote 独立选择：auto 由系统按当前会话时序决定（发送延迟期间目标会冻结），none 表示不引用；如果一句话明显对应 Recent Context 中某条消息，优先用 quote.message 并填写对应 [mN]；只是自然补充时用 none；没有特定对象、但延迟发送时可能需要系统帮助避免语义漂移时用 auto。每条最多引用一个目标；想分别回应多条消息时拆成多条回复。只能选当前输入中实际展示的 [mN]，不可自造 mN、暴露或猜真实 QQ 消息 ID，也不要把 [mN] 写进正文。不要填写任何腾讯 API 字段。若决定不回复，直接输出 <NO_REPLY>。",
     strict: true,
     parameters: {
         type: "object",
         properties: {
             messages: {
-                type: "array", minItems: 1, maxItems: MAX_REPLY_MESSAGES,
+                type: "array", minItems: 0, maxItems: MAX_REPLY_MESSAGES,
                 items: {
                     type: "object",
                     properties: {
@@ -96,8 +102,12 @@ export const qqReplyTool = {
                 type: "array", items: { type: "string" },
                 description: "真正 @ 的已知群友准确昵称；不需要时为空数组",
             },
+            meme: {
+                type: ["string", "null"], maxLength: 255,
+                description: "null 或当前输入提供的可用表情包完整文件名；最多一个，只能选择列表中的文件",
+            },
         },
-        required: ["messages", "mentions"],
+        required: ["messages", "mentions", "meme"],
         additionalProperties: false,
     },
 };
@@ -112,6 +122,7 @@ export function parseQqReplyArguments(argumentsJson: string): QQReplyAction | nu
         messages: data.messages === undefined && typeof data.content === "string"
             ? [data.content] : data.messages,
         mentions: data.mentions,
+        meme: data.meme,
         quote: data.quote,
     });
 }

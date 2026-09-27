@@ -13,6 +13,8 @@ import { TenBotError, isTenBotError } from "../../errors/tenbot-error.js";
 import { parseCommand, routeCommand } from "../../commands/router.js";
 import { projectMemeCandidates } from "../../skills/meme/projection.js";
 import { getMemeRuntimeSnapshot, searchAutoMemeCandidates } from "../../skills/meme/skill.js";
+import { buildAvailableMemeContext, memeLibrary } from "../../skills/meme/library-service.js";
+import { memeCandidateTracker } from "../../skills/meme/candidate-tracker.js";
 import type { MemeSearchQuery } from "../../skills/meme/search.js";
 import { debugPeerIdentity, logger, shortId, truncateLogText } from "../../shared/logger.js";
 import {
@@ -269,6 +271,14 @@ export function registerMessageHandler(
         if (disposed) return;
         const frontMode = getFrontMode();
         const normalized = await normalizeQqMessage(context, message);
+        try {
+            await memeCandidateTracker.remember(
+                normalized,
+                isConfiguredBotAdmin(normalized.authorId, getBotAdminIds()),
+            );
+        } catch {
+            logger.error("[MemeCandidate] candidate capture failed");
+        }
         debugPeerIdentity(normalized.authorName, normalized.authorId);
         const isAutomatedPeer = loopGuard.isAutomatedPeer(normalized.authorId);
         // QQ's bot flag is not reliable membership policy; unregistered IDs fail open as human activity.
@@ -305,7 +315,11 @@ export function registerMessageHandler(
                 result.ok ? (adminCommand ? "已启用" : "已停用") : "操作失败");
             return;
         }
-        if (await routeCommand(bot, normalized)) return;
+        if (await routeCommand(bot, normalized, {
+            isOwner: (memberOpenid) => isConfiguredBotAdmin(memberOpenid, getBotAdminIds()),
+            memeCandidates: memeCandidateTracker,
+            memeLibrary,
+        })) return;
 
         const input = normalized.displayContent;
         const imageAttachments = normalized.attachments.filter((attachment: any) => {
@@ -384,6 +398,9 @@ export function registerMessageHandler(
             },
             buildAttempt: async (attemptMessage, context) => {
                 const memeSnapshot = getMemeRuntimeSnapshot();
+                let memeFilenames: string[] = [];
+                try { memeFilenames = await memeLibrary.list(); }
+                catch { logger.error("[Meme] unable to list local meme files"); }
                 const snapshot = buildReplyCycleSnapshot(attemptMessage);
                 const knownMembersContext = trigger.isGroup
                     ? await buildKnownMembersContext(attemptMessage)
@@ -413,7 +430,10 @@ export function registerMessageHandler(
                     });
                 }
                 const replyPolicy = buildReplyPolicy(context.allowNoReply);
-                const aiInput = buildAiInput(snapshot.text, knownMembersContext, replyPolicy, memeContext);
+                const aiInput = [
+                    buildAiInput(snapshot.text, knownMembersContext, replyPolicy, memeContext),
+                    buildAvailableMemeContext(memeFilenames),
+                ].filter(Boolean).join("\n");
                 const frontDecision = [
                     "<front_decision>",
                     "trusted_by=TenBot Runtime",

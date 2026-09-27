@@ -5,10 +5,12 @@ import type { TenBotControl } from "./tenbot-control.js";
 import { logger } from "../shared/logger.js";
 import { parsePublicConfigPatch, validatePublicConfigPatch } from "../config/config-validation.js";
 import { isEditorResourceId } from "./editor-resources.js";
+import { MAX_MEME_FILE_BYTES, MemeLibraryError, memeLibrary, type MemeLibraryService } from "../skills/meme/library-service.js";
 
 const SSE_HEARTBEAT_MS = 25_000;
 const MAX_CONFIG_PATCH_BODY_BYTES = 16 * 1024;
 const MAX_EDITOR_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_MEME_BODY_BYTES = Math.ceil(MAX_MEME_FILE_BYTES * 4 / 3) + 64 * 1024;
 
 class HttpInputError extends Error {
     constructor(readonly statusCode: number, message: string) { super(message); }
@@ -19,6 +21,7 @@ interface WebServerOptions {
     port: number;
     /** Optional static root for tests and packaged deployments. Defaults to web/dist. */
     staticDirectory?: string;
+    memeService?: MemeLibraryService;
 }
 
 interface WebServerAddress {
@@ -74,6 +77,7 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
 
     const clients = new Set<SseClient>();
     const staticDirectory = resolve(options.staticDirectory ?? resolve(process.cwd(), "web", "dist"));
+    const memes = options.memeService ?? memeLibrary;
     let startPromise: Promise<WebServerAddress> | undefined;
     let closePromise: Promise<void> | undefined;
     let closing = false;
@@ -156,6 +160,63 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
         try { pathname = new URL(request.url ?? "/", "http://localhost").pathname; }
         catch {
             error(response, 400, "Bad request");
+            return;
+        }
+
+        if (pathname === "/api/meme-library") {
+            if (request.method === "GET") {
+                try { json(response, 200, { files: await memes.list() }); }
+                catch { error(response, 500, "无法读取表情包列表"); }
+                return;
+            }
+            if (request.method === "POST") {
+                await uploadMeme(request, response);
+                return;
+            }
+            response.setHeader("Allow", "GET, POST");
+            error(response, 405, "Method not allowed");
+            return;
+        }
+        const memePrefix = "/api/meme-library/";
+        if (pathname.startsWith(memePrefix)) {
+            const encodedFilename = pathname.slice(memePrefix.length);
+            let filename: string;
+            try { filename = decodeURIComponent(encodedFilename); }
+            catch { error(response, 400, "Bad request"); return; }
+            if (!encodedFilename || encodedFilename.includes("/") || filename.includes("/") || filename.includes("\\")) {
+                error(response, 404, "Not found");
+                return;
+            }
+            if (request.method === "GET") {
+                try {
+                    const file = await memes.get(filename);
+                    const bytes = await readFile(file.path);
+                    response.writeHead(200, {
+                        "Content-Type": file.contentType,
+                        "Content-Length": bytes.length,
+                        "Cache-Control": "no-store",
+                        "X-Content-Type-Options": "nosniff",
+                    });
+                    response.end(bytes);
+                } catch (cause) {
+                    error(response, cause instanceof MemeLibraryError && cause.code === "not-found" ? 404 : 500,
+                        cause instanceof MemeLibraryError && cause.code === "not-found" ? "表情包不存在" : "无法读取表情包");
+                }
+                return;
+            }
+            if (request.method === "DELETE") {
+                try {
+                    const deleted = await memes.delete(filename);
+                    if (!deleted) { error(response, 404, "表情包不存在"); return; }
+                    json(response, 200, { deleted: true, filename });
+                } catch (cause) {
+                    error(response, cause instanceof MemeLibraryError && cause.code === "not-found" ? 404 : 500,
+                        cause instanceof MemeLibraryError && cause.code === "not-found" ? "表情包不存在" : "无法删除表情包");
+                }
+                return;
+            }
+            response.setHeader("Allow", "GET, DELETE");
+            error(response, 405, "Method not allowed");
             return;
         }
 
@@ -271,6 +332,46 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
         }
 
         await serveStatic(pathname, response);
+    }
+
+    async function uploadMeme(request: import("node:http").IncomingMessage, response: ServerResponse): Promise<void> {
+        let body: unknown;
+        try { body = await readJsonBody(request, MAX_MEME_BODY_BYTES); }
+        catch (cause) {
+            error(response, cause instanceof HttpInputError ? cause.statusCode : 400,
+                cause instanceof HttpInputError ? cause.message : "无效的上传数据");
+            return;
+        }
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+            error(response, 400, "无效的上传数据");
+            return;
+        }
+        const record = body as Record<string, unknown>;
+        if (Object.keys(record).length !== 2 || typeof record.name !== "string" || typeof record.data !== "string" ||
+            !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(record.data)) {
+            error(response, 400, "无效的图片名称或数据");
+            return;
+        }
+        const bytes = Buffer.from(record.data, "base64");
+        if (!bytes.length || bytes.length > MAX_MEME_FILE_BYTES || bytes.toString("base64") !== record.data) {
+            error(response, bytes.length > MAX_MEME_FILE_BYTES ? 413 : 400,
+                bytes.length > MAX_MEME_FILE_BYTES ? "图片文件超过大小限制" : "无效的图片数据");
+            return;
+        }
+        try {
+            const file = await memes.add(record.name, bytes);
+            json(response, 201, { filename: file.filename });
+        } catch (cause) {
+            if (cause instanceof MemeLibraryError) {
+                const status = cause.code === "duplicate" ? 409
+                    : cause.code === "too-large" ? 413
+                    : cause.code === "unsupported-image" ? 415
+                    : cause.code === "invalid-name" ? 400 : 500;
+                error(response, status, cause.message);
+                return;
+            }
+            error(response, 500, "无法保存表情包");
+        }
     }
 
     async function updateConfig(request: import("node:http").IncomingMessage, response: ServerResponse): Promise<void> {

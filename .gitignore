@@ -26,3 +26,5 @@ Thumbs.db
 /data/*.db
 /data/*.db-shm
 /data/*.db-wal
+/data/memes/
+/data/cache/meme-candidates/

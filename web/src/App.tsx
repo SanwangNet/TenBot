@@ -10,12 +10,14 @@ import { useFeedback } from "./ui/feedback.js";
 import { nextPage, type PageId } from "./navigation.js";
 
 const EditorPage = lazy(async () => ({ default: (await import("./editor/editor-page.js")).EditorPage }));
+const MemeLibraryPage = lazy(async () => ({ default: (await import("./components/meme-library-page.js")).MemeLibraryPage }));
 
 const pages = [
     { id: "overview", label: "总览", mark: "◉" },
     { id: "models", label: "模型", mark: "◇" },
     { id: "prompts", label: "提示词", mark: "≡" },
     { id: "memes", label: "梗数据", mark: "✳" },
+    { id: "meme-library", label: "表情包", mark: "▣" },
     { id: "conversations", label: "对话", mark: "▤" },
     { id: "peers", label: "自动账号", mark: "◎" },
     { id: "logs", label: "日志", mark: "⌁" },
@@ -113,6 +115,7 @@ export function App() {
                         {page === "overview" ? <OverviewPage />
                             : page === "models" ? <ModelPage />
                             : page === "prompts" || page === "memes" ? <Suspense fallback={<div className="panel">正在载入编辑器…</div>}><EditorPage mode={page} onDirtyChange={onEditorDirtyChange} /></Suspense>
+                            : page === "meme-library" ? <Suspense fallback={<div className="panel">正在载入表情包…</div>}><MemeLibraryPage /></Suspense>
                             : page === "conversations" ? <ConversationsPage />
                             : page === "peers" ? <PeersPage />
                             : page === "logs" ? <LogsPage />

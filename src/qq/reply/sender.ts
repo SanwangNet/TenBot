@@ -29,6 +29,22 @@ export async function sendAiReply(
     return { sent: true, id: response?.id, refIdx: response?.ext_info?.ref_idx };
 }
 
+/** Send a selected library image as its own QQ message after all text replies. */
+export async function sendAiMeme(
+    bot: QQBot,
+    message: NormalizedQqMessage,
+    localPath: string,
+    beforeSend: () => boolean,
+): Promise<{ sent: boolean; id?: string; refIdx?: string }> {
+    if (!beforeSend()) return { sent: false };
+    const response = await bot.sendImage(message.replyTarget, { localPath });
+    return {
+        sent: true,
+        id: response.message?.id,
+        refIdx: response.message?.ext_info?.ref_idx,
+    };
+}
+
 export async function sendTimeoutReply(
     bot: QQBot,
     message: NormalizedQqMessage,

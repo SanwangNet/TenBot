@@ -8,6 +8,9 @@ import type {
     EditorResourceId,
     EditorSaveResponse,
     KnownMemberSummary,
+    MemeLibraryResponse,
+    MemeUploadResponse,
+    MemeDeleteResponse,
     PublicConfig,
     PublicConfigPatch,
     RuntimeStatus,
@@ -74,6 +77,12 @@ export const apiClient = {
         getJson<ConversationItem[]>(`/api/conversations/${encodeURIComponent(id)}`, signal),
     getAutomatedPeers: (signal?: AbortSignal) => getJson<{ registered: AutomatedPeerSummary[]; recent: AutomatedPeerSummary[] }>("/api/automated-peers", signal),
     getKnownMembers: (signal?: AbortSignal) => getJson<KnownMemberSummary[]>("/api/known-members", signal),
+    getMemeLibrary: (signal?: AbortSignal) => getJson<MemeLibraryResponse>("/api/meme-library", signal),
+    uploadMeme: (name: string, data: string, signal?: AbortSignal) =>
+        sendJson<MemeUploadResponse>("/api/meme-library", "POST", { name, data }, signal),
+    deleteMeme: (filename: string, signal?: AbortSignal) =>
+        sendJson<MemeDeleteResponse>(`/api/meme-library/${encodeURIComponent(filename)}`, "DELETE", undefined, signal),
+    memePreviewUrl: (filename: string) => `/api/meme-library/${encodeURIComponent(filename)}`,
     updateConfig: (patch: PublicConfigPatch, signal?: AbortSignal) =>
         sendJson<ConfigPatchResponse>("/api/config", "PATCH", patch, signal),
     addAutomatedPeer: (id: string, signal?: AbortSignal) =>

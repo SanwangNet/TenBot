@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 import type { AiResult } from "../src/ai/reply-result.js";
@@ -7,6 +10,7 @@ import type { ModelPlugin } from "../src/ai/model-plugin.js";
 import { ModelProviderError } from "../src/ai/model-plugin.js";
 import type { AttemptRuntimeSnapshot } from "../src/ai/attempt-snapshot.js";
 import { ToolProtocolLeakError } from "../src/ai/tool-protocol.js";
+import { MemeLibraryService } from "../src/skills/meme/library-service.js";
 import { buildAutoMemeContext } from "../src/skills/meme/skill.js";
 import { buildReplyCycleContext, recordIncomingMessageRevision, rememberIncomingMessage } from "../src/qq/conversation/recent-context.js";
 import { getConversationGeneration, isConversationActive, markConversationActive } from "../src/qq/conversation/engagement.js";
@@ -37,10 +41,75 @@ function fakeBot() {
     const bot = {
         async sendText(_target: unknown, content: string) { calls.push({ method: "text", content }); },
         async sendMarkdown(_target: unknown, content: string) { calls.push({ method: "markdown", content }); },
+        async sendImage(_target: unknown, payload: unknown) { calls.push({ method: "image", payload }); return { message: {} }; },
         async send(payload: unknown) { calls.push({ method: "send", payload }); },
     } as unknown as QQBot;
     return { bot, calls };
 }
+
+test("meme sends as one separate image after up to three text messages", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tenbot-reply-memes-"));
+    try {
+        const library = new MemeLibraryService(directory);
+        const gif = Buffer.from("GIF89a\x01\x00\x01\x00\x00\x00\x00", "binary");
+        await library.add("reaction", gif);
+        const value = message();
+        commit(value);
+        const { bot, calls } = fakeBot();
+        const action = {
+            messages: ["one", "two", "three"].map((content) => ({ content, quote: { mode: "none" as const, ref: null } })),
+            mentions: [], meme: "reaction.gif",
+        };
+        await coordinateAiReply(requestFor(bot, value), {
+            memeLibrary: library, multiMessageDelayMs: 0,
+            executeAi: async () => ({ kind: "reply", action }),
+        });
+        assert.deepEqual(calls.map((call) => call.method), ["markdown", "markdown", "markdown", "image"]);
+        assert.deepEqual(calls.filter((call) => call.method === "markdown").map((call) => call.content), ["one", "two", "three"]);
+        assert.equal(calls[3]?.method, "image");
+    } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("meme-only replies send an image; missing or failed memes do not discard text or retry AI", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tenbot-reply-meme-failure-"));
+    try {
+        const library = new MemeLibraryService(directory);
+        const gif = Buffer.from("GIF89a\x01\x00\x01\x00\x00\x00\x00", "binary");
+        await library.add("reaction", gif);
+        const memeOnly = message();
+        commit(memeOnly);
+        const first = fakeBot();
+        await coordinateAiReply(requestFor(first.bot, memeOnly), {
+            memeLibrary: library, multiMessageDelayMs: 0,
+            executeAi: async () => ({ kind: "reply", action: { messages: [], mentions: [], meme: "reaction.gif" } }),
+        });
+        assert.deepEqual(first.calls.map((call) => call.method), ["image"]);
+
+        const unknown = message();
+        commit(unknown);
+        const second = fakeBot();
+        await coordinateAiReply(requestFor(second.bot, unknown), {
+            memeLibrary: library,
+            executeAi: async () => ({ kind: "reply", action: { messages: [{ content: "text", quote: { mode: "none", ref: null } }], mentions: [], meme: "missing.gif" } }),
+        });
+        assert.deepEqual(second.calls.map((call) => call.method), ["markdown"]);
+
+        const failed = message();
+        commit(failed);
+        const third = fakeBot();
+        let executions = 0;
+        (third.bot as unknown as { sendImage: () => Promise<never> }).sendImage = async () => { throw new Error("upload failed"); };
+        await coordinateAiReply(requestFor(third.bot, failed), {
+            memeLibrary: library, multiMessageDelayMs: 0,
+            executeAi: async () => {
+                executions++;
+                return { kind: "reply", action: { messages: [{ content: "kept", quote: { mode: "none", ref: null } }], mentions: [], meme: "reaction.gif" } };
+            },
+        });
+        assert.equal(executions, 1);
+        assert.deepEqual(third.calls.map((call) => call.method), ["markdown"]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+});
 function requestFor(bot: QQBot, value: NormalizedQqMessage, priority: 0 | 1 | 2 | 3 = 3) {
     const wakeLevel = priority === 3 ? "hard" as const : priority === 0 ? "pass" as const : "soft" as const;
     const wakeReason = priority === 3 ? "hard-mention" as const : priority === 2 ? "name-soft" as const :

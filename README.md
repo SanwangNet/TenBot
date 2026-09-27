@@ -151,6 +151,18 @@ TUI 与 QQ Runtime 在同一进程运行，通过 TenBotControl 读取可序列�
 
 ## QQ 命令
 
+### 管理员命令
+
+群聊管理员命令为 `@小尘 /启用` 和 `@小尘 /停用`。在真实 `.env` 中填写 WebUI「已知成员」页面显示的 8 位 opaque member ID：
+
+```dotenv
+BOT_ADMIN_IDS=<Known Members 中的 8 位 ID>
+```
+
+请把尖括号占位符替换成实际 ID；多个管理员 ID 用逗号分隔。
+
+保存 `.env` 后，运行中的 TenBot 会通过环境文件 watcher 自动热加载并生效，无需重启。
+
 | 命令 | 说明 |
 | --- | --- |
 | /help | 查看可用命令 |

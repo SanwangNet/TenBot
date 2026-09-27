@@ -63,7 +63,7 @@ test("strict qq_reply schema uses semantic quote objects and normalizes legacy i
     assert.deepEqual(schema.required, ["mode", "ref"]);
     assert.equal(JSON.stringify(schema).includes("message_id"), false);
     assert.deepEqual(qqReplyTool.parameters.properties.messages.items.required, ["content", "quote"]);
-    assert.deepEqual(qqReplyTool.parameters.required, ["messages", "mentions"]);
+    assert.deepEqual(qqReplyTool.parameters.required, ["messages", "mentions", "meme"]);
     assert.deepEqual(parseQqReplyArguments('{"messages":["好"],"mentions":[],"quote":{"mode":"message","ref":"m2"}}')?.messages[0].quote,
         { mode: "message", ref: "m2" });
     assert.deepEqual(parseQqReplyArguments('{"messages":["好"],"mentions":[],"quote":"trigger"}')?.messages[0].quote,

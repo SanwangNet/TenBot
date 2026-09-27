@@ -15,6 +15,7 @@ import type { KnownMemberSummary } from "../src/control/known-members.js";
 import { loadAppConfig } from "../src/config/config-validation.js";
 import type { ConfigUpdateResult, PublicConfigPatch } from "../src/config/config-types.js";
 import type { EditorResourceId } from "../src/control/editor-resources.js";
+import { MemeLibraryService } from "../src/skills/meme/library-service.js";
 
 const initialStatus: RuntimeStatus = {
     qq: "connected",
@@ -136,11 +137,45 @@ function createFakeControl() {
     };
 }
 
-async function startServer(control: TenBotControl, staticDirectory?: string) {
-    const server = createTenBotWebServer(control, { host: "127.0.0.1", port: 0, staticDirectory });
+async function startServer(control: TenBotControl, staticDirectory?: string, memeService?: MemeLibraryService) {
+    const server = createTenBotWebServer(control, { host: "127.0.0.1", port: 0, staticDirectory, memeService });
     const address = await server.start();
     return { server, baseUrl: `http://127.0.0.1:${address.port}` };
 }
+
+test("meme library API lists, uploads, previews, rejects duplicate names, and deletes only managed files", async () => {
+    const fake = createFakeControl();
+    const directory = await mkdtemp(join(tmpdir(), "tenbot-web-memes-"));
+    const service = new MemeLibraryService(directory);
+    const { server, baseUrl } = await startServer(fake.control, undefined, service);
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
+    try {
+        const empty = await fetch(`${baseUrl}/api/meme-library`);
+        assert.deepEqual(await empty.json(), { files: [] });
+        const upload = await fetch(`${baseUrl}/api/meme-library`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "测试图", data: png.toString("base64") }),
+        });
+        assert.equal(upload.status, 201);
+        assert.deepEqual(await upload.json(), { filename: "测试图.png" });
+        const duplicate = await fetch(`${baseUrl}/api/meme-library`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "测试图", data: png.toString("base64") }),
+        });
+        assert.equal(duplicate.status, 409);
+        const preview = await fetch(`${baseUrl}/api/meme-library/${encodeURIComponent("测试图.png")}`);
+        assert.equal(preview.status, 200);
+        assert.equal(preview.headers.get("content-type"), "image/png");
+        assert.deepEqual(Buffer.from(await preview.arrayBuffer()), png);
+        assert.equal((await fetch(`${baseUrl}/api/meme-library/%2e%2e%2f.env`)).status, 404);
+        const deleted = await fetch(`${baseUrl}/api/meme-library/${encodeURIComponent("测试图.png")}`, { method: "DELETE" });
+        assert.equal(deleted.status, 200);
+        assert.deepEqual(await (await fetch(`${baseUrl}/api/meme-library`)).json(), { files: [] });
+    } finally {
+        await server.close();
+        await rm(directory, { recursive: true, force: true });
+    }
+});
 
 test("HTTP API reads through TenBotControl and keeps config secrets out of responses", async () => {
     const fake = createFakeControl();
