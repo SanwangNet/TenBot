@@ -125,7 +125,7 @@ export interface ProviderErrorNotice {
     timestamp: string;
 }
 
-export type EditorResourceId = "prompt:gpt" | "prompt:deepseek" | "prompt:reply-judge" | "meme:data";
+export type EditorResourceId = "prompt:main" | "prompt:gpt" | "prompt:deepseek" | "prompt:reply-judge" | "meme:data";
 export interface EditorResource {
     id: EditorResourceId;
     displayName: string;

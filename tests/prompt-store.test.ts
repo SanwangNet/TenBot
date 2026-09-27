@@ -54,6 +54,32 @@ test("PromptStore reload failure keeps the previously active snapshot", async ()
     }
 });
 
+test("PromptStore combines the shared prompt with each provider prompt and reloads both", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tenbot-shared-prompts-"));
+    const paths = {
+        main: join(directory, "main.md"),
+        gpt: join(directory, "gpt.md"),
+        deepseek: join(directory, "deepseek.md"),
+    };
+    try {
+        await writeFile(paths.main, "Shared rules", "utf8");
+        await writeFile(paths.gpt, "GPT rules", "utf8");
+        await writeFile(paths.deepseek, "DeepSeek rules", "utf8");
+        const store = new PromptStore(paths);
+        await store.loadAll();
+        assert.equal(store.get("gpt").content, "Shared rules\n\nGPT rules");
+        assert.equal(store.get("deepseek").content, "Shared rules\n\nDeepSeek rules");
+
+        await writeFile(paths.main, "Updated shared rules", "utf8");
+        const snapshots = await store.reloadAll();
+        assert.equal(snapshots.length, 2);
+        assert.equal(store.get("gpt").content, "Updated shared rules\n\nGPT rules");
+        assert.equal(store.get("deepseek").content, "Updated shared rules\n\nDeepSeek rules");
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
 test("Prompt watcher updates the next ModelRequest while an in-flight request keeps its captured prompt", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tenbot-prompt-watch-"));
     const gptPath = join(directory, "gpt.md");
@@ -105,12 +131,13 @@ test("Prompt watcher updates the next ModelRequest while an in-flight request ke
     }
 });
 
-test("migrated Prompt files contain provider-specific content", async () => {
+test("shared and provider prompt files contain common and model-specific content", async () => {
+    const main = await readFile(new URL("../src/ai/plugins/shared/prompt.md", import.meta.url), "utf8");
     const gpt = await readFile(new URL("../src/ai/plugins/gpt/prompt.md", import.meta.url), "utf8");
     const deepseek = await readFile(new URL("../src/ai/plugins/deepseek/prompt.md", import.meta.url), "utf8");
     assert.notEqual(gpt, deepseek);
-    assert.match(gpt, /一般不主动插话/);
-    assert.match(deepseek, /一般不主动插话/);
+    assert.match(main, /一般不主动插话/);
+    assert.match(gpt, /联网搜索/);
     assert.doesNotMatch(gpt, /GPT-6 Sol/);
     assert.match(deepseek, /web_search/);
 });

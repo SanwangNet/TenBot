@@ -5,7 +5,7 @@ import { writeFileAtomically } from "../config/env-document.js";
 import { validateMemeFile } from "../skills/meme/validation.js";
 import type { ReloadResult } from "./tenbot-control.js";
 
-export const EDITOR_RESOURCE_IDS = ["prompt:gpt", "prompt:deepseek", "prompt:reply-judge", "meme:data"] as const;
+export const EDITOR_RESOURCE_IDS = ["prompt:main", "prompt:gpt", "prompt:deepseek", "prompt:reply-judge", "meme:data"] as const;
 export type EditorResourceId = typeof EDITOR_RESOURCE_IDS[number];
 
 export function isEditorResourceId(value: string): value is EditorResourceId {

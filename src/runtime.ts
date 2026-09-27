@@ -95,6 +95,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     const fileWatchers: FileChangeWatcher[] = [];
     let envWatcher: FileChangeWatcher | undefined;
     let memeWatcher: FileChangeWatcher | undefined;
+    let sharedPromptWatcher: FileChangeWatcher | undefined;
     let replyJudgePromptWatcher: FileChangeWatcher | undefined;
     const promptWatchers = new Map<PromptProvider, FileChangeWatcher>();
     let lastReloadFailure: { message: string; timestamp: string } | undefined;
@@ -280,8 +281,20 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     };
 
     const editorResources = createEditorResourceStore({
-        "prompt:gpt": { path: promptStore.getPath("gpt"), displayName: "GPT Prompt", language: "markdown", reload: () => control!.reloadPrompt("gpt") },
-        "prompt:deepseek": { path: promptStore.getPath("deepseek"), displayName: "DeepSeek Prompt", language: "markdown", reload: () => control!.reloadPrompt("deepseek") },
+        "prompt:main": { path: promptStore.getMainPath()!, displayName: "主提示词", language: "markdown", reload: async () => {
+            try {
+                const prompts = await promptStore.reloadAll();
+                await sharedPromptWatcher?.markCurrent();
+                lastReloadFailure = undefined;
+                control?.publishStatus();
+                return { ok: true, message: "主提示词已重载", revision: Math.max(...prompts.map((prompt) => prompt.revision)), loadedAt: new Date().toISOString() };
+            } catch {
+                publishReloadFailure("prompt");
+                return { ok: false, message: "主提示词重载失败；继续使用旧版本" };
+            }
+        } },
+        "prompt:gpt": { path: promptStore.getPath("gpt"), displayName: "GPT 专属提示词", language: "markdown", reload: () => control!.reloadPrompt("gpt") },
+        "prompt:deepseek": { path: promptStore.getPath("deepseek"), displayName: "DeepSeek 专属提示词", language: "markdown", reload: () => control!.reloadPrompt("deepseek") },
         "prompt:reply-judge": { path: replyJudgePromptStore.getPath(), displayName: "Reply Judge Prompt", language: "markdown", reload: () => control!.reloadReplyJudgePrompt() },
         "meme:data": { path: memeStore.getPath(), displayName: "Meme Data", language: "json", reload: () => control!.reloadMemes() },
     });
@@ -431,6 +444,22 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         });
         promptWatchers.set(providerId, watcher);
         fileWatchers.push(watcher);
+    }
+    const mainPromptPath = promptStore.getMainPath();
+    if (mainPromptPath) {
+        sharedPromptWatcher = new FileChangeWatcher(mainPromptPath, async () => {
+            try {
+                const prompts = await promptStore.reloadAll();
+                lastReloadFailure = undefined;
+                logger.info(`[Runtime] shared prompt hot reload revisions=${prompts.map((prompt) => `${prompt.provider}:${prompt.revision}`).join(",")}`);
+                control?.publishStatus();
+            } catch (error) {
+                lastReloadFailure = { message: error instanceof Error ? error.message : "Prompt reload failed", timestamp: new Date().toISOString() };
+                logger.error("[Runtime] shared prompt hot reload failed", error);
+                control?.publishStatus();
+            }
+        });
+        fileWatchers.push(sharedPromptWatcher);
     }
     replyJudgePromptWatcher = new FileChangeWatcher(replyJudgePromptStore.getPath(), async () => {
         try {

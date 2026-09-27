@@ -8,12 +8,14 @@ import { createEditorResourceStore, isEditorResourceId } from "../src/control/ed
 async function fixture() {
     const directory = await mkdtemp(join(tmpdir(), "tenbot-editor-test-"));
     const paths = {
+        "prompt:main": join(directory, "main.md"),
         "prompt:gpt": join(directory, "gpt.md"),
         "prompt:deepseek": join(directory, "deepseek.md"),
         "prompt:reply-judge": join(directory, "judge.md"),
         "meme:data": join(directory, "memes.json"),
     } as const;
     await Promise.all([
+        writeFile(paths["prompt:main"], "Main prompt", "utf8"),
         writeFile(paths["prompt:gpt"], "GPT prompt", "utf8"),
         writeFile(paths["prompt:deepseek"], "DeepSeek prompt", "utf8"),
         writeFile(paths["prompt:reply-judge"], "Judge prompt", "utf8"),
@@ -21,6 +23,7 @@ async function fixture() {
     ]);
     const reloaded: string[] = [];
     const store = createEditorResourceStore({
+        "prompt:main": { path: paths["prompt:main"], displayName: "Main", language: "markdown", async reload() { reloaded.push("main"); return { ok: true, message: "ok", loadedAt: "now" }; } },
         "prompt:gpt": { path: paths["prompt:gpt"], displayName: "GPT", language: "markdown", async reload() { reloaded.push("gpt"); return { ok: true, message: "ok", loadedAt: "now" }; } },
         "prompt:deepseek": { path: paths["prompt:deepseek"], displayName: "DeepSeek", language: "markdown", async reload() { reloaded.push("deepseek"); return { ok: true, message: "ok", loadedAt: "now" }; } },
         "prompt:reply-judge": { path: paths["prompt:reply-judge"], displayName: "Judge", language: "markdown", async reload() { reloaded.push("judge"); return { ok: true, message: "ok", loadedAt: "now" }; } },
@@ -31,6 +34,7 @@ async function fixture() {
 
 test("editor allowlist rejects arbitrary path and secret names", () => {
     for (const invalid of ["../.env", "C:\\Users\\secret", ".env", "apiKey", "prompt:../.env"]) assert.equal(isEditorResourceId(invalid), false);
+    assert.equal(isEditorResourceId("prompt:main"), true);
     assert.equal(isEditorResourceId("prompt:reply-judge"), true);
 });
 
@@ -48,9 +52,13 @@ test("prompt save checks version, atomically replaces file, and invokes the matc
         const conflict = await store.save("prompt:gpt", "stale", first.version);
         assert.deepEqual(conflict, { ok: false, reason: "conflict", message: "File changed on the server" });
         assert.equal(await readFile(paths["prompt:gpt"], "utf8"), "Updated GPT prompt\n");
+        const main = await store.get("prompt:main");
+        assert.equal((await store.save("prompt:main", "Updated main prompt\n", main.version)).ok, true);
+        assert.deepEqual(reloaded, ["gpt", "main"]);
+        assert.equal(await readFile(paths["prompt:main"], "utf8"), "Updated main prompt\n");
         const judge = await store.get("prompt:reply-judge");
         assert.equal((await store.save("prompt:reply-judge", "Updated Judge", judge.version)).ok, true);
-        assert.deepEqual(reloaded, ["gpt", "judge"]);
+        assert.deepEqual(reloaded, ["gpt", "main", "judge"]);
     } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -76,6 +84,7 @@ test("reload failure reports saved file separately from active Runtime snapshot"
     try {
         const current = await store.get("prompt:gpt");
         const failing = createEditorResourceStore({
+            "prompt:main": { path: paths["prompt:main"], displayName: "Main", language: "markdown", async reload() { return { ok: true, message: "ok", loadedAt: "now" }; } },
             "prompt:gpt": { path: paths["prompt:gpt"], displayName: "GPT", language: "markdown", async reload() { throw new Error("private stack"); } },
             "prompt:deepseek": { path: paths["prompt:deepseek"], displayName: "DeepSeek", language: "markdown", async reload() { return { ok: true, message: "ok", loadedAt: "now" }; } },
             "prompt:reply-judge": { path: paths["prompt:reply-judge"], displayName: "Judge", language: "markdown", async reload() { return { ok: true, message: "ok", loadedAt: "now" }; } },

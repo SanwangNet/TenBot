@@ -15,11 +15,11 @@ self.MonacoEnvironment = { getWorker(_moduleId, label) { return label === "json"
 loader.config({ monaco });
 
 const promptTabs: Array<{ id: EditorResourceId; label: string }> = [
-    { id: "prompt:gpt", label: "GPT" }, { id: "prompt:deepseek", label: "DeepSeek" }, { id: "prompt:reply-judge", label: "回复判断" },
+    { id: "prompt:main", label: "主提示词" }, { id: "prompt:gpt", label: "GPT 专属" }, { id: "prompt:deepseek", label: "DeepSeek 专属" }, { id: "prompt:reply-judge", label: "回复判断" },
 ];
 
 export function EditorPage({ mode, onDirtyChange }: { mode: "prompts" | "memes"; onDirtyChange(dirty: boolean): void }) {
-    const [resourceId, setResourceId] = useState<EditorResourceId>(mode === "prompts" ? "prompt:gpt" : "meme:data");
+    const [resourceId, setResourceId] = useState<EditorResourceId>(mode === "prompts" ? "prompt:main" : "meme:data");
     const [draft, setDraft] = useState<EditorDraft | null>(null);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);

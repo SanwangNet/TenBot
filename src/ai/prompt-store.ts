@@ -10,12 +10,17 @@ export interface PromptSnapshot {
     revision: number;
 }
 
-export type PromptPaths = Readonly<Record<PromptProvider, URL | string>>;
+export type PromptPaths = Readonly<Record<PromptProvider, URL | string> & { main?: URL | string }>;
 
 const defaultPaths: PromptPaths = {
+    main: new URL("./plugins/shared/prompt.md", import.meta.url),
     gpt: new URL("./plugins/gpt/prompt.md", import.meta.url),
     deepseek: new URL("./plugins/deepseek/prompt.md", import.meta.url),
 };
+
+function combinePrompt(main: string | undefined, specific: string): string {
+    return main?.trim() ? `${main.trimEnd()}\n\n${specific.trimStart()}` : specific;
+}
 
 function makeSnapshot(provider: PromptProvider, content: string, revision: number): PromptSnapshot {
     if (!content.trim()) throw new Error(`${provider} Prompt must not be empty`);
@@ -31,7 +36,8 @@ export class PromptStore {
     get(provider: PromptProvider): PromptSnapshot {
         let snapshot = this.snapshots.get(provider);
         if (!snapshot) {
-            snapshot = makeSnapshot(provider, readFileSync(this.paths[provider], "utf8"), 1);
+            const main = this.paths.main ? readFileSync(this.paths.main, "utf8") : undefined;
+            snapshot = makeSnapshot(provider, combinePrompt(main, readFileSync(this.paths[provider], "utf8")), 1);
             this.snapshots.set(provider, snapshot);
         }
         return snapshot;
@@ -43,22 +49,57 @@ export class PromptStore {
     }
 
     async load(provider: PromptProvider): Promise<PromptSnapshot> {
-        const content = await readFile(this.paths[provider], "utf8");
+        const [main, specific] = await Promise.all([
+            this.paths.main ? readFile(this.paths.main, "utf8") : undefined,
+            readFile(this.paths[provider], "utf8"),
+        ]);
+        const content = combinePrompt(main, specific);
         const snapshot = makeSnapshot(provider, content, (this.snapshots.get(provider)?.revision ?? 0) + 1);
         this.snapshots.set(provider, snapshot);
         return snapshot;
     }
 
     async loadAll(): Promise<void> {
-        const loaded = await Promise.all((Object.keys(this.paths) as PromptProvider[]).map(async (provider) => {
-            const content = await readFile(this.paths[provider], "utf8");
-            return [provider, makeSnapshot(provider, content, (this.snapshots.get(provider)?.revision ?? 0) + 1)] as const;
-        }));
-        for (const [provider, snapshot] of loaded) this.snapshots.set(provider, snapshot);
+        const [main, gpt, deepseek] = await Promise.all([
+            this.paths.main ? readFile(this.paths.main, "utf8") : undefined,
+            readFile(this.paths.gpt, "utf8"),
+            readFile(this.paths.deepseek, "utf8"),
+        ]);
+        const loaded = ([
+            ["gpt", gpt],
+            ["deepseek", deepseek],
+        ] as const).map(([provider, specific]) => makeSnapshot(
+            provider,
+            combinePrompt(main, specific),
+            (this.snapshots.get(provider)?.revision ?? 0) + 1,
+        ));
+        for (const snapshot of loaded) this.snapshots.set(snapshot.provider, snapshot);
+    }
+
+    async reloadAll(): Promise<readonly PromptSnapshot[]> {
+        const [main, gpt, deepseek] = await Promise.all([
+            this.paths.main ? readFile(this.paths.main, "utf8") : undefined,
+            readFile(this.paths.gpt, "utf8"),
+            readFile(this.paths.deepseek, "utf8"),
+        ]);
+        const loaded = ([
+            ["gpt", gpt],
+            ["deepseek", deepseek],
+        ] as const).map(([provider, specific]) => makeSnapshot(
+            provider,
+            combinePrompt(main, specific),
+            (this.snapshots.get(provider)?.revision ?? 0) + 1,
+        ));
+        for (const snapshot of loaded) this.snapshots.set(snapshot.provider, snapshot);
+        return loaded;
     }
 
     async reload(provider: PromptProvider): Promise<PromptSnapshot> {
-        const content = await readFile(this.paths[provider], "utf8");
+        const [main, specific] = await Promise.all([
+            this.paths.main ? readFile(this.paths.main, "utf8") : undefined,
+            readFile(this.paths[provider], "utf8"),
+        ]);
+        const content = combinePrompt(main, specific);
         const snapshot = makeSnapshot(provider, content, (this.snapshots.get(provider)?.revision ?? 0) + 1);
         this.snapshots.set(provider, snapshot);
         return snapshot;
@@ -70,6 +111,10 @@ export class PromptStore {
 
     getPath(provider: PromptProvider): URL | string {
         return this.paths[provider];
+    }
+
+    getMainPath(): URL | string | undefined {
+        return this.paths.main;
     }
 }
 
