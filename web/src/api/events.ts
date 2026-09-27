@@ -5,6 +5,7 @@ export type RuntimeConnectionState = "connecting" | "online" | "reconnecting" | 
 export interface RuntimeEventHandlers {
     onStatus(status: RuntimeStatus): void;
     onLog(entry: LogEntry): void;
+    onLogsSnapshot(entries: LogEntry[]): void;
     onRuntimeEvent(event: RuntimeEvent): void;
     onConnection(state: RuntimeConnectionState): void;
 }
@@ -23,6 +24,10 @@ export function connectRuntimeEvents(handlers: RuntimeEventHandlers): () => void
     });
     source.addEventListener("log", (event) => {
         try { handlers.onLog(parseEventData<LogEntry>((event as MessageEvent<string>).data)); }
+        catch { /* Ignore malformed frames and keep the stream available. */ }
+    });
+    source.addEventListener("logs-snapshot", (event) => {
+        try { handlers.onLogsSnapshot(parseEventData<LogEntry[]>((event as MessageEvent<string>).data)); }
         catch { /* Ignore malformed frames and keep the stream available. */ }
     });
     source.addEventListener("runtime-event", (event) => {

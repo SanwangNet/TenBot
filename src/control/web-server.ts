@@ -146,7 +146,14 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
         client.heartbeat.unref();
 
         client.unsubscribe.push(control.subscribeStatus((status) => sendEvent(client, "status", status)));
-        client.unsubscribe.push(control.subscribeLogs((entry) => sendEvent(client, "log", entry)));
+        const replay: import("../shared/logger.js").LogEntry[] = [];
+        let replaying = true;
+        client.unsubscribe.push(control.subscribeLogs((entry) => {
+            if (replaying) replay.push(entry);
+            else sendEvent(client, "log", entry);
+        }));
+        sendEvent(client, "logs-snapshot", replay);
+        replaying = false;
         client.unsubscribe.push(control.subscribeEvents((event) => sendEvent(client, "runtime-event", event)));
     }
 

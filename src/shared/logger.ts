@@ -1,112 +1,156 @@
 import type { Logger as QqSdkLogger } from "@tencent-connect/qqbot-nodejs";
+import { resolve } from "node:path";
 import { parseLogLevel } from "../config/config-validation.js";
 import { formatTenBotError } from "../errors/format.js";
 import { isTenBotError } from "../errors/tenbot-error.js";
+import { LogFileSink } from "./log-file-sink.js";
 
-export type LogLevel = "info" | "debug" | "error";
+export type LogLevel = "all" | "debug" | "info" | "error";
 
 export interface LogEntry {
     timestamp: string;
     level: LogLevel;
     text: string;
+    /** Stable identity and canonical repeat metadata are assigned by LogBuffer. */
+    rowId?: string;
+    repeatCount?: number;
+    firstTimestamp?: string;
 }
 
 export type LogListener = (entry: LogEntry) => void;
 
 let logLevel: LogLevel = parseLogLevel(process.env.BOT_LOG_LEVEL);
 
-const levels: Record<LogLevel, number> = {
-    debug: 0,
-    info: 1,
-    error: 2,
-};
-
+const levels: Record<LogLevel, number> = { all: 0, debug: 1, info: 2, error: 3 };
 const logListeners = new Set<LogListener>();
 let consoleOutputEnabled = true;
+let allModeWarningPrinted = false;
+let logFileSink: LogFileSink | undefined;
+let environmentSecrets: string[] = [];
+
+function refreshEnvironmentSecrets(): void {
+    environmentSecrets = Object.entries(process.env)
+        .filter(([name, secret]) => Boolean(secret) && /(?:KEY|APP_SECRET|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PASSWORD|CREDENTIAL|AUTHORIZATION|COOKIE|SECRET)$/i.test(name))
+        .map(([, secret]) => secret!)
+        .filter((secret) => secret.length > 0);
+}
+
+refreshEnvironmentSecrets();
 
 function timestamp(): string {
     return new Date().toLocaleTimeString("en-GB", { hour12: false });
 }
 
-function sanitizeText(value: string): string {
-    let safe = value
-        .replace(
-            /\b(auth[_-]?token|access[_-]?token|refresh[_-]?token|app[_-]?secret|client[_-]?secret|api[_-]?key|authorization|cookie|(?:member|group|user)?[_-]?openid|token)\b(\s*[=:]\s*)([^\s,}&"']+)/gi,
-            "$1$2[REDACTED]",
-        )
-        .replace(/\bAuthorization\s*:\s*[^\r\n]+/gi, "Authorization: [REDACTED]")
-        .replace(/\b(Bearer|QQBot)\s+[A-Za-z0-9._~+\/-]+=*/gi, "$1 [REDACTED]")
-        .replace(
-            /("(?:auth[_-]?token|access[_-]?token|refresh[_-]?token|app[_-]?secret|client[_-]?secret|api[_-]?key|authorization|cookie|(?:member|group|user)?[_-]?openid|token)"\s*:\s*")[^"]*(")/gi,
-            "$1[REDACTED]$2",
-        )
-        .replace(/https?:\/\/[^\s"'<>?]+\?[^\s"'<>]*/gi, "[URL query redacted]")
-        .replace(/\/(groups|users|members|files)\/[A-Za-z0-9_-]{6,}/gi, "/$1/[ID]")
-        .replace(/\b[A-Za-z0-9_-]{24,}\b/g, (id) => `${id.slice(0, 6)}…`);
+const secretKeyPattern = /(?:auth.?token|access.?token|refresh.?token|app.?secret|client.?secret|api.?key|authorization|set.?cookie|cookie|password|credential|session.?key|private.?key|signature|^sig$|^sign$|^key$|^auth$|^secret$|^token$)/i;
+const safeOpenIdPattern = /\b(?:member|group|user)?[_-]?openid\b(\s*[=:]\s*)([^\s,}&"']+)/gi;
 
-    for (const secret of [process.env.QQBOT_APP_SECRET, process.env.CODEX_API_KEY, process.env.DEEPSEEK_API_KEY]) {
-        if (secret) {
-            safe = safe.replaceAll(secret, "[REDACTED]");
-        }
+/** Redact credentials while retaining diagnostic IDs, OpenIDs, URLs, and payload structure. */
+export function sanitizeSecrets(value: string): string {
+    let safe = value
+        .replace(/\bAuthorization\s*:\s*[^\r\n]+/gi, "Authorization: [REDACTED]")
+        .replace(/\b(?:Set-)?Cookie\s*:\s*[^\r\n]+/gi, "Cookie: [REDACTED]")
+        .replace(/\b(Bearer|QQBot)\s+[A-Za-z0-9._~+\/-]+=*/gi, "$1 [REDACTED]")
+        .replace(/(["']?(?:auth[_-]?token|access[_-]?token|refresh[_-]?token|app[_-]?secret|client[_-]?secret|api[_-]?key|authorization|cookie|password|credential|session[_-]?key|private[_-]?key|token)["']?\s*[=:]\s*["']?)([^\s,}&"']+)/gi, "$1[REDACTED]")
+        .replace(/([?&](?:api[_-]?key|key|access[_-]?token|refresh[_-]?token|token|signature|sig|sign|credential|auth|secret|hm|ex)=)[^&#\s]+/gi, "$1[REDACTED]");
+
+    // Also redact credentials supplied under deployment-specific environment names.
+    for (const secret of environmentSecrets) {
+        safe = safe.replaceAll(secret, "[REDACTED]");
     }
     return safe;
 }
 
-function formatValue(value: unknown): string {
-    if (value instanceof Error) {
-        return sanitizeText(value.stack ?? `${value.name}: ${value.message}`);
+/** Redact credentials and apply the long-standing low-noise masking used by info/debug/error. */
+export function sanitizeSafeDiagnostic(value: string): string {
+    return sanitizeSecrets(value)
+        .replace(safeOpenIdPattern, (_match, separator: string) => `openid${separator}[ID]`)
+        .replace(/https?:\/\/[^\s"'<>?]+\?[^\s"'<>]*/gi, "[URL query redacted]")
+        .replace(/\/(groups|users|members|files)\/[A-Za-z0-9_-]{6,}/gi, "/$1/[ID]")
+        .replace(/\b[A-Za-z0-9_-]{24,}\b/g, (id) => `${id.slice(0, 6)}…`);
+}
+
+function sanitizeObject(value: unknown, includeBusinessIdentifiers: boolean, seen = new WeakSet<object>()): unknown {
+    if (value instanceof Date) return value.toISOString();
+    if (value instanceof URL) return value.toString();
+    if (value && typeof value === "object") {
+        if (seen.has(value)) return "[Circular]";
+        seen.add(value);
     }
-    if (typeof value === "string") {
-        return sanitizeText(value);
+    if (Array.isArray(value)) {
+        const safeArray = value.map((item) => sanitizeObject(item, includeBusinessIdentifiers, seen));
+        seen.delete(value);
+        return safeArray;
     }
-    if (value === undefined) {
-        return "undefined";
-    }
-    try {
-        return sanitizeText(JSON.stringify(value, (key, nestedValue: unknown) => {
-            if (/(?:auth.?token|access.?token|app.?secret|client.?secret|api.?key|authorization|cookie|openid|token)/i.test(key)) {
-                return "[REDACTED]";
+    if (value && typeof value === "object") {
+        const object = value instanceof Error
+            ? {
+                name: value.name,
+                message: value.message,
+                stack: value.stack,
+                ...Object.fromEntries(Object.entries(value)),
+                ...(value.cause === undefined ? {} : { cause: value.cause }),
             }
-            return nestedValue;
-        }));
+            : value;
+        const safe: Record<string, unknown> = {};
+        for (const [key, nestedValue] of Object.entries(object)) {
+            if (secretKeyPattern.test(key)) safe[key] = "[REDACTED]";
+            else if (!includeBusinessIdentifiers && /openid/i.test(key)) safe[key] = "[ID]";
+            else safe[key] = sanitizeObject(nestedValue, includeBusinessIdentifiers, seen);
+        }
+        seen.delete(value);
+        return safe;
+    }
+    return value;
+}
+
+function formatValue(value: unknown, includeBusinessIdentifiers: boolean): string {
+    if (typeof value === "string") {
+        return includeBusinessIdentifiers ? sanitizeSecrets(value) : sanitizeSafeDiagnostic(value);
+    }
+    if (value === undefined) return "undefined";
+    try {
+        const safeValue = sanitizeObject(value, includeBusinessIdentifiers);
+        const serialized = JSON.stringify(safeValue);
+        return includeBusinessIdentifiers ? sanitizeSecrets(serialized) : sanitizeSafeDiagnostic(serialized);
     } catch {
-        return sanitizeText(String(value));
+        const fallback = String(value);
+        return includeBusinessIdentifiers ? sanitizeSecrets(fallback) : sanitizeSafeDiagnostic(fallback);
     }
 }
 
 function write(level: LogLevel, values: unknown[], preserveLastString = false): void {
-    if (levels[level] < levels[logLevel]) {
-        return;
-    }
+    if (levels[level] < levels[logLevel]) return;
 
     const presentValues = values.filter((value) => value !== undefined);
     const formalError = level === "error" ? presentValues.find(isTenBotError) : undefined;
+    const includeBusinessIdentifiers = level === "all";
     const text = formalError
-        ? formatTenBotError(formalError)
-        : presentValues.map((value, index) =>
-            preserveLastString && index === presentValues.length - 1 && typeof value === "string"
-                ? value
-                : formatValue(value),
-        ).join(" ");
+        ? includeBusinessIdentifiers
+            ? sanitizeSecrets(formatTenBotError(formalError))
+            : sanitizeSafeDiagnostic(formatTenBotError(formalError))
+        : presentValues.map((value, index) => {
+            if (preserveLastString && index === presentValues.length - 1 && typeof value === "string") {
+                return sanitizeSecrets(value);
+            }
+            return formatValue(value, includeBusinessIdentifiers);
+        }).join(" ");
     const entry: LogEntry = { timestamp: new Date().toISOString(), level, text };
+
+    // Persist every accepted logger event before UI-side repeat folding.
+    logFileSink?.write(entry);
     for (const listener of logListeners) {
         try { listener(entry); } catch { /* A log consumer must not break Runtime work. */ }
     }
     const lines = text.split("\n");
-    const output = lines.map((line, index) =>
-        index === 0 && !formalError ? `[${timestamp()}] ${line}` : line,
-    ).join("\n");
-
+    const output = lines.map((line, index) => index === 0 && !formalError ? `[${timestamp()}] ${line}` : line).join("\n");
     if (!consoleOutputEnabled) return;
-    if (level === "error") {
-        console.error(output);
-    } else {
-        console.log(output);
-    }
+    if (level === "error") console.error(output);
+    else console.log(output);
 }
 
 export const logger = {
     level: logLevel,
+    all: (...values: unknown[]) => write("all", values),
     info: (...values: unknown[]) => write("info", values),
     debug: (...values: unknown[]) => write("debug", values),
     error: (...values: unknown[]) => write("error", values),
@@ -117,77 +161,86 @@ export function subscribeLogs(listener: LogListener): () => void {
     return () => logListeners.delete(listener);
 }
 
-export function setConsoleLogOutputEnabled(enabled: boolean): void {
-    consoleOutputEnabled = enabled;
+export function setConsoleLogOutputEnabled(enabled: boolean): void { consoleOutputEnabled = enabled; }
+
+export function configureLogFileSink(directory = resolve(process.cwd(), "logs")): void {
+    const previous = logFileSink;
+    logFileSink = new LogFileSink(directory, (error) => {
+        if (consoleOutputEnabled) console.warn("[Logging] local log file write failed", formatValue(error, true));
+    });
+    if (previous) void previous.close();
+}
+
+export async function flushLogFileSink(): Promise<void> { await logFileSink?.flush(); }
+
+export async function closeLogFileSink(): Promise<void> {
+    const sink = logFileSink;
+    logFileSink = undefined;
+    await sink?.close();
 }
 
 export function setLogLevel(level: LogLevel): void {
+    refreshEnvironmentSecrets();
     logLevel = level;
     logger.level = level;
+    if (level === "all" && !allModeWarningPrinted) {
+        allModeWarningPrinted = true;
+        logger.info("[Logging] ALL mode enabled; raw diagnostic payloads may contain private conversation data");
+    }
 }
 
-export function getLogLevel(): LogLevel {
-    return logLevel;
-}
+export function getLogLevel(): LogLevel { return logLevel; }
 
 export function truncateLogText(value: string, maxLength = 160): string {
-    const safe = sanitizeText(value).replace(/\s+/g, " ").trim();
+    const safe = sanitizeSafeDiagnostic(value).replace(/\s+/g, " ").trim();
     return safe.length > maxLength ? `${safe.slice(0, maxLength)}…` : safe;
 }
 
 /** A full peer ID is emitted only in explicit debug mode so it can be registered. */
 export function debugPeerIdentity(authorName: string | undefined, stableId: string | undefined): void {
-    if (logLevel !== "debug" || !stableId) return;
+    if ((logLevel !== "debug" && logLevel !== "all") || !stableId) return;
     const id = stableId.length <= 256 ? JSON.stringify(stableId) : "[invalid-id]";
-    write("debug", [`[Peer] author=${JSON.stringify(truncateLogText(authorName || "unknown member", 60))} id=${id}`], true);
+    const level = logLevel === "all" ? "all" : "debug";
+    write(level, [`[Peer] author=${JSON.stringify(truncateLogText(authorName || "unknown member", 60))} id=${id}`], true);
 }
 
 export function shortId(value: string | undefined, length = 6): string {
-    if (!value) {
-        return "unknown";
-    }
+    if (!value) return "unknown";
     return value.length > length ? `${value.slice(0, length)}…` : value;
 }
 
 function sdkDebugMessage(message: string): string | null {
     const dispatch = message.match(/Dispatch event: t=([^\s]+)/);
-    if (dispatch) {
-        return `[QQ SDK] event ${dispatch[1]}`;
-    }
-
-    if (/\[qqbot:api\].*(?:Body:)/i.test(message)) {
-        return null;
-    }
-
-    if (/\[qqbot:api\].*Status:/i.test(message)) {
-        return `[QQ SDK] ${message.match(/Status: .*/)?.[0] ?? "API response"}`;
-    }
-
+    if (dispatch) return `[QQ SDK] event ${dispatch[1]}`;
+    if (/\[qqbot:api\].*(?:Body:)/i.test(message)) return null;
+    if (/\[qqbot:api\].*Status:/i.test(message)) return `[QQ SDK] ${message.match(/Status: .*/)?.[0] ?? "API response"}`;
     if (/\[qqbot:api\].*(?:>>>|<<<)/i.test(message)) {
         const method = message.match(/>>>\s+(GET|POST|PUT|PATCH|DELETE)\b/i)?.[1];
         return method ? `[QQ SDK] API ${method}` : "[QQ SDK] API request";
     }
-
     return `[QQ SDK] ${message}`;
 }
 
-/** Keep SDK diagnostics useful while never forwarding payloads or bodies. */
+/** Preserve existing concise SDK logs, while ALL receives the data exposed by the SDK logger. */
 export const qqSdkLogger: QqSdkLogger = {
     info(message) {
-        // SDK info includes a line for every successful API call; app-level
-        // connection and business events are logged separately.
-        logger.debug(`[QQ SDK] ${message}`);
+        if (logLevel === "all") logger.all("[QQ SDK] info", message);
+        else logger.debug(`[QQ SDK] ${message}`);
     },
     warn(message, meta) {
-        logger.info("[QQ SDK] warning", message, meta);
+        if (logLevel === "all") logger.all("[QQ SDK] warning", message, meta);
+        else logger.info("[QQ SDK] warning", message, meta);
     },
     error(message, meta) {
-        logger.error("[QQ SDK] error", message, meta);
+        if (logLevel === "all") logger.all("[QQ SDK] error", message, meta);
+        else logger.error("[QQ SDK] error", message, meta);
     },
     debug(message, meta) {
-        const safeMessage = sdkDebugMessage(message);
-        if (safeMessage) {
-            logger.debug(safeMessage, meta);
+        if (logLevel === "all") {
+            logger.all("[QQ SDK] raw", message, meta);
+            return;
         }
+        const safeMessage = sdkDebugMessage(message);
+        if (safeMessage) logger.debug(safeMessage, meta);
     },
 };

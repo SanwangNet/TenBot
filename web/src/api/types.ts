@@ -35,7 +35,7 @@ export interface RuntimeStatus {
 
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
 export type ModelVerbosity = "low" | "medium" | "high";
-export type LogLevel = "debug" | "info" | "error";
+export type LogLevel = "all" | "debug" | "info" | "error";
 
 export interface PublicConfig {
     aiProvider: "gpt" | "deepseek";
@@ -106,8 +106,11 @@ export interface MemeDeleteResponse { deleted: true; filename: string }
 
 export interface LogEntry {
     timestamp: string;
-    level: "info" | "debug" | "error";
+    level: LogLevel;
     text: string;
+    rowId?: string;
+    repeatCount?: number;
+    firstTimestamp?: string;
 }
 
 export interface ProviderErrorNotice {

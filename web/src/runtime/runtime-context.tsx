@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { apiClient } from "../api/client.js";
 import { connectRuntimeEvents } from "../api/events.js";
 import type { PublicConfig } from "../api/types.js";
@@ -25,7 +25,16 @@ const LastRuntimeEventContext = createContext<string | null>(null);
 
 export function RuntimeProvider({ children }: { children: ReactNode }) {
     const [state, dispatch] = useReducer(runtimeReducer, initialRuntimeState);
-    const [logState, dispatchLog] = useReducer(logViewReducer, initialLogViewState);
+    const [logState, setLogState] = useState<LogViewState>(() => ({ ...initialLogViewState, entries: [] }));
+    const logStateRef = useRef(logState);
+    const dispatchLog = useCallback((action: LogViewAction) => {
+        // Apply the bounded in-place canonical-row update once in the SSE callback.
+        // React StrictMode can replay reducer/updater functions, so this mutable hot path
+        // deliberately runs outside useReducer/setState updater callbacks.
+        const next = logViewReducer(logStateRef.current, action);
+        logStateRef.current = next;
+        setLogState(next);
+    }, []);
     const [conversationState, dispatchConversation] = useReducer(conversationReducer, initialConversationViewState);
     const [peerRevision, advancePeerRevision] = useReducer((value: number) => value + 1, 0);
     const [lastRuntimeEventAt, setLastRuntimeEventAt] = useState<string | null>(null);
@@ -37,6 +46,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         const closeEvents = connectRuntimeEvents({
             onStatus: (status) => dispatch({ type: "status", status }),
             onLog: (entry) => dispatchLog({ type: "append", entry }),
+            onLogsSnapshot: (entries) => dispatchLog({ type: "snapshot", entries }),
             onRuntimeEvent: (event) => {
                 setLastRuntimeEventAt(new Date().toISOString());
                 if (event.type === "conversation-item") dispatchConversation({ type: "event", event });

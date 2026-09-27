@@ -199,7 +199,7 @@ test("provider error Class C stays quiet and duplicate A/B notice aggregates", (
 });
 
 test("log reducer bounds the browser buffer, keeps append order, and clears only local entries", () => {
-    let state = initialLogViewState;
+    let state = { ...initialLogViewState, entries: [] as LogEntry[] };
     for (let index = 0; index <= MAX_WEB_LOG_ENTRIES; index++) {
         state = logViewReducer(state, { type: "append", entry: { timestamp: String(index), level: "info", text: `line ${index}` } });
     }
@@ -216,9 +216,11 @@ test("log filtering matches level and case-insensitive text; follow state counts
         { timestamp: "1", level: "debug", text: "Loading Config" },
         { timestamp: "2", level: "error", text: "Model FAILED" },
         { timestamp: "3", level: "info", text: "Runtime ready" },
+        { timestamp: "4", level: "all", text: "raw payload" },
     ];
     assert.deepEqual(filterLogs(entries, "error", "failed"), [entries[1]]);
     assert.deepEqual(filterLogs(entries, "all", "CONFIG"), [entries[0]]);
+    assert.deepEqual(filterLogs(entries, "all-level", ""), [entries[3]]);
 
     let state = logViewReducer(initialLogViewState, { type: "set-follow", follow: false });
     state = logViewReducer(state, { type: "append", entry: entries[0]! });

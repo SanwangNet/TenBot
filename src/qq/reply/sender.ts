@@ -2,6 +2,7 @@ import { MsgType, type QQBot } from "@tencent-connect/qqbot-nodejs";
 
 import type { RenderedQQReply } from "./renderer.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
+import { logger } from "../../shared/logger.js";
 
 export function getTriggerMessageId(message: NormalizedQqMessage): string | undefined {
     return message.id ?? message.replyTarget.msgId;
@@ -19,12 +20,15 @@ export async function sendAiReply(
     // This check and the QQ call have no await between them.
     if (!beforeSend()) return { sent: false };
 
-    const response = quoteMessageId ? await bot.send({
+    const payload = quoteMessageId ? {
             target: message.replyTarget,
             msgType: MsgType.MARKDOWN,
             markdown: { content: rendered.sendText },
             messageReference: { message_id: quoteMessageId },
-        }) : await bot.sendMarkdown(message.replyTarget, rendered.sendText);
+        } : undefined;
+    logger.all("[QQ] outbound request", payload ?? { target: message.replyTarget, markdown: rendered.sendText });
+    const response = payload ? await bot.send(payload) : await bot.sendMarkdown(message.replyTarget, rendered.sendText);
+    logger.all("[QQ] outbound response", response);
 
     return { sent: true, id: response?.id, refIdx: response?.ext_info?.ref_idx };
 }
@@ -37,7 +41,9 @@ export async function sendAiMeme(
     beforeSend: () => boolean,
 ): Promise<{ sent: boolean; id?: string; refIdx?: string }> {
     if (!beforeSend()) return { sent: false };
+    logger.all("[QQ] outbound image request", { target: message.replyTarget, localPath });
     const response = await bot.sendImage(message.replyTarget, { localPath });
+    logger.all("[QQ] outbound image response", response);
     return {
         sent: true,
         id: response.message?.id,
@@ -52,11 +58,13 @@ export async function sendTimeoutReply(
     quoteTrigger: boolean,
 ): Promise<{ id?: string; refIdx?: string }> {
     const triggerMessageId = getTriggerMessageId(message);
+    logger.all("[QQ] timeout outbound request", { target: message.replyTarget, content, quoteTrigger, triggerMessageId });
     const response = quoteTrigger && triggerMessageId ? await bot.send({
         target: message.replyTarget,
         msgType: MsgType.MARKDOWN,
         markdown: { content },
         messageReference: { message_id: triggerMessageId },
     }) : await bot.sendText(message.replyTarget, content);
+    logger.all("[QQ] timeout outbound response", response);
     return { id: response?.id, refIdx: response?.ext_info?.ref_idx };
 }

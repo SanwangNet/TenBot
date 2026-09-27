@@ -13,8 +13,8 @@ export function LogsView({ logs, offset, visibleLines }: { logs: readonly LogEnt
     return <Panel title={`日志 · 最近 ${logs.length} 条`} flexGrow={1}>
         {visible.length === 0
             ? <Text dimColor>正在等待 Runtime 日志……</Text>
-            : visible.map((row, index) => <Text key={`${row.entry.timestamp}-${start + index}`} wrap="truncate" color={row.entry.level === "error" ? "red" : undefined}>
-                {formatTime(row.entry.timestamp)} {row.displayText}{row.count > 1 ? ` (x ${row.count})` : ""}
+            : visible.map((row, index) => <Text key={`${row.entry.timestamp}-${start + index}`} wrap="truncate" color={row.entry.level === "error" ? "red" : row.entry.level === "all" ? "magenta" : undefined}>
+                {formatTime(row.entry.timestamp)} {row.entry.level.toUpperCase()} {row.displayText}{row.count > 1 ? ` (x ${row.count})` : ""}
             </Text>)}
         {rows.length > visibleLines ? <Text dimColor>位置：{start + 1}-{end} / {rows.length}</Text> : null}
     </Panel>;

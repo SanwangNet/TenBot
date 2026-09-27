@@ -66,7 +66,7 @@ export function configuredLabel(configured: boolean): string {
 }
 
 export function logLevelLabel(level: LogLevel): string {
-    return ({ debug: "调试", info: "信息", error: "错误" } satisfies Record<LogLevel, string>)[level];
+    return ({ all: "全部", debug: "调试", info: "信息", error: "错误" } satisfies Record<LogLevel, string>)[level];
 }
 
 export function settingsFieldLabel(field: SettingsField): string {

@@ -4,7 +4,8 @@ import { useLogs } from "../runtime/runtime-context.js";
 import { filterLogs, type LogLevelFilter } from "./log-state.js";
 
 const levelFilters: Array<{ value: LogLevelFilter; label: string }> = [
-    { value: "all", label: "全部" },
+    { value: "all", label: "所有级别" },
+    { value: "all-level", label: "ALL 诊断" },
     { value: "debug", label: "调试" },
     { value: "info", label: "信息" },
     { value: "error", label: "错误" },
@@ -15,12 +16,12 @@ export function LogsPage() {
     const [level, setLevel] = useState<LogLevelFilter>("all");
     const [query, setQuery] = useState("");
     const viewportRef = useRef<HTMLDivElement>(null);
-    const visibleEntries = useMemo(() => filterLogs(state.entries, level, query), [state.entries, level, query]);
+    const visibleEntries = useMemo(() => filterLogs(state.entries, level, query), [state.rowsRevision, level, query]);
 
     useEffect(() => {
         const viewport = viewportRef.current;
         if (state.follow && viewport) viewport.scrollTop = viewport.scrollHeight;
-    }, [state.entries, state.follow]);
+    }, [state.rowsRevision, state.follow]);
 
     const onScroll = () => {
         const viewport = viewportRef.current;
@@ -32,7 +33,7 @@ export function LogsPage() {
     return <section className="logs-page">
         <div className="page-heading">
             <div><div className="eyebrow">TENBOT CONTROL / STREAM</div><h1>日志</h1><p>通过 Runtime SSE 实时接收。清空操作只影响当前浏览器视图。</p></div>
-            <span className="log-buffer-count">缓存 {state.entries.length} / 1000</span>
+            <span className="log-buffer-count">缓存 {state.entries.length} / 5000</span>
         </div>
 
         <section className="panel logs-panel" aria-label="实时日志">
@@ -66,7 +67,12 @@ export function LogsPage() {
             <div className="log-viewport" ref={viewportRef} onScroll={onScroll} role="log" aria-live="off" aria-label="Runtime 日志流" tabIndex={0}>
                 {visibleEntries.length === 0
                     ? <div className="logs-empty">{state.entries.length === 0 ? "等待 Runtime 日志…" : "没有匹配的日志"}</div>
-                    : visibleEntries.map((entry, index) => <LogLine key={`${entry.timestamp}-${index}`} entry={entry} />)}
+                    : visibleEntries.map((entry, index) => <LogLine
+                        key={`${entry.rowId ?? entry.timestamp}-${index}`}
+                        entry={entry}
+                        repeatCount={entry.repeatCount ?? 1}
+                        timestamp={entry.timestamp}
+                    />)}
             </div>
             <div className="logs-footer">
                 <span>日志持续接收并保留在浏览器缓存中；暂停跟随不会暂停接收。</span>
@@ -76,11 +82,12 @@ export function LogsPage() {
     </section>;
 }
 
-const LogLine = memo(function LogLine({ entry }: { entry: LogEntry }) {
+const LogLine = memo(function LogLine({ entry, repeatCount, timestamp }: { entry: LogEntry; repeatCount: number; timestamp: string }) {
     return <div className={`log-row log-${entry.level}`}>
-        <time className="log-time" dateTime={entry.timestamp}>{formatLogTime(entry.timestamp)}</time>
+        <time className="log-time" dateTime={timestamp}>{formatLogTime(timestamp)}</time>
         <span className="log-level">{entry.level.toUpperCase()}</span>
         <span className="log-text">{entry.text}</span>
+        {repeatCount > 1 && <span className="log-repeat-count">× {repeatCount}</span>}
     </div>;
 });
 

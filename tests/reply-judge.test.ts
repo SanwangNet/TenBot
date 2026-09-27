@@ -10,6 +10,7 @@ import { loadAppConfig } from "../src/config/config-validation.js";
 import { buildReplyJudgeRequest } from "../src/front/build-reply-judge-request.js";
 import type { FrontMode } from "../src/front/wake-level.js";
 import { OpenAICompatibleReplyJudge } from "../src/front/openai-compatible-reply-judge.js";
+import { getLogLevel, setConsoleLogOutputEnabled, setLogLevel, subscribeLogs } from "../src/shared/logger.js";
 import { parseReplyJudgeOutput, type ReplyJudge, type ReplyJudgeDecision, type ReplyJudgeRequest } from "../src/front/reply-judge.js";
 import { ReplyJudgePromptStore } from "../src/front/reply-judge-prompt-store.js";
 import { registerMessageHandler, type ReplyJudgeTurnWaitScheduler } from "../src/qq/handlers/message-handler.js";
@@ -857,6 +858,10 @@ test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token c
     let requestCount = 0;
     let requestBody: Record<string, unknown> | undefined;
     const originalFetch = globalThis.fetch;
+    const oldLevel = getLogLevel();
+    const diagnostics: Array<{ level: string; text: string }> = [];
+    const unsubscribe = subscribeLogs((entry) => diagnostics.push(entry));
+    setConsoleLogOutputEnabled(false);
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         requestCount++;
         assert.match(String(input), /chat\/completions$/);
@@ -876,6 +881,7 @@ test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token c
     }) as typeof fetch;
 
     try {
+        setLogLevel("all");
         const judge = new OpenAICompatibleReplyJudge(() => ({
             provider: "openai-compatible",
             model: "Qwen3.5-test",
@@ -895,8 +901,18 @@ test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token c
         assert.equal(requestBody?.enable_thinking, false);
         assert.equal(requestBody?.max_tokens, 32);
         assert.equal(requestBody?.temperature, 0);
+        const all = diagnostics.filter((entry) => entry.level === "all").map((entry) => entry.text).join("\n");
+        assert.match(all, /\[ReplyJudge\] request/);
+        assert.match(all, /\[ReplyJudge\] HTTP response/);
+        assert.match(all, /"status":200/);
+        assert.match(all, /chatcmpl-test/);
+        assert.match(all, /parsed decision/);
+        assert.doesNotMatch(all, /test-only-key/);
     } finally {
         globalThis.fetch = originalFetch;
+        unsubscribe();
+        setLogLevel(oldLevel);
+        setConsoleLogOutputEnabled(true);
     }
 });
 

@@ -86,17 +86,30 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                         ...(config.useBuiltInWebSearch ? [{ type: "web_search" as const }] : []),
                         ...request.tools,
                     ];
-                    stream = await getClient().responses.create({
+                    const responseRequest = {
                         model: config.model,
                         instructions: request.systemPrompt,
                         input: requestInput,
                         ...(config.reasoningEffort ? { reasoning: { effort: config.reasoningEffort } } : {}),
                         ...(config.verbosity ? { text: { verbosity: config.verbosity } } : {}),
                         tools: tools as any,
-                        tool_choice: "auto",
-                        store: false,
-                        stream: true,
-                    }, { signal: options.signal, maxRetries: 0 });
+                        tool_choice: "auto" as const,
+                        store: false as const,
+                        stream: true as const,
+                    };
+                    logger.all(`[AI:${config.id}] request`, {
+                        provider: config.id,
+                        model: responseRequest.model,
+                        instructions: responseRequest.instructions,
+                        input: responseRequest.input,
+                        reasoning: responseRequest.reasoning,
+                        text: responseRequest.text,
+                        tools: responseRequest.tools,
+                        tool_choice: responseRequest.tool_choice,
+                        stream: responseRequest.stream,
+                        store: responseRequest.store,
+                    });
+                    stream = await getClient().responses.create(responseRequest, { signal: options.signal, maxRetries: 0 });
                 } catch (error) {
                     throw providerError(config.id, error, options.signal);
                 }
@@ -124,6 +137,7 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                     for await (const event of stream) {
                         if (options.signal.aborted) throw new ModelAbortedError();
                         logger.debug(`[AI:${config.id}] event`, event.type);
+                        logger.all(`[AI:${config.id}] event`, event);
 
                         if (config.useBuiltInWebSearch && !searchNoticeSent &&
                             ["response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed"].includes(event.type)) {
@@ -149,6 +163,7 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                         }
                         if (event.type === "response.completed") {
                             completedResponse = event.response;
+                            logger.all(`[AI:${config.id}] completed response`, event.response);
                             for (const [outputIndex, item] of event.response.output.entries()) {
                                 if (item.type !== "message") continue;
                                 for (const [contentIndex, content] of item.content.entries()) {
@@ -182,9 +197,13 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
 
                 const calls = (completedResponse.output ?? []).filter((item: any) => item.type === "function_call");
                 const executions: ModelToolExecution[] = await Promise.all((calls as any[]).map(async (call) => {
+                    logger.all(`[AI:${config.id}] tool call`, { name: String(call.name), arguments: call.arguments });
                     try {
-                        return await request.executeTool({ name: String(call.name), arguments: String(call.arguments) });
+                        const execution = await request.executeTool({ name: String(call.name), arguments: String(call.arguments) });
+                        logger.all(`[AI:${config.id}] tool result`, { name: String(call.name), execution });
+                        return execution;
                     } catch (error) {
+                        logger.all(`[AI:${config.id}] tool exception`, { name: String(call.name), error });
                         if (options.signal.aborted || error instanceof ModelAbortedError) throw error;
                         throw new TenBotError("M:B_TL_TEF", { cause: error, safeDetails: { provider: config.id } });
                     }
@@ -259,15 +278,36 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                     return { kind: "reply", action };
                 }
                 if (isToolProtocolLeak(output)) throw new ToolProtocolLeakError();
-                if (!output.trim()) throw new TenBotError("M:A_MG_NVO", { safeDetails: { provider: config.id } });
+                const normalizedTextReply = normalizeTextReply(output);
+                const diagnosticOutput = completedResponse.output ?? [];
+                const diagnosticMessages = diagnosticOutput.filter((item: any) => item.type === "message");
+                const nvoDiagnostics = {
+                    provider: config.id,
+                    outputItemCount: diagnosticOutput.length,
+                    outputItemTypes: diagnosticOutput.map((item: any) => item?.type ?? "unknown"),
+                    messageCount: diagnosticMessages.length,
+                    messageContentTypes: diagnosticMessages.flatMap((item: any) => (item.content ?? []).map((content: any) => content?.type ?? "unknown")),
+                    functionCallCount: calls.length,
+                    toolExecutionCount: executions.length,
+                    textPartsCount: textParts.size,
+                    unindexedOutputLength: unindexedOutput.length,
+                    finalOutputLength: output.length,
+                    normalizeTextReplyIsNull: normalizedTextReply === null,
+                };
+                if (!output.trim()) {
+                    logger.all("[AI] NVO diagnostics", nvoDiagnostics);
+                    throw new TenBotError("M:A_MG_NVO", { safeDetails: { provider: config.id } });
+                }
                 reportCitations(
                     renderedParts.reduce((count, part) => count + part.renderedCount, 0),
                     renderedParts.some((part) => part.metadataUnavailable),
                 );
                 logger.info(`[AI] done provider=${config.id} ${elapsed}: content length ${output.trim().length}`);
-                const result = normalizeTextReply(output);
-                if (!result) throw new TenBotError("M:A_MG_NVO", { safeDetails: { provider: config.id } });
-                return result;
+                if (!normalizedTextReply) {
+                    logger.all("[AI] NVO diagnostics", nvoDiagnostics);
+                    throw new TenBotError("M:A_MG_NVO", { safeDetails: { provider: config.id } });
+                }
+                return normalizedTextReply;
             }
             throw new TenBotError("M:C_TL_TCL", { safeDetails: { provider: config.id } });
         },

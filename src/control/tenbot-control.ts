@@ -8,7 +8,7 @@ import type { KnownMemberSummary } from "./known-members.js";
 import { ConversationTimelineStore, type ConversationSummary, type ConversationItem } from "./conversation-timeline.js";
 import type { EditorResource, EditorResourceId, EditorSaveResult } from "./editor-resources.js";
 
-export const MAX_TUI_LOG_ENTRIES = 400;
+export const MAX_LOG_BUFFER_ENTRIES = 5_000;
 
 export type ReloadResult =
     | { ok: true; message: string; loadedAt: string; revision?: number; count?: number }

@@ -219,13 +219,15 @@ button:focus-visible {
 .log-toolbar-actions { display: flex; gap: 7px; margin-left: auto; }
 .new-logs-banner { width: 100%; padding: 8px; border: 0; border-bottom: 1px solid #334d40; background: #1c3027; color: #a8e1c2; cursor: pointer; font: inherit; font-size: 11px; }
 .log-viewport { height: min(65vh, 720px); min-height: 270px; overflow: auto; padding: 11px 13px; background: #0d1217; scrollbar-color: #394653 #10161c; }
-.log-row { display: grid; grid-template-columns: 83px 50px minmax(0, 1fr); gap: 10px; align-items: start; padding: 3px 0; color: #c2cad4; font-family: "DM Mono", "Noto Sans SC", monospace; font-size: 11px; line-height: 1.55; }
+.log-row { display: grid; grid-template-columns: 83px 50px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 3px 0; color: #c2cad4; font-family: "DM Mono", "Noto Sans SC", monospace; font-size: 11px; line-height: 1.55; }
 .log-time { color: #778391; font-size: 10px; white-space: nowrap; }
 .log-level { color: #aab5c2; font-size: 9px; font-weight: 700; letter-spacing: .04em; }
 .log-debug .log-level { color: #a6b3c4; }
 .log-info .log-level { color: #94c6ad; }
 .log-error .log-level { color: #f18b91; }
+.log-all .log-level { color: #d8b2ed; }
 .log-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.log-repeat-count { align-self: start; padding: 1px 6px; border: 1px solid #34404c; border-radius: 10px; color: #8291a1; font-size: 10px; white-space: nowrap; }
 .logs-empty { display: grid; min-height: 220px; place-items: center; color: #788492; font-size: 11px; }
 .logs-footer { display: flex; justify-content: space-between; gap: 12px; padding: 9px 14px; border-top: 1px solid var(--line-soft); color: #75818e; font-size: 9px; }
 
@@ -264,7 +266,7 @@ button:focus-visible {
     .log-search-field { flex: 1 1 150px; width: auto; }
     .log-toolbar-actions { flex: 1 0 100%; justify-content: flex-end; }
     .log-viewport { height: 65vh; min-height: 240px; padding: 10px; }
-    .log-row { grid-template-columns: 70px 45px minmax(0, 1fr); gap: 7px; font-size: 10px; }
+    .log-row { grid-template-columns: 70px 45px minmax(0, 1fr) auto; gap: 7px; font-size: 10px; }
     .logs-footer { flex-direction: column; }
 }
 

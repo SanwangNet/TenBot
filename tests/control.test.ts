@@ -3,7 +3,7 @@ import test from "node:test";
 import { createTenBotControl } from "../src/control/tenbot-control.js";
 import type { RuntimeStatus } from "../src/control/runtime-status.js";
 import { LogBuffer } from "../src/control/log-buffer.js";
-import { MAX_TUI_LOG_ENTRIES } from "../src/control/tenbot-control.js";
+import { MAX_LOG_BUFFER_ENTRIES } from "../src/control/tenbot-control.js";
 import { getLogLevel, logger, setConsoleLogOutputEnabled, setLogLevel, subscribeLogs } from "../src/shared/logger.js";
 import type { PublicConfig } from "../src/config/config-types.js";
 import { ConversationTimelineStore, createIncomingConversationEvent } from "../src/control/conversation-timeline.js";
@@ -104,7 +104,7 @@ test("LogBuffer streams structured logs and drops the oldest entries at its limi
         setConsoleLogOutputEnabled(true);
         buffer.dispose();
     }
-    assert.equal(MAX_TUI_LOG_ENTRIES, 400);
+    assert.equal(MAX_LOG_BUFFER_ENTRIES, 5_000);
 });
 
 test("plain logger mode continues to write to console", () => {

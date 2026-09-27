@@ -24,7 +24,7 @@ import { getMemeRuntimeSnapshot, loadMemeRuntime, reloadMemes as reloadMemeData 
 import { sampleRecentMemeNames } from "./skills/meme/store.js";
 import { memeStore } from "./skills/meme/store.js";
 import { memeSendImageService } from "./skills/meme/send-image.js";
-import { logger, setConsoleLogOutputEnabled, setLogLevel, shortId, truncateLogText } from "./shared/logger.js";
+import { closeLogFileSink, configureLogFileSink, logger, setConsoleLogOutputEnabled, setLogLevel, shortId, truncateLogText } from "./shared/logger.js";
 import type { NormalizedQqMessage } from "./qq/message/normalize-message.js";
 import { FileChangeWatcher } from "./shared/file-change-watcher.js";
 import { RuntimeConfigSnapshotStore, type RuntimeConfigSnapshot } from "./runtime-config-snapshot.js";
@@ -43,6 +43,7 @@ export interface TenBotRuntime {
 
 export interface CreateTenBotRuntimeOptions {
     consoleLogs?: boolean;
+    logDirectory?: string;
 }
 
 function absolutePath(path: URL | string): string {
@@ -51,6 +52,7 @@ function absolutePath(path: URL | string): string {
 
 export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = {}): Promise<TenBotRuntime> {
     setConsoleLogOutputEnabled(options.consoleLogs ?? true);
+    configureLogFileSink(options.logDirectory ?? resolve(process.cwd(), "logs"));
     const logs = new LogBuffer();
     const configStore = createConfigStore();
     const recentPeers = new RecentPeerRegistry();
@@ -74,6 +76,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         catch { logger.error("[Meme] unable to clean stale temporary send files"); }
     } catch (error) {
         logs.dispose();
+        await closeLogFileSink();
         setConsoleLogOutputEnabled(true);
         throw error;
     }
@@ -399,6 +402,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                     fileWatchers.forEach((watcher) => watcher.close());
                     logs.dispose();
                     setConsoleLogOutputEnabled(true);
+                    await closeLogFileSink();
                 }
             })();
             return shutdownPromise;

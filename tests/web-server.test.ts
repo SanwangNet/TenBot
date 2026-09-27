@@ -74,6 +74,7 @@ function createFakeControl() {
     const statusListeners = new Set<(value: RuntimeStatus) => void>();
     const logListeners = new Set<(value: LogEntry) => void>();
     const eventListeners = new Set<(value: RuntimeEvent) => void>();
+    let logReplay: LogEntry[] = [];
     const patchCalls: PublicConfigPatch[] = [];
     const peerCalls: string[] = [];
     const resourceCalls: string[] = [];
@@ -106,6 +107,7 @@ function createFakeControl() {
         },
         subscribeLogs(listener: (value: LogEntry) => void) {
             logListeners.add(listener);
+            for (const entry of logReplay) listener(structuredClone(entry));
             return () => logListeners.delete(listener);
         },
         subscribeEvents(listener: (value: RuntimeEvent) => void) {
@@ -124,6 +126,7 @@ function createFakeControl() {
         publishLog(entry: LogEntry) {
             for (const listener of logListeners) listener(entry);
         },
+        setLogReplay(entries: LogEntry[]) { logReplay = structuredClone(entries); },
         publishEvent(event: RuntimeEvent) {
             for (const listener of eventListeners) listener(event);
         },
@@ -412,6 +415,26 @@ test("SSE sends current status and live status, log, and runtime events; disconn
     await waitFor(() => Object.values(fake.listenerCounts()).every((count) => count === 0));
     await server.close();
     await assert.rejects(fetch(`${baseUrl}/api/health`));
+});
+
+test("SSE reconnect sends a replacement snapshot with the existing repeatCount", async () => {
+    const fake = createFakeControl();
+    const canonical: LogEntry = { timestamp: "13:00:05", level: "all", text: "same event", rowId: "row-1", repeatCount: 10, firstTimestamp: "13:00:00" };
+    fake.setLogReplay([canonical]);
+    const { server, baseUrl } = await startServer(fake.control);
+    try {
+        const first = collectSse(await fetch(`${baseUrl}/api/events`));
+        assert.deepEqual((await first.waitFor("logs-snapshot")).data, [canonical]);
+        await first.cancel();
+        await waitFor(() => fake.listenerCounts().logs === 0);
+
+        const reconnected = collectSse(await fetch(`${baseUrl}/api/events`));
+        assert.deepEqual((await reconnected.waitFor("logs-snapshot")).data, [canonical]);
+        await reconnected.cancel();
+        await waitFor(() => fake.listenerCounts().logs === 0);
+    } finally {
+        await server.close();
+    }
 });
 
 test("a busy configured port fails clearly without selecting another port", async () => {

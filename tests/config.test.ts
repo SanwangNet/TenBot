@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createConfigStore } from "../src/config/config-store.js";
-import { loadAppConfig, parseBotAdminIds, parsePublicConfigPatch, validatePublicConfigPatch } from "../src/config/config-validation.js";
+import { loadAppConfig, parseBotAdminIds, parseLogLevel, parsePublicConfigPatch, validatePublicConfigPatch } from "../src/config/config-validation.js";
 
 test("BOT_ADMIN_IDS accepts opaque IDs, normalizes case, and rejects malformed entries", () => {
     assert.deepEqual(parseBotAdminIds(" 4d53c611 &#x20;," + "A".repeat(64)), ["4D53C611", "A".repeat(64)]);
@@ -125,6 +125,12 @@ test("ConfigStore appends new managed keys and serializes concurrent writes", as
         assert.match(saved, /BOT_LOOP_GUARD_MAX_CYCLES=6/);
         assert.match(saved, /CODEX_REASONING_EFFORT=xhigh/);
     });
+});
+
+test("BOT_LOG_LEVEL supports ALL and defaults invalid values to info", () => {
+    assert.deepEqual(["all", "debug", "info", "error"].map((level) => parseLogLevel(level)), ["all", "debug", "info", "error"]);
+    assert.equal(loadAppConfig({ BOT_LOG_LEVEL: "all" }).logging.level, "all");
+    assert.equal(parseLogLevel("invalid"), "info");
 });
 
 test("meme send maximum edge defaults to 160, supports original size, and hot config patches validate bounds", async () => {

@@ -266,16 +266,14 @@ test("Prompt path display handles Windows and POSIX paths", () => {
     });
 });
 
-test("TUI log folding merges only adjacent same-level display rows and keeps the latest timestamp", () => {
+test("TUI displays canonical repeatCount without folding or counting it again", () => {
     const rows = collapseAdjacentLogs([
-        { timestamp: "t1", level: "debug", text: "A" },
-        { timestamp: "t2", level: "debug", text: "A" },
-        { timestamp: "t3", level: "debug", text: "A" },
-        { timestamp: "t4", level: "info", text: "B" },
-        { timestamp: "t5", level: "debug", text: "A" },
+        { timestamp: "t3", level: "debug", text: "A", rowId: "a", repeatCount: 5 },
+        { timestamp: "t4", level: "info", text: "B", rowId: "b", repeatCount: 1 },
+        { timestamp: "t5", level: "debug", text: "A", rowId: "c", repeatCount: 1 },
     ]);
     assert.deepEqual(rows.map(({ displayText, count, entry }) => [displayText, count, entry.timestamp]), [
-        ["A", 3, "t3"], ["B", 1, "t4"], ["A", 1, "t5"],
+        ["A", 5, "t3"], ["B", 1, "t4"], ["A", 1, "t5"],
     ]);
 });
 

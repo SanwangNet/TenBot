@@ -39,6 +39,11 @@ export class OpenAICompatibleReplyJudge implements ReplyJudge {
                 baseURL: snapshot.baseURL,
                 timeout: snapshot.timeoutMs,
                 maxRetries: 0,
+                fetch: async (input, init) => {
+                    const response = await fetch(input, init);
+                    logger.all("[ReplyJudge] HTTP response", { status: response.status, body: await response.clone().text() });
+                    return response;
+                },
             });
             const completionRequest: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming & {
                 enable_thinking: false;
@@ -52,15 +57,22 @@ export class OpenAICompatibleReplyJudge implements ReplyJudge {
                     { role: "user", content: JSON.stringify(request) },
                 ],
             };
+            logger.all("[ReplyJudge] request", completionRequest);
             const response = signal
                 ? await client.chat.completions.create(completionRequest, { signal })
                 : await client.chat.completions.create(completionRequest);
             const content = response.choices[0]?.message?.content;
-            if (typeof content !== "string") return parseReplyJudgeOutput("");
+            if (typeof content !== "string") {
+                const decision = parseReplyJudgeOutput("");
+                logger.all("[ReplyJudge] parsed decision", decision);
+                return decision;
+            }
             const decision = parseReplyJudgeOutput(content);
             logger.debug("[ReplyJudge] decision=" + decision.decision);
+            logger.all("[ReplyJudge] parsed decision", decision);
             return decision;
         } catch (error) {
+            logger.all("[ReplyJudge] request exception", error);
             if (error instanceof TenBotError) throw error;
             throw new TenBotError("F:A_RJ_JRF", {
                 safeDetails: { provider: "openai-compatible" },

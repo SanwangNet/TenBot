@@ -169,12 +169,14 @@ export function registerMessageHandler(
                     });
                     decision = await replyJudge.judge(judgeRequest, abortController.signal);
                     if (!isReplyJudgeDecision(decision)) throw new TenBotError("F:A_RJ_IPO");
+                    logger.all("[ReplyJudge] admission decision", { decision, revision, turnWaitExpired: recheckExpired });
                     if (recheckExpired && decision.decision === "wait") {
                         logger.debug("[ReplyJudge] wait is invalid after an expired turn wait");
                         throw new TenBotError("F:A_RJ_IPO");
                     }
                 } catch (error) {
                     failure = error;
+                    logger.all("[ReplyJudge] admission exception", { revision, turnWaitExpired: recheckExpired, error });
                 } finally {
                     if (state.abortController === abortController) state.abortController = undefined;
                 }
@@ -218,6 +220,7 @@ export function registerMessageHandler(
                     logger.info("[ReplyJudge] invalid protocol output; falling back to main model");
                 }
                 const outcome = ipoFallback ? "reply" : decision?.decision;
+                logger.all("[ReplyJudge] admission outcome", { outcome, revision, ipoFallback });
                 if (outcome === "pass") {
                     logger.debug("[ReplyJudge] decision=pass");
                     clearAdmissionState(state.key);
@@ -269,8 +272,10 @@ export function registerMessageHandler(
 
     bot.on("message", async (context, message: QQBotInboundMessage) => {
         if (disposed) return;
+        logger.all("[QQ] raw inbound", message.raw ?? message);
         const frontMode = getFrontMode();
         const normalized = await normalizeQqMessage(context, message);
+        logger.all("[QQ] normalized inbound", normalized);
         try {
             await memeCandidateTracker.remember(
                 normalized,
@@ -297,6 +302,12 @@ export function registerMessageHandler(
             normalized.eventType === "GROUP_AT_MESSAGE_CREATE";
         const commandTrigger = decideMessageTrigger(normalized, false);
         const parsedCommand = parseCommand(normalized);
+        logger.all("[QQ] local command detection", {
+            eventType: normalized.eventType,
+            isGroupEvent,
+            isAtBot: commandTrigger.isAtBot,
+            command: parsedCommand,
+        });
         const adminCommand = isGroupEvent && commandTrigger.isAtBot && parsedCommand?.args === ""
             ? parsedCommand.name === "停用" ? false : parsedCommand.name === "启用" ? true : undefined
             : undefined;
@@ -361,10 +372,12 @@ export function registerMessageHandler(
             conversationActive: trigger.activeConversation,
             quotedBot: normalized.quotedBot === true,
         });
+        logger.all("[Front] decision", { frontMode, trigger, frontDecision });
 
         // Filtered QQ faces and local commands never increment revision or interrupt generation.
         const revision = recordIncomingMessageRevision(normalized);
         rememberIncomingMessage(normalized, input);
+        logger.all("[Context] message committed", { revision, messageId: normalized.id, conversationKey });
         try { observeConversationMessage?.(normalized); }
         catch { /* Timeline observation must not change message handling. */ }
         logger.debug("[Cycle] inbound revision=" + revision);

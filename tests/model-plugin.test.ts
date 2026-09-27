@@ -9,6 +9,7 @@ import { createDeepSeekPlugin } from "../src/ai/plugins/deepseek/index.js";
 import { createGptPlugin } from "../src/ai/plugins/gpt/index.js";
 import { getPromptStore } from "../src/ai/prompt-store.js";
 import { isToolProtocolLeak } from "../src/ai/tool-protocol.js";
+import { getLogLevel, setConsoleLogOutputEnabled, setLogLevel, subscribeLogs } from "../src/shared/logger.js";
 
 const GPT_SYSTEM_PROMPT = readFileSync(new URL("../src/ai/plugins/gpt/prompt.md", import.meta.url), "utf8");
 const DEEPSEEK_SYSTEM_PROMPT = readFileSync(new URL("../src/ai/plugins/deepseek/prompt.md", import.meta.url), "utf8");
@@ -64,6 +65,43 @@ test("registry selects GPT, DeepSeek, and defaults to GPT without requiring cred
     const configuredDeepSeek = createModelPlugin({ AI_PROVIDER: "deepseek", DEEPSEEK_REASONING_EFFORT: "low" });
     assert.equal(configuredDeepSeek.reasoningEffort, "low");
     assert.throws(() => createModelPlugin({ AI_PROVIDER: "other" }), /不支持的 AI_PROVIDER/);
+});
+
+test("ALL records Responses request and complete stream payloads plus diagnostics before unchanged NVO", async () => {
+    const oldLevel = getLogLevel();
+    const entries: Array<{ level: string; text: string }> = [];
+    const unsubscribe = subscribeLogs((entry) => entries.push(entry));
+    setConsoleLogOutputEnabled(false);
+    try {
+        setLogLevel("all");
+        const outputItemEvent = {
+            type: "response.output_item.done",
+            output_index: 0,
+            item: { id: "item-full-id", type: "message", content: [{ type: "output_text", text: "empty diagnostic payload" }] },
+        };
+        await withResponses([sse([outputItemEvent, complete([])])], async (bodies) => {
+            await assert.rejects(
+                createDeepSeekPlugin({ apiKey: "offline" }).generate(pluginRequest(), options()),
+                (error: unknown) => Boolean(error && typeof error === "object" && "code" in error && error.code === "M:A_MG_NVO"),
+            );
+            assert.deepEqual(bodies[0]?.input, "offline");
+        });
+        const all = entries.filter((entry) => entry.level === "all").map((entry) => entry.text).join("\n");
+        assert.match(all, /\[AI:deepseek\] request/);
+        assert.match(all, /instructions/);
+        assert.match(all, /input/);
+        assert.match(all, /response\.output_item\.done/);
+        assert.match(all, /item-full-id/);
+        assert.match(all, /completed response/);
+        assert.match(all, /NVO diagnostics/);
+        assert.match(all, /"outputItemCount":0/);
+        assert.match(all, /"functionCallCount":0/);
+        assert.match(all, /"normalizeTextReplyIsNull":true/);
+    } finally {
+        unsubscribe();
+        setLogLevel(oldLevel);
+        setConsoleLogOutputEnabled(true);
+    }
 });
 
 test("GPT and DeepSeek use isolated provider prompts and keep the same persona", async () => {

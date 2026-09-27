@@ -11,7 +11,7 @@ import { parseErrorCode } from "../errors/format.js";
 import type { ConversationSummary } from "../control/conversation-timeline.js";
 import type { KnownMemberSummary } from "../control/known-members.js";
 import type { LogEntry } from "../shared/logger.js";
-import { MAX_TUI_LOG_ENTRIES } from "../control/tenbot-control.js";
+import { MAX_LOG_BUFFER_ENTRIES } from "../control/tenbot-control.js";
 import { Footer } from "./components/footer.js";
 import { ModalLayer } from "./components/modal.js";
 import { Sidebar } from "./components/sidebar.js";
@@ -72,14 +72,29 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     regions.setModalActive(ui.modal.type !== "none");
 
     useEffect(() => {
+        let logRenderTimer: ReturnType<typeof setTimeout> | undefined;
+        let pendingLogDelta = 0;
         const unsubscribeStatus = control.subscribeStatus(setStatus);
         const unsubscribeLogs = control.subscribeLogs((entry) => {
             const current = logEntriesRef.current;
-            const next = [...current, entry].slice(-MAX_TUI_LOG_ENTRIES);
-            logEntriesRef.current = next;
-            const delta = collapseAdjacentLogs(next).length - collapseAdjacentLogs(current).length;
-            setLogs(next);
-            setUi((state) => state.logOffset > 0 && delta > 0 ? { ...state, logOffset: state.logOffset + delta } : state);
+            const previousRows = current.length;
+            const last = current.at(-1);
+            if (last?.rowId && last.rowId === entry.rowId) current[current.length - 1] = entry;
+            else {
+                current.push(entry);
+                if (current.length > MAX_LOG_BUFFER_ENTRIES) current.shift();
+            }
+            logEntriesRef.current = current;
+            pendingLogDelta += current.length - previousRows;
+            if (!logRenderTimer) {
+                logRenderTimer = setTimeout(() => {
+                    logRenderTimer = undefined;
+                    setLogs([...logEntriesRef.current]);
+                    const delta = pendingLogDelta;
+                    pendingLogDelta = 0;
+                    setUi((state) => state.logOffset > 0 && delta > 0 ? { ...state, logOffset: state.logOffset + delta } : state);
+                }, 50);
+            }
         });
         const unsubscribeEvents = control.subscribeEvents((event: RuntimeEvent) => {
             if (event.type === "provider-error") setUi((current) => receiveProviderError(current, event.notice));
@@ -90,6 +105,7 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
             else if (event.type === "conversation-item") setConversations(control.getConversations());
         });
         return () => {
+            if (logRenderTimer) clearTimeout(logRenderTimer);
             unsubscribeStatus();
             unsubscribeLogs();
             unsubscribeEvents();
@@ -649,6 +665,7 @@ const verbosityOptions: readonly ConfigOption[] = [
 ];
 const providerOptions: readonly ConfigOption[] = MODEL_PROVIDERS.map(({ id, label }) => ({ value: id, label }));
 const logLevelOptions: readonly ConfigOption[] = [
+    { value: "all", label: "全部" },
     { value: "debug", label: "调试" },
     { value: "info", label: "信息" },
     { value: "error", label: "错误" },
@@ -693,7 +710,7 @@ function optionPatch(field: ConfigSelectField, value: string): PublicConfigPatch
         case "gpt.reasoningEffort": return { field, value: value as "none" | "low" | "medium" | "high" | "xhigh" };
         case "gpt.verbosity": return { field, value: value as "low" | "medium" | "high" };
         case "deepseek.reasoningEffort": return { field, value: value as "none" | "low" | "medium" | "high" | "xhigh" };
-        case "logLevel": return { field, value: value as "debug" | "info" | "error" };
+        case "logLevel": return { field, value: value as "all" | "debug" | "info" | "error" };
     }
 }
 

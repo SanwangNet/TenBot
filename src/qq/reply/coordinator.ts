@@ -571,6 +571,17 @@ function startAttempt(cycle: Cycle, revision: number, refs: Map<string, string>)
         " request=" + shortId(attempt.requestId) +
         " attempt=" + attempt.attemptNumber + " snapshot=" + revision +
         " anchor=" + cycle.effectiveAnchor.revision);
+    logger.all("[Cycle] attempt start", {
+        cycleId: cycle.cycleId,
+        attemptId: attempt.requestId,
+        attemptNumber: attempt.attemptNumber,
+        conversationId: cycle.key,
+        snapshotRevision: revision,
+        anchorRevision: cycle.effectiveAnchor.revision,
+        messageId: cycle.effectiveAnchor.message.id,
+        provider: modelPlugin.id,
+        model: modelPlugin.model,
+    });
     logger.debug(`[Prompt] attempt snapshot provider=${runtimeSnapshot.prompt.provider} revision=${runtimeSnapshot.prompt.revision}` +
         ` request=${shortId(attempt.requestId)} attempt=${attempt.attemptNumber}`);
     return attempt;
