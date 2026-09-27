@@ -246,6 +246,99 @@ test("a real qq_reply function call with an empty messages array returns its mem
     });
 });
 
+test("Responses reasoning plus the reported plain-text qq_reply reaches the real executor unchanged", async () => {
+    const oldLevel = getLogLevel();
+    const entries: Array<{ level: string; text: string }> = [];
+    const unsubscribe = subscribeLogs((entry) => entries.push(entry));
+    setConsoleLogOutputEnabled(false);
+    setLogLevel("all");
+    const argumentsJson = JSON.stringify({
+        messages: [{ content: "这句我已经听第四遍了，额度不会因为喊得勤就变两张", quote: { mode: "auto", ref: null } }],
+        mentions: [],
+        meme: null,
+    });
+    const toolCall = complete([
+        { type: "reasoning", id: "rs_reported", summary: [] },
+        { type: "function_call", id: "fc_reported", call_id: "call_reported", name: "qq_reply", arguments: argumentsJson },
+    ]);
+    const plugin = createDeepSeekPlugin({ apiKey: "offline" });
+    const actualGenerate = plugin.generate.bind(plugin);
+    const seenArguments: string[] = [];
+    plugin.generate = async (request, generateOptions) => actualGenerate({
+        ...request,
+        executeTool: async (call) => {
+            if (call.name === "qq_reply") seenArguments.push(call.arguments);
+            return request.executeTool(call);
+        },
+    }, generateOptions);
+
+    try {
+        await withResponses([sse([toolCall])], async () => {
+            const result = await runModelPlugin(plugin, "offline", options());
+            assert.deepEqual(result, {
+                kind: "reply",
+                action: {
+                    messages: [{ content: "这句我已经听第四遍了，额度不会因为喊得勤就变两张", quote: { mode: "auto", ref: null } }],
+                    mentions: [],
+                },
+            });
+        });
+        assert.deepEqual(seenArguments, [argumentsJson]);
+        assert.ok(entries.some((entry) => entry.text.includes("[AI:deepseek] tool result") && entry.text.includes('"kind":"result"')));
+        assert.ok(!entries.some((entry) => entry.text.includes("NVO diagnostics")));
+    } finally {
+        unsubscribe();
+        setLogLevel(oldLevel);
+        setConsoleLogOutputEnabled(true);
+    }
+});
+
+test("rejected qq_reply logs bounded invisible-character diagnostics, ignore, and unchanged NVO", async () => {
+    const oldLevel = getLogLevel();
+    const entries: Array<{ level: string; text: string }> = [];
+    const unsubscribe = subscribeLogs((entry) => entries.push(entry));
+    setConsoleLogOutputEnabled(false);
+    setLogLevel("all");
+    const validArguments = JSON.stringify({ messages: [{ content: "hi", quote: { mode: "auto", ref: null } }], mentions: [], meme: null });
+    const rejectedCases = [
+        { argumentsJson: `\uFEFF${validArguments}`, flag: '"hasBom":true', codePoint: "U+FEFF" },
+        { argumentsJson: `${validArguments}\u200B`, flag: '"hasZeroWidthCharacters":true', codePoint: "U+200B" },
+        { argumentsJson: `${validArguments}\u0001`, flag: '"hasControlCharacters":true', codePoint: "U+0001" },
+    ];
+
+    try {
+        for (let index = 0; index < rejectedCases.length; index++) {
+            const toolCall = complete([{
+                type: "reasoning", id: `rs_reject_${index}`, summary: [],
+            }, {
+                type: "function_call", id: `fc_reject_${index}`, call_id: `call_reject_${index}`,
+                name: "qq_reply", arguments: rejectedCases[index]!.argumentsJson,
+            }]);
+            await withResponses([sse([toolCall])], async () => {
+                await assert.rejects(
+                    runModelPlugin(createDeepSeekPlugin({ apiKey: "offline" }), "offline", options()),
+                    (error: unknown) => (error as { code?: string }).code === "M:A_MG_NVO",
+                );
+            });
+        }
+        const diagnostics = entries.filter((entry) => entry.level === "all").map((entry) => entry.text).join("\n");
+        assert.match(diagnostics, /qq_reply rejected/);
+        assert.match(diagnostics, /invalid-json/);
+        assert.match(diagnostics, /argumentsJsonLength/);
+        assert.match(diagnostics, /hasUnexpectedUnicode":true/);
+        for (const rejected of rejectedCases) {
+            assert.match(diagnostics, new RegExp(rejected.flag));
+            assert.ok(diagnostics.includes(rejected.codePoint), `missing ${rejected.codePoint} diagnostic`);
+        }
+        assert.match(diagnostics, /tool result.*kind.*ignore/s);
+        assert.match(diagnostics, /NVO diagnostics/);
+    } finally {
+        unsubscribe();
+        setLogLevel(oldLevel);
+        setConsoleLogOutputEnabled(true);
+    }
+});
+
 test("DeepSeek meme_lookup uses the shared TenBot tool and feeds its result back", async () => {
     const memeCall = complete([{
         type: "function_call", id: "fc_meme", call_id: "call_meme", name: "meme_lookup",

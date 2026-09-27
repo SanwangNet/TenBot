@@ -2,7 +2,7 @@ import type { AiResult } from "./reply-result.js";
 import { getModelPlugin } from "./model-registry.js";
 import type { ModelGenerateOptions, ModelPlugin, ModelRequest } from "./model-plugin.js";
 import { lookupMeme, memeLookupTool } from "../skills/meme/skill.js";
-import { normalizeReplyMessages, parseQqReplyArguments, qqReplyTool } from "../skills/qq-reply/skill.js";
+import { normalizeReplyMessages, parseQqReplyArgumentsDetailed, qqReplyTool } from "../skills/qq-reply/skill.js";
 import { logger } from "../shared/logger.js";
 import type { MemeRuntimeSnapshot } from "../skills/meme/store.js";
 import { isToolProtocolLeakError } from "./tool-protocol.js";
@@ -19,6 +19,45 @@ export interface ChatOptions {
 
 const tenBotTools = [qqReplyTool, memeLookupTool] as const;
 
+function diagnoseRejectedArguments(value: string) {
+    const suspiciousCodePoints: Array<{ indexUtf16: number; codePoint: string }> = [];
+    let omittedSuspiciousCodePointCount = 0;
+    let hasControlCharacters = false;
+    let hasBom = false;
+    let hasZeroWidthCharacters = false;
+    let hasUnexpectedUnicode = false;
+
+    for (let index = 0; index < value.length;) {
+        const codePoint = value.codePointAt(index)!;
+        const character = String.fromCodePoint(codePoint);
+        const isControl = (codePoint >= 0 && codePoint <= 0x1f) || (codePoint >= 0x7f && codePoint <= 0x9f);
+        const isBom = codePoint === 0xfeff;
+        const isZeroWidth = codePoint >= 0x200b && codePoint <= 0x200d;
+        const isUnexpected = isControl || /\p{Cf}/u.test(character) || codePoint === 0xfffd ||
+            (codePoint >= 0xfdd0 && codePoint <= 0xfdef) || (codePoint & 0xfffe) === 0xfffe ||
+            (codePoint >= 0xd800 && codePoint <= 0xdfff);
+        hasControlCharacters ||= isControl;
+        hasBom ||= isBom;
+        hasZeroWidthCharacters ||= isZeroWidth;
+        hasUnexpectedUnicode ||= isUnexpected;
+        if (isUnexpected) {
+            if (suspiciousCodePoints.length < 16) {
+                suspiciousCodePoints.push({ indexUtf16: index, codePoint: `U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}` });
+            } else omittedSuspiciousCodePointCount++;
+        }
+        index += character.length;
+    }
+
+    return {
+        hasControlCharacters,
+        hasBom,
+        hasZeroWidthCharacters,
+        hasUnexpectedUnicode,
+        suspiciousCodePoints,
+        omittedSuspiciousCodePointCount,
+    };
+}
+
 function createRequest(plugin: ModelPlugin, input: string, options: ChatOptions, promptSnapshot: AttemptPromptSnapshot): ModelRequest {
     return {
         input,
@@ -30,8 +69,20 @@ function createRequest(plugin: ModelPlugin, input: string, options: ChatOptions,
                 return { kind: "continue", output: lookupMeme(call.arguments, options.memeSnapshot) };
             }
             if (call.name === "qq_reply") {
-                const action = parseQqReplyArguments(call.arguments);
-                if (!action) return { kind: "ignore" };
+                const parsed = parseQqReplyArgumentsDetailed(call.arguments);
+                if (!parsed.ok) {
+                    const unicodeDiagnostics = diagnoseRejectedArguments(call.arguments);
+                    const rawLength = call.arguments.length;
+                    logger.debug(`[AI] qq_reply rejected reason=${parsed.reason} rawLength=${rawLength}`, unicodeDiagnostics);
+                    logger.all("[AI] qq_reply rejected", {
+                        reason: parsed.reason,
+                        argumentsJsonLength: rawLength,
+                        argumentsJson: JSON.stringify(call.arguments),
+                        ...unicodeDiagnostics,
+                    });
+                    return { kind: "ignore" };
+                }
+                const action = parsed.action;
                 if (action.messages.length === 1 && action.messages[0].content === "<NO_REPLY>") {
                     return { kind: "result", result: { kind: "no_reply" } };
                 }

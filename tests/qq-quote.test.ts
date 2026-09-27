@@ -9,7 +9,7 @@ import { rememberKnownMember } from "../src/qq/conversation/known-members.js";
 import { normalizeQqMessage, type NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 import { coordinateAiReply } from "../src/qq/reply/coordinator.js";
 import { registerMessageHandler } from "../src/qq/handlers/message-handler.js";
-import { parseQqReplyArguments, qqReplyTool, type QQReplyMessage, type QuotePreference } from "../src/skills/qq-reply/skill.js";
+import { parseQqReplyArguments, parseQqReplyArgumentsDetailed, qqReplyTool, type QQReplyMessage, type QuotePreference } from "../src/skills/qq-reply/skill.js";
 
 function inbound(group: string, id: string, content: string, idx: string, ref?: string, author = "用户"): QQBotInboundMessage {
     const event = {
@@ -73,6 +73,56 @@ test("strict qq_reply schema uses semantic quote objects and normalizes legacy i
     assert.deepEqual(parseQqReplyArguments('{"messages":[],"mentions":[],"meme":"a.jpg"}'), {
         messages: [], mentions: [], meme: "a.jpg",
     });
+});
+
+test("qq_reply parser accepts the reported plain-text, meme, and message-quote arguments", () => {
+    const plainText = JSON.stringify({
+        messages: [{ content: "这句我已经听第四遍了，额度不会因为喊得勤就变两张", quote: { mode: "auto", ref: null } }],
+        mentions: [],
+        meme: null,
+    });
+    const textAndGif = JSON.stringify({
+        messages: [{ content: "一次只能发一张，另一张先欠着", quote: { mode: "auto", ref: null } }],
+        mentions: [],
+        meme: "尴尬狗狗躲闪视线动图.gif",
+    });
+    const messageQuote = JSON.stringify({
+        messages: [{ content: "一次只带得动一张，多的没了", quote: { mode: "message", ref: "m9" } }],
+        mentions: [],
+        meme: "维维：这种好事没大家的份儿.jpg",
+    });
+
+    assert.deepEqual(parseQqReplyArguments(plainText), {
+        messages: [{ content: "这句我已经听第四遍了，额度不会因为喊得勤就变两张", quote: { mode: "auto", ref: null } }],
+        mentions: [],
+    });
+    assert.deepEqual(parseQqReplyArguments(textAndGif), {
+        messages: [{ content: "一次只能发一张，另一张先欠着", quote: { mode: "auto", ref: null } }],
+        mentions: [],
+        meme: "尴尬狗狗躲闪视线动图.gif",
+    });
+    assert.deepEqual(parseQqReplyArguments(messageQuote), {
+        messages: [{ content: "一次只带得动一张，多的没了", quote: { mode: "message", ref: "m9" } }],
+        mentions: [],
+        meme: "维维：这种好事没大家的份儿.jpg",
+    });
+});
+
+test("qq_reply detailed parser identifies rejection stage and stays fail closed", () => {
+    const invalidCases: Array<[string, string, string]> = [
+        ["invalid-json", "{", "invalid-json"],
+        ["invalid-root", "[]", "invalid-root"],
+        ["invalid-messages", JSON.stringify({ messages: "bad", mentions: [], meme: null }), "invalid-messages"],
+        ["empty-action", JSON.stringify({ messages: [], mentions: [], meme: null }), "empty-action"],
+        ["invalid-meme", JSON.stringify({ messages: [{ content: "hi" }], mentions: [], meme: 4 }), "invalid-meme"],
+        ["invalid-no-reply", JSON.stringify({ messages: [{ content: "<NO_REPLY>" }], mentions: [], meme: "cat.gif" }), "invalid-no-reply"],
+        ["invalid-mentions", JSON.stringify({ messages: [{ content: "hi" }], mentions: [4], meme: null }), "invalid-mentions"],
+    ];
+
+    for (const [, input, reason] of invalidCases) {
+        assert.deepEqual(parseQqReplyArgumentsDetailed(input), { ok: false, reason });
+        assert.equal(parseQqReplyArguments(input), null, `must reject ${reason}`);
+    }
 });
 
 test("two QQ messages independently quote m2 and m4", async () => {

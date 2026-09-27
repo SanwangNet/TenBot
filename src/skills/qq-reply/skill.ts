@@ -13,6 +13,19 @@ export interface QQReplyAction {
     meme?: string | null;
 }
 
+export type QqReplyParseRejectionReason =
+    | "invalid-json"
+    | "invalid-root"
+    | "invalid-messages"
+    | "empty-action"
+    | "invalid-meme"
+    | "invalid-no-reply"
+    | "invalid-mentions";
+
+export type QqReplyArgumentsParseResult =
+    | { ok: true; action: QQReplyAction }
+    | { ok: false; reason: QqReplyParseRejectionReason };
+
 export const MAX_REPLY_MESSAGES = 3;
 
 function normalizeQuote(value: unknown): QuotePreference {
@@ -49,21 +62,40 @@ export function normalizeReplyMessages(value: unknown, legacyQuote?: unknown): Q
 }
 
 /** Build a fresh semantic action, discarding any transport fields from input. */
-export function normalizeQQReplyAction(value: unknown): QQReplyAction | null {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+function normalizeQQReplyActionDetailed(value: unknown): QqReplyArgumentsParseResult {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, reason: "invalid-root" };
     const data = value as Record<string, unknown>;
     const messages = normalizeReplyMessages(data.messages, data.quote);
     const rawMeme = data.meme;
     if (rawMeme !== undefined && rawMeme !== null &&
-        (typeof rawMeme !== "string" || rawMeme.length > 255 || /[\r\n\x00-\x1f]/.test(rawMeme))) return null;
+        (typeof rawMeme !== "string" || rawMeme.length > 255 || /[\r\n\x00-\x1f]/.test(rawMeme))) {
+        return { ok: false, reason: "invalid-meme" };
+    }
     const meme = typeof rawMeme === "string" && rawMeme.trim() ? rawMeme.trim() : null;
     const containsNoReply = messages.some((message) => message.content === "<NO_REPLY>");
-    if ((!messages.length && !meme) || (containsNoReply && (messages.length !== 1 || meme !== null))) return null;
+    if (containsNoReply && (messages.length !== 1 || meme !== null)) {
+        return { ok: false, reason: "invalid-no-reply" };
+    }
+    if (!messages.length && !meme) {
+        return {
+            ok: false,
+            reason: Array.isArray(data.messages) || typeof data.content === "string" ? "empty-action" : "invalid-messages",
+        };
+    }
     if (data.mentions !== undefined &&
-        (!Array.isArray(data.mentions) || !data.mentions.every((name) => typeof name === "string"))) return null;
+        (!Array.isArray(data.mentions) || !data.mentions.every((name) => typeof name === "string"))) {
+        return { ok: false, reason: "invalid-mentions" };
+    }
     const mentions = ((data.mentions as string[] | undefined) ?? [])
         .map((name) => name.trim()).filter(Boolean);
-    return meme === null ? { messages, mentions } : { messages, mentions, meme };
+    const action = meme === null ? { messages, mentions } : { messages, mentions, meme };
+    return { ok: true, action };
+}
+
+/** Build a fresh semantic action, discarding any transport fields from input. */
+export function normalizeQQReplyAction(value: unknown): QQReplyAction | null {
+    const result = normalizeQQReplyActionDetailed(value);
+    return result.ok ? result.action : null;
 }
 
 const quoteSchema = {
@@ -112,17 +144,26 @@ export const qqReplyTool = {
     },
 };
 
-export function parseQqReplyArguments(argumentsJson: string): QQReplyAction | null {
+export function parseQqReplyArgumentsDetailed(argumentsJson: string): QqReplyArgumentsParseResult {
     let parsed: unknown;
-    try { parsed = JSON.parse(argumentsJson); } catch { return null; }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    try { parsed = JSON.parse(argumentsJson); }
+    catch { return { ok: false, reason: "invalid-json" }; }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { ok: false, reason: "invalid-root" };
+    }
     const data = parsed as Record<string, unknown>;
     // Older compatible backends may still produce `content`; the pipeline sees only `messages`.
-    return normalizeQQReplyAction({
+    return normalizeQQReplyActionDetailed({
         messages: data.messages === undefined && typeof data.content === "string"
             ? [data.content] : data.messages,
         mentions: data.mentions,
         meme: data.meme,
         quote: data.quote,
     });
+}
+
+/** Existing fail-closed API retained for callers that only need success or null. */
+export function parseQqReplyArguments(argumentsJson: string): QQReplyAction | null {
+    const result = parseQqReplyArgumentsDetailed(argumentsJson);
+    return result.ok ? result.action : null;
 }
