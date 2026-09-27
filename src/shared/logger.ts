@@ -5,7 +5,7 @@ import { formatTenBotError } from "../errors/format.js";
 import { isTenBotError } from "../errors/tenbot-error.js";
 import { LogFileSink } from "./log-file-sink.js";
 
-export type LogLevel = "all" | "debug" | "info" | "error";
+export type LogLevel = "all" | "debug" | "info" | "warn" | "error";
 
 export interface LogEntry {
     timestamp: string;
@@ -21,7 +21,7 @@ export type LogListener = (entry: LogEntry) => void;
 
 let logLevel: LogLevel = parseLogLevel(process.env.BOT_LOG_LEVEL);
 
-const levels: Record<LogLevel, number> = { all: 0, debug: 1, info: 2, error: 3 };
+const levels: Record<LogLevel, number> = { all: 0, debug: 1, info: 2, warn: 3, error: 4 };
 const logListeners = new Set<LogListener>();
 let consoleOutputEnabled = true;
 let allModeWarningPrinted = false;
@@ -118,13 +118,10 @@ function formatValue(value: unknown, includeBusinessIdentifiers: boolean): strin
     }
 }
 
-function write(level: LogLevel, values: unknown[], preserveLastString = false): void {
-    if (levels[level] < levels[logLevel]) return;
-
+function formatValues(level: LogLevel, values: unknown[], includeBusinessIdentifiers: boolean, preserveLastString = false): string {
     const presentValues = values.filter((value) => value !== undefined);
     const formalError = level === "error" ? presentValues.find(isTenBotError) : undefined;
-    const includeBusinessIdentifiers = level === "all";
-    const text = formalError
+    return formalError
         ? includeBusinessIdentifiers
             ? sanitizeSecrets(formatTenBotError(formalError))
             : sanitizeSafeDiagnostic(formatTenBotError(formalError))
@@ -134,10 +131,21 @@ function write(level: LogLevel, values: unknown[], preserveLastString = false): 
             }
             return formatValue(value, includeBusinessIdentifiers);
         }).join(" ");
-    const entry: LogEntry = { timestamp: new Date().toISOString(), level, text };
+}
 
-    // Persist every accepted logger event before UI-side repeat folding.
-    logFileSink?.write(entry);
+function write(level: LogLevel, values: unknown[], preserveLastString = false, persistToDisk = true): void {
+    // Files are independent of BOT_LOG_LEVEL: all events go to the appropriate
+    // fixed sinks before the UI/Console threshold is applied.
+    const rawText = formatValues(level, values, true, preserveLastString);
+    const safeText = formatValues(level, values, false, preserveLastString);
+    const formalError = level === "error" ? values.find(isTenBotError) : undefined;
+    const timestampValue = new Date().toISOString();
+    if (persistToDisk) logFileSink?.write({ timestamp: timestampValue, level, text: safeText }, rawText);
+
+    if (levels[level] < levels[logLevel]) return;
+    const text = logLevel === "all" ? rawText : safeText;
+    const entry: LogEntry = { timestamp: timestampValue, level, text };
+
     for (const listener of logListeners) {
         try { listener(entry); } catch { /* A log consumer must not break Runtime work. */ }
     }
@@ -145,6 +153,7 @@ function write(level: LogLevel, values: unknown[], preserveLastString = false): 
     const output = lines.map((line, index) => index === 0 && !formalError ? `[${timestamp()}] ${line}` : line).join("\n");
     if (!consoleOutputEnabled) return;
     if (level === "error") console.error(output);
+    else if (level === "warn") console.warn(output);
     else console.log(output);
 }
 
@@ -153,6 +162,7 @@ export const logger = {
     all: (...values: unknown[]) => write("all", values),
     info: (...values: unknown[]) => write("info", values),
     debug: (...values: unknown[]) => write("debug", values),
+    warn: (...values: unknown[]) => write("warn", values),
     error: (...values: unknown[]) => write("error", values),
 };
 
@@ -224,23 +234,20 @@ function sdkDebugMessage(message: string): string | null {
 /** Preserve existing concise SDK logs, while ALL receives the data exposed by the SDK logger. */
 export const qqSdkLogger: QqSdkLogger = {
     info(message) {
-        if (logLevel === "all") logger.all("[QQ SDK] info", message);
-        else logger.debug(`[QQ SDK] ${message}`);
+        logger.all("[QQ SDK] info", message);
+        if (logLevel !== "all") write("debug", [`[QQ SDK] ${message}`], false, false);
     },
     warn(message, meta) {
-        if (logLevel === "all") logger.all("[QQ SDK] warning", message, meta);
-        else logger.info("[QQ SDK] warning", message, meta);
+        logger.warn("[QQ SDK]", message, meta);
     },
     error(message, meta) {
         if (logLevel === "all") logger.all("[QQ SDK] error", message, meta);
         else logger.error("[QQ SDK] error", message, meta);
     },
     debug(message, meta) {
-        if (logLevel === "all") {
-            logger.all("[QQ SDK] raw", message, meta);
-            return;
-        }
+        logger.all("[QQ SDK] raw", message, meta);
+        if (logLevel === "all") return;
         const safeMessage = sdkDebugMessage(message);
-        if (safeMessage) logger.debug(safeMessage, meta);
+        if (safeMessage) write("debug", [safeMessage, meta], false, false);
     },
 };

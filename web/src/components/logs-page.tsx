@@ -8,6 +8,7 @@ const levelFilters: Array<{ value: LogLevelFilter; label: string }> = [
     { value: "all-level", label: "ALL 诊断" },
     { value: "debug", label: "调试" },
     { value: "info", label: "信息" },
+    { value: "warn", label: "警告" },
     { value: "error", label: "错误" },
 ];
 

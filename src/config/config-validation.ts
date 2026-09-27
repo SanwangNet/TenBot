@@ -27,7 +27,7 @@ const MAX_MEME_SEND_MAX_EDGE = 1_024;
 
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh"];
 const VERBOSITIES: readonly ModelVerbosity[] = ["low", "medium", "high"];
-const LOG_LEVELS: readonly LogLevel[] = ["all", "debug", "info", "error"];
+const LOG_LEVELS: readonly LogLevel[] = ["all", "debug", "info", "warn", "error"];
 
 export function parseAutomatedPeerIds(value: string | undefined): readonly string[] {
     return [...new Set((value ?? "").split(",").map((id) => id.trim()).filter(Boolean))];

@@ -70,6 +70,9 @@ test("strict qq_reply schema uses semantic quote objects and normalizes legacy i
         { mode: "auto", ref: null });
     assert.deepEqual(parseQqReplyArguments('{"messages":["a","b"],"mentions":[],"quote":{"mode":"message","ref":"m1"}}')?.messages,
         [{ content: "a", quote: { mode: "message", ref: "m1" } }, { content: "b", quote: { mode: "none", ref: null } }]);
+    assert.deepEqual(parseQqReplyArguments('{"messages":[],"mentions":[],"meme":"a.jpg"}'), {
+        messages: [], mentions: [], meme: "a.jpg",
+    });
 });
 
 test("two QQ messages independently quote m2 and m4", async () => {

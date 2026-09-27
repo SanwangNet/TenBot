@@ -115,6 +115,7 @@ export function registerMessageHandler(
     getBotAdminIds: () => readonly string[] = () => [],
 ): () => void {
     const judgeAdmissionStates = new Map<string, JudgeAdmissionState>();
+    let judgeRequestSequence = 0;
     let disposed = false;
 
     const clearAdmissionState = (key: string): void => {
@@ -159,6 +160,7 @@ export function registerMessageHandler(
                 state.recheckInFlight = recheckExpired;
                 let decision: ReplyJudgeDecision | undefined;
                 let failure: unknown;
+                let requestSequence: number | undefined;
                 const abortController = new AbortController();
                 state.abortController = abortController;
                 try {
@@ -167,16 +169,18 @@ export function registerMessageHandler(
                         ...candidate.signals,
                         turnWaitExpired: recheckExpired,
                     });
+                    requestSequence = ++judgeRequestSequence;
+                    logger.debug(`[ReplyJudge] start request=${requestSequence} recheck=${recheckExpired}`);
                     decision = await replyJudge.judge(judgeRequest, abortController.signal);
                     if (!isReplyJudgeDecision(decision)) throw new TenBotError("F:A_RJ_IPO");
-                    logger.all("[ReplyJudge] admission decision", { decision, revision, turnWaitExpired: recheckExpired });
+                    logger.all("[ReplyJudge] admission decision", { request: requestSequence, decision, revision, recheck: recheckExpired });
                     if (recheckExpired && decision.decision === "wait") {
-                        logger.debug("[ReplyJudge] wait is invalid after an expired turn wait");
+                        logger.debug(`[ReplyJudge] decision=wait rejected request=${requestSequence} recheck=true`);
                         throw new TenBotError("F:A_RJ_IPO");
                     }
                 } catch (error) {
                     failure = error;
-                    logger.all("[ReplyJudge] admission exception", { revision, turnWaitExpired: recheckExpired, error });
+                    logger.all("[ReplyJudge] admission exception", { request: requestSequence, revision, recheck: recheckExpired, error });
                 } finally {
                     if (state.abortController === abortController) state.abortController = undefined;
                 }
@@ -220,9 +224,9 @@ export function registerMessageHandler(
                     logger.info("[ReplyJudge] invalid protocol output; falling back to main model");
                 }
                 const outcome = ipoFallback ? "reply" : decision?.decision;
-                logger.all("[ReplyJudge] admission outcome", { outcome, revision, ipoFallback });
+                logger.all("[ReplyJudge] admission outcome", { request: requestSequence, outcome, revision, recheck: recheckExpired, ipoFallback });
                 if (outcome === "pass") {
-                    logger.debug("[ReplyJudge] decision=pass");
+                    logger.debug(`[ReplyJudge] decision=pass request=${requestSequence} recheck=${recheckExpired}`);
                     clearAdmissionState(state.key);
                     return;
                 }
@@ -233,7 +237,7 @@ export function registerMessageHandler(
                     state.waitStartedAt = Date.now();
                     const waitGeneration = ++state.generation;
                     const waitMs = getReplyJudgeTurnWaitMs();
-                    logger.debug(`[ReplyJudge] decision=wait`);
+                    logger.debug(`[ReplyJudge] decision=wait request=${requestSequence} recheck=${recheckExpired}`);
                     logger.debug(`[Front] turn wait started conversation=${shortId(state.key)} revision=${revision}`);
                     state.timer = turnWaitScheduler.setTimeout(() => {
                         if (disposed || judgeAdmissionStates.get(state.key) !== state ||
@@ -261,7 +265,7 @@ export function registerMessageHandler(
                     : candidate.request.triggerKind && candidate.request.triggerKind !== "hard-mention"
                         ? candidate.request.triggerKind
                         : "reply-judge";
-                if (!ipoFallback) logger.debug("[ReplyJudge] decision=reply");
+                if (!ipoFallback) logger.debug(`[ReplyJudge] decision=reply request=${requestSequence} recheck=${recheckExpired}`);
                 await admitConversationWake({ ...candidate.request, admission: reason }, "soft", reason, candidate.dependencies);
                 return;
             }

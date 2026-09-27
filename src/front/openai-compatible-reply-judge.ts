@@ -31,8 +31,6 @@ export class OpenAICompatibleReplyJudge implements ReplyJudge {
         }
 
         const model = snapshot.model;
-        logger.debug("[ReplyJudge] start provider=openai-compatible model=" + model +
-            " revision=" + snapshot.prompt.revision);
         try {
             const client = new OpenAI({
                 apiKey: snapshot.apiKey,
@@ -64,12 +62,11 @@ export class OpenAICompatibleReplyJudge implements ReplyJudge {
             const content = response.choices[0]?.message?.content;
             if (typeof content !== "string") {
                 const decision = parseReplyJudgeOutput("");
-                logger.all("[ReplyJudge] parsed decision", decision);
+                logger.all("[ReplyJudge:provider] parsed=invalid", decision);
                 return decision;
             }
             const decision = parseReplyJudgeOutput(content);
-            logger.debug("[ReplyJudge] decision=" + decision.decision);
-            logger.all("[ReplyJudge] parsed decision", decision);
+            logger.all(`[ReplyJudge:provider] parsed=${decision.decision}`, decision);
             return decision;
         } catch (error) {
             logger.all("[ReplyJudge] request exception", error);

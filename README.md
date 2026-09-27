@@ -47,7 +47,7 @@ Front 使用 `FRONT_MODE=legacy|judge` 配置，默认 `legacy`。只有显式�
 
 | 变量 | 用途 |
 | --- | --- |
-| BOT_LOG_LEVEL | 日志级别：all、debug、info 或 error；默认 info |
+| BOT_LOG_LEVEL | UI/Console 日志级别：all、debug、info、warn 或 error；默认 info。磁盘三份日志始终开启 |
 | AUTOMATED_PEER_IDS | 逗号分隔的已登记自动化账号稳定成员 ID |
 | BOT_LOOP_GUARD_MAX_CYCLES | 每个会话的连续自动账号 AI Cycle 上限，默认 4，必须是大于等于 1 的整数 |
 | REPLY_JUDGE_TIMEOUT_MS | Reply Judge 独立超时，默认 5000 毫秒，接受 1000–30000 毫秒 |
@@ -127,11 +127,11 @@ TUI 快捷键：
 
 ### 日志显示
 
-日志缓存会将相邻且级别、正文完全相同的记录折叠为一行，并用结构化重复次数显示；TUI 与 WebUI 共用这份最多 5000 行的缓存。磁盘日志仍逐条保存每个 logger event。
+日志缓存会将相邻且级别、正文完全相同的记录折叠为一行，并用结构化重复次数显示；TUI 与 WebUI 共用这份最多 5000 行的缓存。磁盘日志逐条保存每个 logger event，不折叠。
 
-Runtime 默认异步追加日志到 `logs/tenbot-YYYY-MM-DD.log`，按本地日期每天一个文件；跨午夜后会写入新日期文件。`logs/` 已加入 Git ignore。
+Runtime 无需额外配置，始终异步追加三份本地日志：`logs/tenbot-YYYY-MM-DD.all.log`、`logs/tenbot-YYYY-MM-DD.info.log`、`logs/tenbot-YYYY-MM-DD.warn.log`，按本地日期每天一个文件，跨午夜后自动写入新日期文件。`all.log` 包含 ALL、DEBUG、INFO、WARN、ERROR；`info.log` 包含 INFO、WARN、ERROR；`warn.log` 只包含 WARN、ERROR。三份文件不受 `BOT_LOG_LEVEL` 影响。
 
-`BOT_LOG_LEVEL=debug` 记录安全诊断摘要。仅在临时排障时使用 `BOT_LOG_LEVEL=all`：它记录原始请求、响应和协议事件，日志可能包含聊天内容、OpenID、Prompt、模型输入输出及 Tool 数据。ALL 日志属于敏感诊断数据，不要上传到公开 issue；排障后建议恢复 `debug` 或 `info`。
+`BOT_LOG_LEVEL` 只控制 Console、TUI、WebUI、SSE 与内存日志缓存，支持 `all`、`debug`、`info`、`warn`、`error`，默认 `info`。`debug` 记录安全摘要；`all` 会在 UI 中呈现完整诊断。`all.log` 属于敏感本地诊断数据，可能包含聊天正文、OpenID、Prompt、模型请求/响应和 Tool 数据，不要公开上传。三份日志都会持续脱敏 API key、App Secret、Authorization、Bearer token、Cookie、access/refresh token 和其他凭据。
 
 ### 运行时热重载
 
@@ -200,7 +200,7 @@ Runtime 会校验 JSON、条目字段及重复 ID、名称和别名，再建立�
 
 已知群成员资料使用本地 SQLite，默认文件为 data/bot.db；数据库不可用时，本次运行会退回内存存储。最近聊天上下文、活跃会话和自动账号循环限制状态保存在内存中，进程重启后清零。
 
-API 密钥、QQ 凭据和 Authorization、Bearer token、Cookie、access/refresh token 会在 Console、UI 与磁盘日志中持续脱敏。ALL 日志仍可能包含聊天内容、member/group OpenID、Prompt、模型请求/响应和 Tool 参数及结果；它只适合本机临时诊断，排障后恢复 debug/info，并且不要上传公开 issue。日志文件保存在被 Git ignore 的 `logs/` 目录。
+API 密钥、QQ 凭据和 Authorization、Bearer token、Cookie、access/refresh token 会在 Console、UI 与三份磁盘日志中持续脱敏。ALL 日志仍可能包含聊天内容、member/group OpenID、Prompt、模型请求/响应和 Tool 参数及结果；它只适合本机临时诊断，排障后恢复 debug/info，并且不要上传公开 issue。日志文件保存在被 Git ignore 的 `logs/` 目录。
 
 ## 开发检查
 

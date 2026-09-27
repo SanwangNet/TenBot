@@ -9,6 +9,7 @@ import { createDeepSeekPlugin } from "../src/ai/plugins/deepseek/index.js";
 import { createGptPlugin } from "../src/ai/plugins/gpt/index.js";
 import { getPromptStore } from "../src/ai/prompt-store.js";
 import { isToolProtocolLeak } from "../src/ai/tool-protocol.js";
+import { parseQqReplyArguments } from "../src/skills/qq-reply/skill.js";
 import { getLogLevel, setConsoleLogOutputEnabled, setLogLevel, subscribeLogs } from "../src/shared/logger.js";
 
 const GPT_SYSTEM_PROMPT = readFileSync(new URL("../src/ai/plugins/gpt/prompt.md", import.meta.url), "utf8");
@@ -93,6 +94,8 @@ test("ALL records Responses request and complete stream payloads plus diagnostic
         assert.match(all, /response\.output_item\.done/);
         assert.match(all, /item-full-id/);
         assert.match(all, /completed response/);
+        assert.match(all, /final collected text/);
+        assert.match(all, /protocol leak classification/);
         assert.match(all, /NVO diagnostics/);
         assert.match(all, /"outputItemCount":0/);
         assert.match(all, /"functionCallCount":0/);
@@ -222,6 +225,27 @@ test("a real qq_reply function call with NO_REPLY remains a control result", asy
     });
 });
 
+test("a real qq_reply function call with an empty messages array returns its meme-only action", async () => {
+    const filename = "维维：坦白地讲我不是特别关心.jpg";
+    const toolCall = complete([{
+        type: "function_call", id: "fc_meme_only", call_id: "call_meme_only", name: "qq_reply",
+        arguments: JSON.stringify({ messages: [], mentions: ["群友"], meme: filename }),
+    }]);
+    await withResponses([sse([toolCall])], async () => {
+        const request: ModelRequest = {
+            ...pluginRequest(),
+            executeTool: async ({ name, arguments: toolArguments }) => {
+                assert.equal(name, "qq_reply");
+                const action = parseQqReplyArguments(toolArguments);
+                assert.ok(action);
+                return { kind: "result", result: { kind: "reply", action } };
+            },
+        };
+        const result = await createDeepSeekPlugin({ apiKey: "offline" }).generate(request, options());
+        assert.deepEqual(result, { kind: "reply", action: { messages: [], mentions: ["群友"], meme: filename } });
+    });
+});
+
 test("DeepSeek meme_lookup uses the shared TenBot tool and feeds its result back", async () => {
     const memeCall = complete([{
         type: "function_call", id: "fc_meme", call_id: "call_meme", name: "meme_lookup",
@@ -266,10 +290,34 @@ test("protocol leak detector catches complete XML and reply JSON shapes only", (
         messages: [{ content: "hello", quote: { mode: "message", ref: "m1" } }],
         mentions: [],
     })), true);
+    const memeOnly = { messages: [], mentions: [], meme: "维维：坦白地讲我不是特别关心.jpg" };
+    assert.equal(isToolProtocolLeak(JSON.stringify(memeOnly)), true);
+    assert.equal(isToolProtocolLeak(JSON.stringify({ ...memeOnly, quote: null })), true);
+    assert.equal(isToolProtocolLeak('{"messages":[],"mentions":[],"meme":"a.jpg","quote":null}'), true);
+    assert.equal(isToolProtocolLeak('{"messages":[]}'), false);
+    assert.equal(isToolProtocolLeak('{"messages":[],"mentions":[],"note":"meme"}'), false);
+    assert.equal(isToolProtocolLeak('[{"content":"ordinary JSON"}]'), false);
+    assert.equal(isToolProtocolLeak('{"messages":[],"mentions":[],"meme":"a.jpg"'), false);
     assert.equal(isToolProtocolLeak("刚才那个 <qq_reply> 标签是什么意思？"), false);
     assert.equal(isToolProtocolLeak("这个 JSON 里有 content 字段"), false);
     assert.equal(isToolProtocolLeak('{"content":"普通 JSON 讨论"}'), false);
     assert.equal(isToolProtocolLeak("```xml\n<qq_reply>举例</qq_reply>\n```"), false);
+});
+
+test("meme-only protocol JSON in output_text fails as protocol leakage and is never executed", async () => {
+    const payloads = [
+        '{"messages":[],"mentions":[],"meme":"维维：坦白地讲我不是特别关心.jpg"}',
+        '{"messages":[],"mentions":[],"meme":"维维：坦白地讲我不是特别关心.jpg","quote":null}',
+    ];
+    await withResponses(payloads.map((payload) => sse([messageText(payload)])), async () => {
+        for (const payload of payloads) {
+            assert.equal(isToolProtocolLeak(payload), true);
+            await assert.rejects(
+                createDeepSeekPlugin({ apiKey: "offline" }).generate(pluginRequest(), options()),
+                (error: unknown) => (error as { code?: string }).code === "B:A_OP_TPL",
+            );
+        }
+    });
 });
 
 test("a second leaked payload fails closed without sending it as text", async () => {

@@ -668,6 +668,7 @@ const logLevelOptions: readonly ConfigOption[] = [
     { value: "all", label: "全部" },
     { value: "debug", label: "调试" },
     { value: "info", label: "信息" },
+    { value: "warn", label: "警告" },
     { value: "error", label: "错误" },
 ];
 
@@ -710,7 +711,7 @@ function optionPatch(field: ConfigSelectField, value: string): PublicConfigPatch
         case "gpt.reasoningEffort": return { field, value: value as "none" | "low" | "medium" | "high" | "xhigh" };
         case "gpt.verbosity": return { field, value: value as "low" | "medium" | "high" };
         case "deepseek.reasoningEffort": return { field, value: value as "none" | "low" | "medium" | "high" | "xhigh" };
-        case "logLevel": return { field, value: value as "all" | "debug" | "info" | "error" };
+        case "logLevel": return { field, value: value as "all" | "debug" | "info" | "warn" | "error" };
     }
 }
 

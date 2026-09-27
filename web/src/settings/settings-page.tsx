@@ -21,7 +21,7 @@ const reasoningOptions = [
     ["none", "关闭"], ["low", "低"], ["medium", "中"], ["high", "高"], ["xhigh", "极高"],
 ] as const;
 const verbosityOptions = [["low", "简洁"], ["medium", "标准"], ["high", "详细"]] as const;
-const logLevelOptions = [["all", "全部"], ["debug", "调试"], ["info", "信息"], ["error", "错误"]] as const;
+const logLevelOptions = [["all", "全部"], ["debug", "调试"], ["info", "信息"], ["warn", "警告"], ["error", "错误"]] as const;
 const memeSendSizeOptions = [[96, "96 px"], [128, "128 px"], [160, "160 px"], [200, "200 px"], [240, "240 px"]] as const;
 const memeSendPresetValues = new Set(memeSendSizeOptions.map(([value]) => String(value)));
 

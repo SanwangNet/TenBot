@@ -246,6 +246,9 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                 const renderedParts = parts.map((part) =>
                     renderCitations(part.text, part.citations, markerSources));
                 const output = renderedParts.map((part) => part.content).join("") || unindexed;
+                logger.all(`[AI:${config.id}] final collected text`, output);
+                const protocolLeak = isToolProtocolLeak(output);
+                logger.all(`[AI:${config.id}] protocol leak classification`, { detected: protocolLeak, outputLength: output.length });
                 const elapsed = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
                 const reportCitations = (renderedCount: number, metadataUnavailable: boolean): void => {
                     if (renderedCount) logger.info("[AI] citations " + renderedCount);
@@ -269,7 +272,7 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                     });
                     action.messages = normalizeReplyMessages(action.messages.map((message, messageIndex) =>
                         ({ ...message, content: rendered[messageIndex].content })));
-                    if (!action.messages.length) continue;
+                    if (!action.messages.length && !action.meme) continue;
                     reportCitations(
                         rendered.reduce((count, item) => count + item.renderedCount, 0),
                         rendered.some((item) => item.metadataUnavailable),
@@ -277,7 +280,7 @@ export function createResponsesModelPlugin(config: ResponsesPluginConfig): Model
                     logger.info(`[AI] done provider=${config.id} ${elapsed}: messages=${action.messages.length}`);
                     return { kind: "reply", action };
                 }
-                if (isToolProtocolLeak(output)) throw new ToolProtocolLeakError();
+                if (protocolLeak) throw new ToolProtocolLeakError();
                 const normalizedTextReply = normalizeTextReply(output);
                 const diagnosticOutput = completedResponse.output ?? [];
                 const diagnosticMessages = diagnosticOutput.filter((item: any) => item.type === "message");

@@ -2,7 +2,7 @@ import { mkdir, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { LogEntry } from "./logger.js";
 
-/** Serial asynchronous daily append sink. Entries are already sanitized by logger.ts. */
+/** Serial asynchronous daily append sink. Text variants are already sanitized by logger.ts. */
 export class LogFileSink {
     private queue: Promise<void> = Promise.resolve();
     private closed = false;
@@ -13,15 +13,31 @@ export class LogFileSink {
         private readonly onFailure: (error: unknown) => void = () => undefined,
     ) {}
 
-    write(entry: LogEntry): void {
+    write(entry: LogEntry, allText = entry.text): void {
         if (this.closed) return;
         const date = new Date(entry.timestamp);
         const dateName = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-        const path = join(this.directory, `tenbot-${dateName}.log`);
-        const line = `${formatLocalTimestamp(date)} ${entry.level.toUpperCase()} ${entry.text}\n`;
+        const prefix = `${formatLocalTimestamp(date)} ${entry.level.toUpperCase()} `;
+        const writes: Array<{ path: string; text: string }> = [
+            { path: join(this.directory, `tenbot-${dateName}.all.log`), text: allText },
+        ];
+        if (entry.level !== "all" && entry.level !== "debug") {
+            writes.push({ path: join(this.directory, `tenbot-${dateName}.info.log`), text: entry.text });
+        }
+        if (entry.level === "warn" || entry.level === "error") {
+            writes.push({ path: join(this.directory, `tenbot-${dateName}.warn.log`), text: entry.text });
+        }
         this.queue = this.queue.then(async () => {
             await mkdir(this.directory, { recursive: true });
-            await appendFile(path, line, { encoding: "utf8", flag: "a" });
+            let firstError: unknown;
+            for (const write of writes) {
+                try {
+                    await appendFile(write.path, `${prefix}${write.text}\n`, { encoding: "utf8", flag: "a" });
+                } catch (error) {
+                    firstError ??= error;
+                }
+            }
+            if (firstError) throw firstError;
         }).catch((error: unknown) => {
             if (!this.failureReported) {
                 this.failureReported = true;

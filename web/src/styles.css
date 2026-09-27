@@ -224,6 +224,7 @@ button:focus-visible {
 .log-level { color: #aab5c2; font-size: 9px; font-weight: 700; letter-spacing: .04em; }
 .log-debug .log-level { color: #a6b3c4; }
 .log-info .log-level { color: #94c6ad; }
+.log-warn .log-level { color: #efc078; }
 .log-error .log-level { color: #f18b91; }
 .log-all .log-level { color: #d8b2ed; }
 .log-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }

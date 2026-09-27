@@ -365,6 +365,48 @@ test("Judge wait stays silent then timeout recheck carries trusted metadata and 
     state.cleanup?.();
 });
 
+test("Judge decision logs correlate one canonical result with each initial and recheck request", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    const scheduler = new FakeTurnWaitScheduler();
+    const previousLogLevel = getLogLevel();
+    const observedLogs: Array<{ level: string; text: string }> = [];
+    const unsubscribe = subscribeLogs((entry) => observedLogs.push(entry));
+    setConsoleLogOutputEnabled(false);
+    setLogLevel("all");
+    let judgeCalls = 0;
+    let mainCalls = 0;
+    const handler = register(state, {
+        async judge() {
+            judgeCalls++;
+            return { decision: judgeCalls === 1 ? "wait" : "reply" };
+        },
+    }, async () => {
+        mainCalls++;
+        return { kind: "no_reply" };
+    }, "judge", () => false, () => 20_000, scheduler);
+
+    try {
+        await handler({}, fakeMessage(randomUUID(), "correlation-first-" + randomUUID(), "First request"));
+        scheduler.advanceBy(20_000);
+        await waitFor(() => judgeCalls === 2);
+        await waitFor(() => mainCalls === 1);
+        assert.deepEqual(observedLogs
+            .filter((entry) => entry.level === "debug" && /^\[ReplyJudge\] (?:start|decision=)/.test(entry.text))
+            .map((entry) => entry.text), [
+            "[ReplyJudge] start request=1 recheck=false",
+            "[ReplyJudge] decision=wait request=1 recheck=false",
+            "[ReplyJudge] start request=2 recheck=true",
+            "[ReplyJudge] decision=reply request=2 recheck=true",
+        ]);
+    } finally {
+        state.cleanup?.();
+        unsubscribe();
+        setLogLevel(previousLogLevel);
+        setConsoleLogOutputEnabled(true);
+    }
+});
+
 test("timeout recheck pass does not start the Main Model", async () => {
     configureMemberRepository(new MemoryMemberRepository());
     const state = fakeBot();
@@ -906,7 +948,8 @@ test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token c
         assert.match(all, /\[ReplyJudge\] HTTP response/);
         assert.match(all, /"status":200/);
         assert.match(all, /chatcmpl-test/);
-        assert.match(all, /parsed decision/);
+        assert.match(all, /\[ReplyJudge:provider\] parsed=reply/);
+        assert.doesNotMatch(all, /\[ReplyJudge\] decision=/);
         assert.doesNotMatch(all, /test-only-key/);
     } finally {
         globalThis.fetch = originalFetch;

@@ -127,8 +127,8 @@ test("ConfigStore appends new managed keys and serializes concurrent writes", as
     });
 });
 
-test("BOT_LOG_LEVEL supports ALL and defaults invalid values to info", () => {
-    assert.deepEqual(["all", "debug", "info", "error"].map((level) => parseLogLevel(level)), ["all", "debug", "info", "error"]);
+test("BOT_LOG_LEVEL supports all five levels and defaults invalid values to info", () => {
+    assert.deepEqual(["all", "debug", "info", "warn", "error"].map((level) => parseLogLevel(level)), ["all", "debug", "info", "warn", "error"]);
     assert.equal(loadAppConfig({ BOT_LOG_LEVEL: "all" }).logging.level, "all");
     assert.equal(parseLogLevel("invalid"), "info");
 });
@@ -282,7 +282,7 @@ test("ConfigStore rejects unsafe model names and invalid guard, reasoning, verbo
     assert.throws(() => validatePublicConfigPatch({ field: "botLoopGuard.maxCycles", value: 1.5 }), />=|大于等于/);
     assert.throws(() => validatePublicConfigPatch({ field: "gpt.reasoningEffort", value: "turbo" as never }), /推理强度/);
     assert.throws(() => validatePublicConfigPatch({ field: "gpt.verbosity", value: "verbose" as never }), /输出详细度/);
-    assert.throws(() => validatePublicConfigPatch({ field: "logLevel", value: "warn" as never }), /日志级别/);
+    assert.throws(() => validatePublicConfigPatch({ field: "logLevel", value: "warning" as never }), /日志级别/);
 });
 
 test("ConfigStore returns a safe failure and leaves the old file unchanged when writing fails", async () => {

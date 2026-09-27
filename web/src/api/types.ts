@@ -35,7 +35,7 @@ export interface RuntimeStatus {
 
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
 export type ModelVerbosity = "low" | "medium" | "high";
-export type LogLevel = "all" | "debug" | "info" | "error";
+export type LogLevel = "all" | "debug" | "info" | "warn" | "error";
 
 export interface PublicConfig {
     aiProvider: "gpt" | "deepseek";
