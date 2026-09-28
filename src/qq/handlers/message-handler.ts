@@ -6,6 +6,7 @@ import type {
 import { buildAiInput, buildReplyPolicy } from "../../ai/input-builder.js";
 import { buildReplyJudgeRequest } from "../../front/build-reply-judge-request.js";
 import { decideFrontPolicy } from "../../front/front-policy.js";
+import { GroupRepeater } from "../../front/repeater.js";
 import type { ReplyJudge, ReplyJudgeDecision, ReplyJudgeRequest } from "../../front/reply-judge.js";
 import type { FrontMode } from "../../front/wake-level.js";
 import type { ReplyCoordinatorDependencies, ReplyRequest } from "../reply/coordinator.js";
@@ -23,6 +24,7 @@ import {
     getMessageRevision,
     getRecentImages,
     rememberIncomingMessage,
+    rememberBotReply,
     recordIncomingMessageRevision,
 } from "../conversation/recent-context.js";
 import { isConversationActive } from "../conversation/engagement.js";
@@ -37,6 +39,7 @@ import { admitConversationWake, hasActiveReplyCycle, observeConversationUpdate, 
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
 import { GroupReplyControl, isConfiguredBotAdmin } from "../../runtime/group-reply-control.js";
 import { toOpaqueMemberDisplayId } from "../../members/opaque-member-id.js";
+import { createQqSendError } from "../reply/error-adapter.js";
 
 const SEARCH_NOTICES = [
     "\u7a0d\u7b49\uff0c\u6211\u67e5\u4e00\u4e0b\u3002",
@@ -115,6 +118,7 @@ export function registerMessageHandler(
     getBotAdminIds: () => readonly string[] = () => [],
 ): () => void {
     const judgeAdmissionStates = new Map<string, JudgeAdmissionState>();
+    const groupRepeater = new GroupRepeater();
     let judgeRequestSequence = 0;
     let disposed = false;
 
@@ -336,13 +340,24 @@ export function registerMessageHandler(
             memeLibrary,
         })) return;
 
+        const rawText = typeof normalized.source.content === "string" ? normalized.source.content : "";
+        const repeatDecision = normalized.kind === "group" &&
+            normalized.eventType === "GROUP_MESSAGE_CREATE" &&
+            Boolean(normalized.groupId && normalized.authorId) &&
+            !normalized.authorIsBot && normalized.author?.is_you !== true && normalized.author?.isYou !== true &&
+            !isAutomatedPeer && !commandTrigger.isAtBot && parsedCommand === null &&
+            normalized.mentions.length === 0 && normalized.attachments.length === 0 &&
+            !rawText.includes("<faceType=") && !/<@[^>]+>/.test(rawText)
+            ? groupRepeater.observe({ groupId: normalized.groupId!, senderId: normalized.authorId!, content: rawText })
+            : { repeat: false as const };
+
         const input = normalized.displayContent;
         const imageAttachments = normalized.attachments.filter((attachment: any) => {
             const contentType = attachment?.content_type ?? attachment?.contentType;
             return typeof contentType === "string" && contentType.startsWith("image/");
         });
         const hasImages = imageAttachments.length > 0;
-        if (!input && !hasImages) return;
+        if (!input && !hasImages && !repeatDecision.repeat) return;
         if (isOnlyQQFace(input)) {
             logger.info("[Filter] qq-face");
             return;
@@ -487,6 +502,18 @@ export function registerMessageHandler(
                 catch (error) { logger.error("[Runtime] unavailable notice send failed", error); }
             } else {
                 logger.debug("[Front] skipped: group replies disabled");
+            }
+            return;
+        }
+
+        if (repeatDecision.repeat) {
+            clearAdmissionState(conversationKey);
+            logger.info(`[Front] repeater matched group=${normalized.groupId!.slice(0, 6)}… sender=${normalized.authorId!.slice(0, 6)}…`);
+            try {
+                const sent = await bot.sendText(normalized.replyTarget, repeatDecision.content);
+                rememberBotReply(normalized, repeatDecision.content, sent);
+            } catch (error) {
+                logger.error(createQqSendError(error, 0));
             }
             return;
         }
