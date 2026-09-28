@@ -21,7 +21,6 @@ const reasoningOptions = [
     ["none", "关闭"], ["low", "低"], ["medium", "中"], ["high", "高"], ["xhigh", "极高"],
 ] as const;
 const verbosityOptions = [["low", "简洁"], ["medium", "标准"], ["high", "详细"]] as const;
-const logLevelOptions = [["all", "全部"], ["debug", "调试"], ["info", "信息"], ["warn", "警告"], ["error", "错误"]] as const;
 const memeSendSizeOptions = [[96, "96 px"], [128, "128 px"], [160, "160 px"], [200, "200 px"], [240, "240 px"]] as const;
 const memeSendPresetValues = new Set(memeSendSizeOptions.map(([value]) => String(value)));
 
@@ -166,11 +165,6 @@ export function SettingsPage() {
 
                 <section className="panel settings-panel">
                     <PanelHeading index="03" title="运行" hint="保存后由运行时热重载应用" />
-                    <SettingField label="日志级别" id="setting-log-level" hint={form.values.logLevel === "all" ? "记录原始请求/响应，可能包含聊天与身份数据，仅建议排障时开启。" : undefined}>
-                        <select id="setting-log-level" value={form.values.logLevel} disabled={saving} onChange={(event) => edit("logLevel", event.currentTarget.value as SettingsValues["logLevel"])}>
-                            {logLevelOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                        </select>
-                    </SettingField>
                     <SettingField label="表情包发送大小" id="setting-meme-send-size" hint="机器人实际发送时的最大边长；不会修改本地原始文件。">
                         <select id="setting-meme-send-size" value={form.values.memeSendMaxEdge} disabled={saving} onChange={(event) => edit("memeSendMaxEdge", event.currentTarget.value)}>
                             <option value="original">原始尺寸</option>

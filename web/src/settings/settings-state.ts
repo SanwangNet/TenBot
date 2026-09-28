@@ -14,7 +14,6 @@ export interface SettingsValues {
     "replyJudge.timeoutMs": string;
     "replyJudge.fallbackToMainOnInvalidOutput": boolean;
     "replyJudge.turnWaitMs": string;
-    logLevel: PublicConfig["logLevel"];
     "botLoopGuard.maxCycles": string;
 }
 
@@ -36,7 +35,6 @@ const SETTINGS_FIELDS: readonly SettingsField[] = [
     "replyJudge.timeoutMs",
     "replyJudge.fallbackToMainOnInvalidOutput",
     "replyJudge.turnWaitMs",
-    "logLevel",
     "botLoopGuard.maxCycles",
 ];
 
@@ -55,7 +53,6 @@ export function createSettingsForm(config: PublicConfig): SettingsFormState {
             "replyJudge.timeoutMs": String(config.replyJudge.timeoutMs),
             "replyJudge.fallbackToMainOnInvalidOutput": config.replyJudge.fallbackToMainOnInvalidOutput,
             "replyJudge.turnWaitMs": String(config.replyJudge.turnWaitMs / 1_000),
-            logLevel: config.logLevel,
             "botLoopGuard.maxCycles": String(config.botLoopGuard.maxCycles),
         },
         externalConflict: false,
@@ -75,7 +72,6 @@ function baselineValue(config: PublicConfig, field: SettingsField): string {
         case "replyJudge.timeoutMs": return String(config.replyJudge.timeoutMs);
         case "replyJudge.fallbackToMainOnInvalidOutput": return String(config.replyJudge.fallbackToMainOnInvalidOutput);
         case "replyJudge.turnWaitMs": return String(config.replyJudge.turnWaitMs / 1_000);
-        case "logLevel": return config.logLevel;
         case "botLoopGuard.maxCycles": return String(config.botLoopGuard.maxCycles);
     }
 }
@@ -135,7 +131,6 @@ export function settingsPatches(form: SettingsFormState): PublicConfigPatch[] {
             case "gpt.reasoningEffort": return [{ field, value: value as PublicConfig["gpt"]["reasoningEffort"] }];
             case "deepseek.reasoningEffort": return [{ field, value: value as PublicConfig["deepseek"]["reasoningEffort"] }];
             case "gpt.verbosity": return [{ field, value: value as PublicConfig["gpt"]["verbosity"] }];
-            case "logLevel": return [{ field, value: value as PublicConfig["logLevel"] }];
             case "replyJudge.timeoutMs": {
                 const parsed = parseTimeoutInput(textValue);
                 return parsed === null ? [] : [{ field, value: parsed }];
@@ -176,7 +171,6 @@ function valueFromConfig(config: PublicConfig, field: SettingsField): string | b
         case "replyJudge.timeoutMs": return String(config.replyJudge.timeoutMs);
         case "replyJudge.fallbackToMainOnInvalidOutput": return config.replyJudge.fallbackToMainOnInvalidOutput;
         case "replyJudge.turnWaitMs": return String(config.replyJudge.turnWaitMs / 1_000);
-        case "logLevel": return config.logLevel;
         case "botLoopGuard.maxCycles": return String(config.botLoopGuard.maxCycles);
     }
 }

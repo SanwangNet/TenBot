@@ -24,7 +24,7 @@ import { getMemeRuntimeSnapshot, loadMemeRuntime, reloadMemes as reloadMemeData 
 import { sampleRecentMemeNames } from "./skills/meme/store.js";
 import { memeStore } from "./skills/meme/store.js";
 import { memeSendImageService } from "./skills/meme/send-image.js";
-import { closeLogFileSink, configureLogFileSink, logger, setConsoleLogOutputEnabled, setLogLevel, shortId, truncateLogText } from "./shared/logger.js";
+import { closeLogFileSink, configureLogFileSink, logger, refreshLogRedactionSecrets, setConsoleLogOutputEnabled, shortId, truncateLogText } from "./shared/logger.js";
 import type { NormalizedQqMessage } from "./qq/message/normalize-message.js";
 import { FileChangeWatcher } from "./shared/file-change-watcher.js";
 import { RuntimeConfigSnapshotStore, type RuntimeConfigSnapshot } from "./runtime-config-snapshot.js";
@@ -68,7 +68,6 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         if (model.id !== "gpt" && model.id !== "deepseek") throw new Error(`Unsupported model id: ${model.id}`);
         automatedPeerLoopGuard.replacePeers(appConfig.botLoopGuard.automatedPeerIds);
         automatedPeerLoopGuard.setMaxCycles(appConfig.botLoopGuard.maxCycles);
-        setLogLevel(appConfig.logging.level);
         await promptStore.load(model.id);
         await replyJudgePromptStore.load();
         await loadMemeRuntime();
@@ -161,7 +160,12 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                 qqRestartRequired = nextConfig.qq.appId !== qqConnectionAtStart.appId ||
                     nextConfig.qq.appSecret !== qqConnectionAtStart.appSecret;
                 runtimeSnapshot = nextSnapshot;
-                setLogLevel(nextConfig.logging.level);
+                refreshLogRedactionSecrets([
+                    nextConfig.qq.appSecret,
+                    nextConfig.ai.gpt.apiKey,
+                    nextConfig.ai.deepseek.apiKey,
+                    nextConfig.replyJudge.apiKey,
+                ]);
                 automatedPeerLoopGuard.replacePeers(nextConfig.botLoopGuard.automatedPeerIds);
                 automatedPeerLoopGuard.setMaxCycles(nextConfig.botLoopGuard.maxCycles);
                 lastReloadFailure = undefined;
@@ -239,7 +243,6 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             activeCycles: getActiveReplyCycleCount(),
             contextConversations: getRecentContextConversationCount(),
             runtimeConfig: {
-                logLevel: activeConfig.logging.level,
                 botLoopGuardMaxCycles: activeConfig.botLoopGuard.maxCycles,
             },
             hotReload: {

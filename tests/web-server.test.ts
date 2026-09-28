@@ -196,6 +196,7 @@ test("HTTP API reads through TenBotControl and keeps config secrets out of respo
         assert.equal(configResponse.status, 200);
         assert.doesNotMatch(configText, /private-qq-app-id|private-qq-app-secret|private-main-model-key|private-judge-key|private-deepseek-key|private-model\.example/);
         assert.doesNotMatch(configText, /"appSecret"|"apiKey"|"baseURL"/);
+        assert.doesNotMatch(configText, /logLevel|botTimeZone|BOT_TIME_ZONE/);
 
         const conversations = await fetch(`${baseUrl}/api/conversations`);
         assert.deepEqual(await conversations.json(), [{
@@ -304,9 +305,8 @@ test("PATCH /api/config rejects secret fields and semantically invalid values be
     }
 });
 
-test("PATCH /api/config reports save failure without exposing backend details", async () => {
+test("PATCH /api/config rejects removed BOT_LOG_LEVEL instead of exposing a runtime setting", async () => {
     const fake = createFakeControl();
-    fake.setUpdateResult({ ok: false, requiresRestart: false, changedFields: [], message: "save failed", details: "private-main-model-key" });
     const { server, baseUrl } = await startServer(fake.control);
     try {
         const response = await fetch(`${baseUrl}/api/config`, {
@@ -314,11 +314,26 @@ test("PATCH /api/config reports save failure without exposing backend details", 
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ field: "logLevel", value: "debug" }),
         });
-        assert.equal(response.status, 500);
-        const body = await response.text();
-        assert.match(body, /Unable to save configuration/);
-        assert.doesNotMatch(body, /private-main-model-key/);
-        assert.deepEqual(fake.patchCalls, [{ field: "logLevel", value: "debug" }]);
+        assert.equal(response.status, 400);
+        assert.deepEqual(await response.json(), { error: { message: "Unsupported configuration patch" } });
+        assert.deepEqual(fake.patchCalls, []);
+    } finally {
+        await server.close();
+    }
+});
+
+test("PATCH /api/config rejects private BOT_TIME_ZONE", async () => {
+    const fake = createFakeControl();
+    const { server, baseUrl } = await startServer(fake.control);
+    try {
+        const response = await fetch(`${baseUrl}/api/config`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ field: "botTimeZone", value: "Asia/Tokyo" }),
+        });
+        assert.equal(response.status, 400);
+        assert.deepEqual(await response.json(), { error: { message: "Unsupported configuration patch" } });
+        assert.deepEqual(fake.patchCalls, []);
     } finally {
         await server.close();
     }

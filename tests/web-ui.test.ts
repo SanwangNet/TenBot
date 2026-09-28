@@ -49,7 +49,6 @@ const config: PublicConfig = {
     replyJudge: { model: "judge", timeoutMs: 5000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
     gpt: { model: "gpt-test", reasoningEffort: "high", verbosity: "high", configured: true },
     deepseek: { model: "deepseek-test", reasoningEffort: "high", configured: false },
-    logLevel: "info",
     botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
 };
 
@@ -85,6 +84,8 @@ test("Runtime reducer preserves live status over bootstrap and tracks connection
 
 test("settings form calculates dirty fields and serializable patches with numeric conversion", () => {
     let form = createSettingsForm(config);
+    assert.equal("logLevel" in form.values, false);
+    assert.equal("botTimeZone" in form.values, false);
     form = settingsFormReducer(form, { type: "edit", field: "replyJudge.timeoutMs", value: "15000" })!;
     form = settingsFormReducer(form, { type: "edit", field: "aiProvider", value: "deepseek" })!;
     assert.deepEqual(dirtySettingsFields(form), ["aiProvider", "replyJudge.timeoutMs"]);

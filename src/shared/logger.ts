@@ -1,6 +1,5 @@
 import type { Logger as QqSdkLogger } from "@tencent-connect/qqbot-nodejs";
 import { resolve } from "node:path";
-import { parseLogLevel } from "../config/config-validation.js";
 import { formatTenBotError } from "../errors/format.js";
 import { isTenBotError } from "../errors/tenbot-error.js";
 import { LogFileSink } from "./log-file-sink.js";
@@ -19,23 +18,32 @@ export interface LogEntry {
 
 export type LogListener = (entry: LogEntry) => void;
 
-let logLevel: LogLevel = parseLogLevel(process.env.BOT_LOG_LEVEL);
-
 const levels: Record<LogLevel, number> = { all: 0, debug: 1, info: 2, warn: 3, error: 4 };
 const logListeners = new Set<LogListener>();
 let consoleOutputEnabled = true;
-let allModeWarningPrinted = false;
 let logFileSink: LogFileSink | undefined;
 let environmentSecrets: string[] = [];
 
-function refreshEnvironmentSecrets(): void {
-    environmentSecrets = Object.entries(process.env)
-        .filter(([name, secret]) => Boolean(secret) && /(?:KEY|APP_SECRET|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PASSWORD|CREDENTIAL|AUTHORIZATION|COOKIE|SECRET)$/i.test(name))
-        .map(([, secret]) => secret!)
-        .filter((secret) => secret.length > 0);
+export function parseLogLevel(value: string | undefined): LogLevel {
+    const normalized = value?.trim().toLowerCase();
+    return normalized && Object.hasOwn(levels, normalized) ? normalized as LogLevel : "info";
 }
 
-refreshEnvironmentSecrets();
+export function refreshLogRedactionSecrets(additionalSecrets: readonly (string | undefined)[] = []): void {
+    environmentSecrets = [...Object.entries(process.env)
+        .filter(([name, secret]) => Boolean(secret) && /(?:KEY|APP_SECRET|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PASSWORD|CREDENTIAL|AUTHORIZATION|COOKIE|SECRET)$/i.test(name))
+        .map(([, secret]) => secret!)
+        .filter((secret) => secret.length > 0), ...additionalSecrets.filter((secret): secret is string => Boolean(secret))];
+}
+
+refreshLogRedactionSecrets();
+
+const configuredConsoleLogLevel = process.env.BOT_LOG_LEVEL;
+const consoleLogLevel = parseLogLevel(configuredConsoleLogLevel);
+if (configuredConsoleLogLevel?.trim() && parseLogLevel(configuredConsoleLogLevel) === "info" && configuredConsoleLogLevel.trim().toLowerCase() !== "info") {
+    const safeValue = sanitizeSecrets(configuredConsoleLogLevel).replace(/[\r\n\u0000-\u001f\u007f]/g, " ").slice(0, 80);
+    console.warn(`[Logging] invalid BOT_LOG_LEVEL="${safeValue}"; falling back to info`);
+}
 
 function timestamp(): string {
     return new Date().toLocaleTimeString("en-GB", { hour12: false });
@@ -133,32 +141,34 @@ function formatValues(level: LogLevel, values: unknown[], includeBusinessIdentif
         }).join(" ");
 }
 
-function write(level: LogLevel, values: unknown[], preserveLastString = false, persistToDisk = true): void {
-    // Files are independent of BOT_LOG_LEVEL: all events go to the appropriate
-    // fixed sinks before the UI/Console threshold is applied.
+function write(level: LogLevel, values: unknown[], preserveLastString = false): void {
     const rawText = formatValues(level, values, true, preserveLastString);
     const safeText = formatValues(level, values, false, preserveLastString);
     const formalError = level === "error" ? values.find(isTenBotError) : undefined;
     const timestampValue = new Date().toISOString();
-    if (persistToDisk) logFileSink?.write({ timestamp: timestampValue, level, text: safeText }, rawText);
+    logFileSink?.write({ timestamp: timestampValue, level, text: safeText }, rawText);
 
-    if (levels[level] < levels[logLevel]) return;
-    const text = logLevel === "all" ? rawText : safeText;
+    const text = level === "all" ? rawText : safeText;
     const entry: LogEntry = { timestamp: timestampValue, level, text };
 
     for (const listener of logListeners) {
         try { listener(entry); } catch { /* A log consumer must not break Runtime work. */ }
     }
+    if (!consoleOutputEnabled || !shouldWriteToConsole(level)) return;
     const lines = text.split("\n");
     const output = lines.map((line, index) => index === 0 && !formalError ? `[${timestamp()}] ${line}` : line).join("\n");
-    if (!consoleOutputEnabled) return;
     if (level === "error") console.error(output);
     else if (level === "warn") console.warn(output);
     else console.log(output);
 }
 
+function shouldWriteToConsole(level: LogLevel): boolean {
+    return level === "all"
+        ? consoleLogLevel === "all"
+        : levels[level] >= levels[consoleLogLevel];
+}
+
 export const logger = {
-    level: logLevel,
     all: (...values: unknown[]) => write("all", values),
     info: (...values: unknown[]) => write("info", values),
     debug: (...values: unknown[]) => write("debug", values),
@@ -189,29 +199,16 @@ export async function closeLogFileSink(): Promise<void> {
     await sink?.close();
 }
 
-export function setLogLevel(level: LogLevel): void {
-    refreshEnvironmentSecrets();
-    logLevel = level;
-    logger.level = level;
-    if (level === "all" && !allModeWarningPrinted) {
-        allModeWarningPrinted = true;
-        logger.info("[Logging] ALL mode enabled; raw diagnostic payloads may contain private conversation data");
-    }
-}
-
-export function getLogLevel(): LogLevel { return logLevel; }
-
 export function truncateLogText(value: string, maxLength = 160): string {
     const safe = sanitizeSafeDiagnostic(value).replace(/\s+/g, " ").trim();
     return safe.length > maxLength ? `${safe.slice(0, maxLength)}…` : safe;
 }
 
-/** A full peer ID is emitted only in explicit debug mode so it can be registered. */
+/** ALL diagnostics retain the full peer ID for explicit registration. */
 export function debugPeerIdentity(authorName: string | undefined, stableId: string | undefined): void {
-    if ((logLevel !== "debug" && logLevel !== "all") || !stableId) return;
+    if (!stableId) return;
     const id = stableId.length <= 256 ? JSON.stringify(stableId) : "[invalid-id]";
-    const level = logLevel === "all" ? "all" : "debug";
-    write(level, [`[Peer] author=${JSON.stringify(truncateLogText(authorName || "unknown member", 60))} id=${id}`], true);
+    write("all", [`[Peer] author=${JSON.stringify(truncateLogText(authorName || "unknown member", 60))} id=${id}`], true);
 }
 
 export function shortId(value: string | undefined, length = 6): string {
@@ -219,35 +216,18 @@ export function shortId(value: string | undefined, length = 6): string {
     return value.length > length ? `${value.slice(0, length)}…` : value;
 }
 
-function sdkDebugMessage(message: string): string | null {
-    const dispatch = message.match(/Dispatch event: t=([^\s]+)/);
-    if (dispatch) return `[QQ SDK] event ${dispatch[1]}`;
-    if (/\[qqbot:api\].*(?:Body:)/i.test(message)) return null;
-    if (/\[qqbot:api\].*Status:/i.test(message)) return `[QQ SDK] ${message.match(/Status: .*/)?.[0] ?? "API response"}`;
-    if (/\[qqbot:api\].*(?:>>>|<<<)/i.test(message)) {
-        const method = message.match(/>>>\s+(GET|POST|PUT|PATCH|DELETE)\b/i)?.[1];
-        return method ? `[QQ SDK] API ${method}` : "[QQ SDK] API request";
-    }
-    return `[QQ SDK] ${message}`;
-}
-
-/** Preserve existing concise SDK logs, while ALL receives the data exposed by the SDK logger. */
+/** SDK info/debug diagnostics are captured once as ALL; warnings and errors retain severity. */
 export const qqSdkLogger: QqSdkLogger = {
     info(message) {
         logger.all("[QQ SDK] info", message);
-        if (logLevel !== "all") write("debug", [`[QQ SDK] ${message}`], false, false);
     },
     warn(message, meta) {
         logger.warn("[QQ SDK]", message, meta);
     },
     error(message, meta) {
-        if (logLevel === "all") logger.all("[QQ SDK] error", message, meta);
-        else logger.error("[QQ SDK] error", message, meta);
+        logger.error("[QQ SDK] error", message, meta);
     },
     debug(message, meta) {
         logger.all("[QQ SDK] raw", message, meta);
-        if (logLevel === "all") return;
-        const safeMessage = sdkDebugMessage(message);
-        if (safeMessage) write("debug", [safeMessage, meta], false, false);
     },
 };

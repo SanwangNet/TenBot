@@ -13,7 +13,7 @@ export interface RuntimeStatus {
     };
     activeCycles: number;
     contextConversations: number;
-    runtimeConfig?: { logLevel: string; botLoopGuardMaxCycles: number };
+    runtimeConfig?: { botLoopGuardMaxCycles: number };
     hotReload?: {
         enabled: boolean;
         revision: number;
@@ -43,7 +43,6 @@ export interface PublicConfig {
     replyJudge: { model: string; timeoutMs: number; fallbackToMainOnInvalidOutput: boolean; turnWaitMs: number; provider?: string };
     gpt: { model: string; reasoningEffort: ReasoningEffort; verbosity: ModelVerbosity; configured: boolean };
     deepseek: { model: string; reasoningEffort: ReasoningEffort; configured: boolean };
-    logLevel: LogLevel;
     botLoopGuard: { maxCycles: number; automatedPeerCount: number };
 }
 
@@ -59,7 +58,6 @@ export type PublicConfigPatch =
     | { field: "replyJudge.timeoutMs"; value: number }
     | { field: "replyJudge.fallbackToMainOnInvalidOutput"; value: boolean }
     | { field: "replyJudge.turnWaitMs"; value: number }
-    | { field: "logLevel"; value: LogLevel }
     | { field: "botLoopGuard.maxCycles"; value: number };
 
 export type ConfigUpdateResult =

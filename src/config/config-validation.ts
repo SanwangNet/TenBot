@@ -1,5 +1,4 @@
 import type { ModelVerbosity, ReasoningEffort } from "../ai/model-plugin.js";
-import type { LogLevel } from "../shared/logger.js";
 import type { AppConfig, ModelProviderId, PublicConfig, PublicConfigPatch } from "./config-types.js";
 import type { FrontMode } from "../front/wake-level.js";
 import { isIP } from "node:net";
@@ -27,7 +26,6 @@ const MAX_MEME_SEND_MAX_EDGE = 1_024;
 
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh"];
 const VERBOSITIES: readonly ModelVerbosity[] = ["low", "medium", "high"];
-const LOG_LEVELS: readonly LogLevel[] = ["all", "debug", "info", "warn", "error"];
 
 export function parseAutomatedPeerIds(value: string | undefined): readonly string[] {
     return [...new Set((value ?? "").split(",").map((id) => id.trim()).filter(Boolean))];
@@ -85,11 +83,6 @@ export function parseWebPort(value: string | undefined): number {
         throw new Error("WEB_PORT must be an integer between 1 and 65535");
     }
     return port;
-}
-
-export function parseLogLevel(value: string | undefined): LogLevel {
-    const normalized = value?.trim().toLowerCase();
-    return LOG_LEVELS.includes(normalized as LogLevel) ? normalized as LogLevel : "info";
 }
 
 function parseMemeSendMaxEdge(value: string | undefined): number | null {
@@ -216,7 +209,6 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
             },
         },
         replyJudge,
-        logging: { level: parseLogLevel(env.BOT_LOG_LEVEL) },
         web: { host: parseWebHost(env.WEB_HOST), port: parseWebPort(env.WEB_PORT) },
         botLoopGuard: {
             maxCycles: parseBotLoopGuardMaxCycles(env.BOT_LOOP_GUARD_MAX_CYCLES),
@@ -247,7 +239,6 @@ export function toPublicConfig(config: AppConfig): PublicConfig {
             reasoningEffort: config.ai.deepseek.reasoningEffort,
             configured: Boolean(config.ai.deepseek.apiKey?.trim()),
         },
-        logLevel: config.logging.level,
         botLoopGuard: {
             maxCycles: config.botLoopGuard.maxCycles,
             automatedPeerCount: config.botLoopGuard.automatedPeerIds.length,
@@ -296,9 +287,6 @@ export function validatePublicConfigPatch(patch: PublicConfigPatch): string {
         case "gpt.verbosity":
             if (!VERBOSITIES.includes(patch.value)) throw new Error("输出详细度配置无效");
             return "CODEX_VERBOSITY";
-        case "logLevel":
-            if (!LOG_LEVELS.includes(patch.value)) throw new Error("日志级别配置无效");
-            return "BOT_LOG_LEVEL";
         case "botLoopGuard.maxCycles":
             if (!Number.isSafeInteger(patch.value) || patch.value < 1) {
                 throw new Error("自动账号连续交互上限必须是大于等于 1 的整数");
@@ -340,7 +328,6 @@ export function parsePublicConfigPatch(value: unknown): PublicConfigPatch | unde
         case "gpt.reasoningEffort":
         case "gpt.verbosity":
         case "deepseek.reasoningEffort":
-        case "logLevel":
             return typeof patchValue === "string" ? { field, value: patchValue } as PublicConfigPatch : undefined;
         case "gpt.model":
         case "deepseek.model":

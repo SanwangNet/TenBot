@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import type { ModelProviderId, PublicConfig } from "../../config/config-types.js";
 import type { RuntimeStatus } from "../../control/runtime-status.js";
 import { MODEL_PROVIDERS } from "../../ai/model-registry.js";
-import { logLevelLabel, reasoningLabel, settingsFieldLabel, verbosityLabel } from "../i18n.js";
+import { reasoningLabel, settingsFieldLabel, verbosityLabel } from "../i18n.js";
 import { Panel } from "../components/panel.js";
 import { StatusRow } from "../components/status-row.js";
 import { settingsRows, type SettingsField } from "../state.js";
@@ -37,7 +37,6 @@ export function SettingsView({ status, config, selectedIndex, pendingRestart, vi
             case "deepseek.reasoningEffort": return reasoningLabel(config.deepseek.reasoningEffort);
             case "replyJudge.model": return config.replyJudge.model || "未设置";
             case "replyJudge.timeoutMs": return `${config.replyJudge.timeoutMs} ms`;
-            case "logLevel": return logLevelLabel(config.logLevel);
             case "botLoopGuard.maxCycles": return String(config.botLoopGuard.maxCycles);
         }
         return "";
@@ -76,7 +75,6 @@ export function SettingsView({ status, config, selectedIndex, pendingRestart, vi
                     </Box>
                     <Text> </Text>
                     <Text bold>运行</Text>
-                    {editableRow("logLevel", rows.indexOf("logLevel"), 20)}
                     {editableRow("botLoopGuard.maxCycles", rows.indexOf("botLoopGuard.maxCycles"), 20)}
                     <Text> </Text>
                     <Text bold>自动账号</Text>

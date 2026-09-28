@@ -2,7 +2,9 @@ import type { LogEntry } from "../api/types.js";
 
 export const MAX_WEB_LOG_ENTRIES = 5_000;
 export const MAX_RENDERED_LOG_ENTRIES = 500;
+export const LOG_LEVEL_FILTER_STORAGE_KEY = "tenbot.logs.level-filter";
 export type LogLevelFilter = "all" | "all-level" | Exclude<LogEntry["level"], "all">;
+const LOG_LEVEL_FILTERS: readonly LogLevelFilter[] = ["all", "all-level", "debug", "info", "warn", "error"];
 
 export interface LogViewState {
     /** Bounded canonical rows are mutated in place; rowsRevision drives list/filter recomputation. */
@@ -13,6 +15,19 @@ export interface LogViewState {
 }
 
 export const initialLogViewState: LogViewState = { entries: [], rowsRevision: 0, follow: true, unseenCount: 0 };
+
+export function readStoredLogLevelFilter(storage: Pick<Storage, "getItem"> | undefined): LogLevelFilter {
+    try {
+        const stored = storage?.getItem(LOG_LEVEL_FILTER_STORAGE_KEY);
+        return LOG_LEVEL_FILTERS.includes(stored as LogLevelFilter) ? stored as LogLevelFilter : "info";
+    } catch {
+        return "info";
+    }
+}
+
+export function storeLogLevelFilter(level: LogLevelFilter, storage: Pick<Storage, "setItem"> | undefined): void {
+    try { storage?.setItem(LOG_LEVEL_FILTER_STORAGE_KEY, level); } catch { /* Storage can be disabled by the browser. */ }
+}
 
 export type LogViewAction =
     | { type: "append"; entry: LogEntry }

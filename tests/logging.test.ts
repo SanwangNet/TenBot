@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { LogBuffer } from "../src/control/log-buffer.js";
-import { logger, qqSdkLogger, getLogLevel, setConsoleLogOutputEnabled, setLogLevel, configureLogFileSink, flushLogFileSink, closeLogFileSink, sanitizeSafeDiagnostic, sanitizeSecrets } from "../src/shared/logger.js";
+import { logger, qqSdkLogger, parseLogLevel, debugPeerIdentity, refreshLogRedactionSecrets, setConsoleLogOutputEnabled, configureLogFileSink, flushLogFileSink, closeLogFileSink, sanitizeSafeDiagnostic, sanitizeSecrets } from "../src/shared/logger.js";
 import { LogFileSink } from "../src/shared/log-file-sink.js";
 import { collapseAdjacentLogs } from "../src/tui/log-collapse.js";
-import { filterLogs, initialLogViewState, LogBatchQueue, logViewReducer, MAX_WEB_LOG_ENTRIES } from "../web/src/components/log-state.js";
+import { filterLogs, initialLogViewState, LogBatchQueue, logViewReducer, MAX_WEB_LOG_ENTRIES, LOG_LEVEL_FILTER_STORAGE_KEY, readStoredLogLevelFilter, storeLogLevelFilter } from "../web/src/components/log-state.js";
 import type { LogEntry } from "../web/src/api/types.js";
 
 function freshWebState() {
@@ -18,73 +19,123 @@ function localDay(date: Date): string {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-test("log-level priority gates Console and UI while the three disk files retain their fixed ranges", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "tenbot-levels-"));
-    const oldLevel = getLogLevel();
+async function runLoggerProcess(level?: string): Promise<{ directory: string; result: { entries: Array<{ level: string; text: string }>; outputs: Array<[string, string]>; allFile: string } }> {
+    const directory = await mkdtemp(join(tmpdir(), "tenbot-console-level-"));
+    const env: NodeJS.ProcessEnv = { ...process.env, TEST_LOG_DIR: directory, QQBOT_APP_SECRET: "TOP_SECRET_CHILD" };
+    if (level === undefined) delete env.BOT_LOG_LEVEL;
+    else env.BOT_LOG_LEVEL = level;
+    const loggerUrl = new URL("../src/shared/logger.ts", import.meta.url).href;
+    const script = `
+const outputs = [];
+for (const method of ["log", "warn", "error"]) console[method] = (...values) => outputs.push([method, values.map(String).join(" ")]);
+const { logger, qqSdkLogger, debugPeerIdentity, subscribeLogs, configureLogFileSink, closeLogFileSink } = await import(${JSON.stringify(loggerUrl)});
+const entries = [];
+subscribeLogs((entry) => entries.push(entry));
+configureLogFileSink(process.env.TEST_LOG_DIR);
+logger.all("all raw", { member_openid: "visible-member", api_key: process.env.QQBOT_APP_SECRET });
+logger.debug("debug marker");
+logger.info("info marker");
+logger.warn("warn marker");
+logger.error("error marker");
+qqSdkLogger.info("sdk info raw");
+qqSdkLogger.debug("sdk debug raw");
+qqSdkLogger.warn("sdk warn marker");
+qqSdkLogger.error("sdk error marker");
+debugPeerIdentity("peer", "peer-open-id");
+await closeLogFileSink();
+const fs = await import("node:fs/promises");
+const path = await import("node:path");
+const files = await fs.readdir(process.env.TEST_LOG_DIR);
+const allFileName = files.find((name) => name.endsWith(".all.log"));
+const allFile = await fs.readFile(path.join(process.env.TEST_LOG_DIR, allFileName), "utf8");
+process.stdout.write(JSON.stringify({ entries, outputs, allFile }));
+`;
+    const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+        cwd: process.cwd(), env, encoding: "utf8",
+    });
+    assert.equal(child.status, 0, String(child.stderr || child.error?.message || "Logger child process failed"));
+    return { directory, result: JSON.parse(child.stdout) as { entries: Array<{ level: string; text: string }>; outputs: Array<[string, string]>; allFile: string } };
+}
+
+test("BOT_LOG_LEVEL only filters Console while every entry reaches listeners and file sink", async () => {
+    assert.deepEqual(["all", "debug", "info", "warn", "error"].map((level) => parseLogLevel(level)), ["all", "debug", "info", "warn", "error"]);
+    assert.equal(parseLogLevel(" DEBUG "), "debug");
+    assert.equal(parseLogLevel(undefined), "info");
+    assert.equal(parseLogLevel("invalid"), "info");
+    const thresholds: Array<[string | undefined, string[]]> = [
+        [undefined, ["info marker", "warn marker", "error marker", "sdk warn marker", "sdk error marker"]],
+        ["all", ["all raw", "debug marker", "info marker", "warn marker", "error marker", "sdk info raw", "sdk debug raw", "sdk warn marker", "sdk error marker", "peer-open-id"]],
+        ["debug", ["debug marker", "info marker", "warn marker", "error marker", "sdk warn marker", "sdk error marker"]],
+        ["info", ["info marker", "warn marker", "error marker", "sdk warn marker", "sdk error marker"]],
+        ["warn", ["warn marker", "error marker", "sdk warn marker", "sdk error marker"]],
+        ["error", ["error marker", "sdk error marker"]],
+        [" DEBUG ", ["debug marker", "info marker", "warn marker", "error marker", "sdk warn marker", "sdk error marker"]],
+    ];
+    for (const [threshold, expectedConsole] of thresholds) {
+        const { directory, result } = await runLoggerProcess(threshold);
+        try {
+            assert.deepEqual(result.entries.map((entry) => entry.level), ["all", "debug", "info", "warn", "error", "all", "all", "warn", "error", "all"]);
+            const consoleText = result.outputs.map(([, text]) => text).join("\n");
+            for (const marker of expectedConsole) assert.ok(consoleText.includes(marker), `${threshold ?? "default"} Console should include ${marker}`);
+            for (const marker of ["all raw", "debug marker", "info marker", "warn marker", "error marker", "sdk info raw", "sdk debug raw", "sdk warn marker", "sdk error marker", "peer-open-id"]) {
+                assert.ok(result.allFile.includes(marker), `file sink should include ${marker} at ${threshold ?? "default"}`);
+                assert.ok(result.entries.some((entry) => entry.text.includes(marker)), `listener should include ${marker} at ${threshold ?? "default"}`);
+            }
+            assert.doesNotMatch(consoleText + result.allFile + JSON.stringify(result.entries), /TOP_SECRET_CHILD/);
+            const sdkAll = result.entries.filter((entry) => entry.level === "all" && /sdk (?:info|debug) raw/.test(entry.text));
+            assert.equal(sdkAll.length, 2, "SDK raw info/debug are each written once as ALL");
+            assert.equal(result.outputs.filter(([, text]) => text.includes("sdk debug raw")).length, threshold === "all" ? 1 : 0);
+        } finally {
+            await rm(directory, { recursive: true, force: true });
+        }
+    }
+    const invalid = await runLoggerProcess("TOP_SECRET_CHILD");
+    try {
+        assert.ok(invalid.result.outputs.some(([, text]) => text.includes("invalid BOT_LOG_LEVEL") && text.includes("falling back to info")));
+        assert.doesNotMatch(invalid.result.outputs.map(([, text]) => text).join("\n"), /TOP_SECRET_CHILD/);
+        assert.ok(invalid.result.outputs.some(([, text]) => text.includes("info marker")));
+        assert.ok(!invalid.result.outputs.some(([, text]) => text.includes("debug marker")));
+    } finally {
+        await rm(invalid.directory, { recursive: true, force: true });
+    }
+});
+
+test("legacy local Web log filter persists independently with info as its default", () => {
+    const values = new Map<string, string>();
+    const storage = {
+        getItem(key: string) { return values.get(key) ?? null; },
+        setItem(key: string, value: string) { values.set(key, value); },
+    };
+    assert.equal(LOG_LEVEL_FILTER_STORAGE_KEY, "tenbot.logs.level-filter");
+    assert.equal(readStoredLogLevelFilter(storage), "info");
+    storeLogLevelFilter("all-level", storage);
+    assert.equal(values.get("tenbot.logs.level-filter"), "all-level");
+    assert.equal(readStoredLogLevelFilter(storage), "all-level");
+    values.set(LOG_LEVEL_FILTER_STORAGE_KEY, "invalid");
+    assert.equal(readStoredLogLevelFilter(storage), "info");
+});
+
+test("ALL messages preserve raw business context for Web listeners independently of Console filtering", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tenbot-level-listener-"));
     const buffer = new LogBuffer();
     setConsoleLogOutputEnabled(false);
     configureLogFileSink(directory);
     try {
-        setLogLevel("all");
-        logger.all("level-all");
-        logger.debug("debug-under-all");
-        logger.info("info-under-all");
-        logger.warn("warn-under-all");
-        logger.error("error-under-all");
-        setLogLevel("debug");
-        logger.all("drop-all-under-debug");
-        logger.debug("debug-under-debug");
-        logger.info("info-under-debug");
-        logger.warn("warn-under-debug");
-        logger.error("error-under-debug");
-        setLogLevel("info");
-        logger.all("file-all-under-info");
-        logger.debug("drop-debug-under-info");
-        logger.info("info-under-info");
-        logger.warn("warn-under-info");
-        logger.error("error-under-info");
-        setLogLevel("warn");
-        logger.all("file-all-under-warn");
-        logger.debug("drop-debug-under-warn");
-        logger.info("drop-info-under-warn");
-        logger.warn("warn-under-warn");
-        logger.error("error-under-warn");
-        setLogLevel("error");
-        logger.warn("drop-warn-under-error");
-        logger.info("drop-info-under-error");
-        logger.error("error-under-error");
-        await closeLogFileSink();
-
+        logger.all("listener raw OpenID", { member_openid: "member-visible" });
+        logger.debug("listener debug");
+        logger.info("listener info");
+        logger.warn("listener warn");
+        logger.error("listener error");
+        await flushLogFileSink();
+        const rows = buffer.getEntries().map((entry) => entry.text).join("\n");
+        assert.match(rows, /member-visible/);
+        for (const marker of ["listener debug", "listener info", "listener warn", "listener error"]) assert.match(rows, new RegExp(marker));
         const date = `tenbot-${localDay(new Date())}`;
         const all = await readFile(join(directory, `${date}.all.log`), "utf8");
-        const info = await readFile(join(directory, `${date}.info.log`), "utf8");
-        const warn = await readFile(join(directory, `${date}.warn.log`), "utf8");
-        for (const marker of ["level-all", "debug-under-all", "info-under-all", "warn-under-all", "error-under-all", "drop-all-under-debug", "debug-under-debug", "info-under-debug", "warn-under-debug", "error-under-debug", "file-all-under-info", "drop-debug-under-info", "info-under-info", "warn-under-info", "error-under-info", "file-all-under-warn", "drop-debug-under-warn", "drop-info-under-warn", "warn-under-warn", "error-under-warn", "drop-warn-under-error", "drop-info-under-error", "error-under-error"]) {
-            assert.match(all, new RegExp(marker));
-        }
-        for (const marker of ["level-all", "debug-under-all", "drop-all-under-debug", "file-all-under-info", "drop-debug-under-info", "file-all-under-warn", "drop-debug-under-warn"]) {
-            assert.doesNotMatch(info, new RegExp(marker));
-        }
-        for (const marker of ["info-under-all", "warn-under-all", "error-under-all", "info-under-debug", "warn-under-debug", "error-under-debug", "info-under-info", "warn-under-info", "error-under-info", "drop-info-under-warn", "drop-info-under-error", "drop-warn-under-error"]) {
-            assert.match(info, new RegExp(marker));
-        }
-        for (const marker of ["level-all", "debug-under-all", "info-under-all", "info-under-info", "drop-info-under-warn", "drop-info-under-error"]) {
-            assert.doesNotMatch(warn, new RegExp(marker));
-        }
-        for (const marker of ["warn-under-all", "error-under-all", "warn-under-debug", "error-under-debug", "warn-under-info", "error-under-info", "warn-under-warn", "error-under-warn", "drop-warn-under-error", "error-under-error"]) {
-            assert.match(warn, new RegExp(marker));
-        }
-        const uiMarkers = buffer.getEntries().filter((entry) => /level-all|under-/.test(entry.text)).map((entry) => entry.text);
-        for (const marker of ["level-all", "debug-under-all", "info-under-all", "warn-under-all", "error-under-all", "debug-under-debug", "info-under-debug", "warn-under-debug", "error-under-debug", "info-under-info", "warn-under-info", "error-under-info", "warn-under-warn", "error-under-warn", "error-under-error"]) {
-            assert.ok(uiMarkers.some((text) => text.includes(marker)), `UI should include ${marker}`);
-        }
-        for (const marker of ["drop-all-under-debug", "drop-debug-under-info", "file-all-under-info", "file-all-under-warn", "drop-debug-under-warn", "drop-info-under-warn", "drop-warn-under-error", "drop-info-under-error"]) {
-            assert.ok(!uiMarkers.some((text) => text.includes(marker)), `UI should omit ${marker}`);
-        }
+        for (const marker of ["listener raw OpenID", "listener debug", "listener info", "listener warn", "listener error"]) assert.match(all, new RegExp(marker));
     } finally {
         buffer.dispose();
         await closeLogFileSink();
-        setLogLevel(oldLevel);
         setConsoleLogOutputEnabled(true);
         await rm(directory, { recursive: true, force: true });
     }
@@ -92,12 +143,10 @@ test("log-level priority gates Console and UI while the three disk files retain 
 
 test("10,000 identical logger events occupy one UI row while all.log keeps every event", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tenbot-repeat-files-"));
-    const oldLevel = getLogLevel();
     const buffer = new LogBuffer();
     setConsoleLogOutputEnabled(false);
     configureLogFileSink(directory);
     try {
-        setLogLevel("all");
         const live: LogEntry[] = [];
         const unsubscribe = buffer.subscribe((entry) => live.push(entry));
         for (let index = 0; index < 10_000; index++) logger.all("response.output_text.delta", { delta: "same" });
@@ -116,50 +165,43 @@ test("10,000 identical logger events occupy one UI row while all.log keeps every
     } finally {
         buffer.dispose();
         await closeLogFileSink();
-        setLogLevel(oldLevel);
         setConsoleLogOutputEnabled(true);
         await rm(directory, { recursive: true, force: true });
     }
 });
 
-test("QQ SDK diagnostics stay summarized in UI while all.log always keeps exposed raw payloads", async () => {
+test("QQ SDK raw diagnostics are captured once as ALL in UI and all.log", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tenbot-qq-sdk-"));
-    const oldLevel = getLogLevel();
     const buffer = new LogBuffer();
     setConsoleLogOutputEnabled(false);
     configureLogFileSink(directory);
     try {
-        setLogLevel("debug");
         qqSdkLogger.debug?.("[qqbot:api] >>> POST https://api.example/messages");
         qqSdkLogger.debug?.('[qqbot:api] Body: {"content":"private message body"}');
-        assert.ok(buffer.getEntries().some((entry) => entry.text === "[QQ SDK] API POST"));
-        assert.ok(!buffer.getEntries().some((entry) => entry.text.includes("private message body")));
+        assert.equal(buffer.getEntries().filter((entry) => entry.level === "all" && entry.text.includes("private message body")).length, 1);
+        assert.equal(buffer.getEntries().filter((entry) => entry.level === "all" && entry.text.includes("POST https://api.example/messages")).length, 1);
         await flushLogFileSink();
         const allFile = await readFile(join(directory, `tenbot-${localDay(new Date())}.all.log`), "utf8");
         assert.match(allFile, /private message body/);
         assert.match(allFile, /POST https:\/\/api\.example\/messages/);
 
-        setLogLevel("all");
         qqSdkLogger.debug?.('[qqbot:api] Body: {"content":"private message body"}');
-        assert.ok(buffer.getEntries().some((entry) => entry.level === "all" && entry.text.includes("private message body")));
-        setLogLevel("warn");
+        const bodyRow = buffer.getEntries().find((entry) => entry.level === "all" && entry.text.includes("private message body"));
+        assert.equal(bodyRow?.repeatCount, 2);
         qqSdkLogger.warn?.("SDK warning", { details: "rate limit notice" });
         assert.ok(buffer.getEntries().some((entry) => entry.level === "warn" && entry.text.includes("rate limit notice")));
     } finally {
         buffer.dispose();
         await closeLogFileSink();
-        setLogLevel(oldLevel);
         setConsoleLogOutputEnabled(true);
         await rm(directory, { recursive: true, force: true });
     }
 });
 
 test("LogBuffer only folds adjacent rows with matching levels and exact text", () => {
-    const oldLevel = getLogLevel();
     const buffer = new LogBuffer(20);
     setConsoleLogOutputEnabled(false);
     try {
-        setLogLevel("all");
         logger.all("A");
         logger.all("A");
         logger.debug("A");
@@ -173,17 +215,14 @@ test("LogBuffer only folds adjacent rows with matching levels and exact text", (
         ]);
     } finally {
         buffer.dispose();
-        setLogLevel(oldLevel);
         setConsoleLogOutputEnabled(true);
     }
 });
 
 test("LogBuffer capacity counts folded rows, retains the newest 5,000, and repeats do not evict history", () => {
-    const oldLevel = getLogLevel();
     const buffer = new LogBuffer();
     setConsoleLogOutputEnabled(false);
     try {
-        setLogLevel("all");
         for (let index = 0; index < 10_000; index++) logger.all("one repeated row");
         for (let index = 0; index < 5_001; index++) logger.all(`unique ${index}`);
         const rows = buffer.getEntries();
@@ -192,7 +231,6 @@ test("LogBuffer capacity counts folded rows, retains the newest 5,000, and repea
         assert.equal(rows.at(-1)?.text, "unique 5000");
     } finally {
         buffer.dispose();
-        setLogLevel(oldLevel);
         setConsoleLogOutputEnabled(true);
     }
 });
@@ -375,23 +413,15 @@ test("file sink reports an unwritable directory once and does not throw into cal
     }
 });
 
-test("ALL mode preserves business IDs but redacts credentials in console, buffer, and disk", async () => {
+test("ALL mode preserves business IDs but redacts credentials in listeners and disk", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tenbot-redaction-"));
-    const oldLevel = getLogLevel();
     const oldSecret = process.env.QQBOT_APP_SECRET;
-    const oldConsoleLog = console.log;
-    const oldConsoleError = console.error;
-    const oldConsoleWarn = console.warn;
     const buffer = new LogBuffer();
-    const consoleLines: string[] = [];
     process.env.QQBOT_APP_SECRET = "TOP_SECRET_DIAGNOSTIC";
-    console.log = (...values: unknown[]) => { consoleLines.push(values.map(String).join(" ")); };
-    console.error = (...values: unknown[]) => { consoleLines.push(values.map(String).join(" ")); };
-    console.warn = (...values: unknown[]) => { consoleLines.push(values.map(String).join(" ")); };
+    refreshLogRedactionSecrets();
     configureLogFileSink(directory);
     try {
-        setConsoleLogOutputEnabled(true);
-        setLogLevel("all");
+        setConsoleLogOutputEnabled(false);
         logger.all("[diagnostic] payload", {
             member_openid: "member-openid-visible-123",
             group_openid: "group-openid-visible-456",
@@ -410,15 +440,14 @@ test("ALL mode preserves business IDs but redacts credentials in console, buffer
         logger.error("error credential copy", { content: "visible error", Cookie: "session=TOP_SECRET_DIAGNOSTIC" });
         await flushLogFileSink();
         const bufferText = buffer.getEntries().map((entry) => entry.text).join("\n");
-        const consoleText = consoleLines.join("\n");
         const filename = `tenbot-${localDay(new Date())}`;
         const allDisk = await readFile(join(directory, `${filename}.all.log`), "utf8");
         const infoDisk = await readFile(join(directory, `${filename}.info.log`), "utf8");
         const warnDisk = await readFile(join(directory, `${filename}.warn.log`), "utf8");
-        for (const output of [bufferText, consoleText, allDisk, infoDisk, warnDisk]) {
+        for (const output of [bufferText, allDisk, infoDisk, warnDisk]) {
             assert.doesNotMatch(output, /TOP_SECRET_DIAGNOSTIC|SIGNED_VALUE|SIGNED_EXPIRY/);
         }
-        for (const output of [bufferText, consoleText, allDisk]) {
+        for (const output of [bufferText, allDisk]) {
             assert.match(output, /member-openid-visible-123/);
             assert.match(output, /group-openid-visible-456/);
             assert.match(output, /visible conversation text/);
@@ -435,12 +464,9 @@ test("ALL mode preserves business IDs but redacts credentials in console, buffer
         buffer.dispose();
         await closeLogFileSink();
         setConsoleLogOutputEnabled(true);
-        console.log = oldConsoleLog;
-        console.error = oldConsoleError;
-        console.warn = oldConsoleWarn;
         if (oldSecret === undefined) delete process.env.QQBOT_APP_SECRET;
         else process.env.QQBOT_APP_SECRET = oldSecret;
-        setLogLevel(oldLevel);
+        refreshLogRedactionSecrets();
         await rm(directory, { recursive: true, force: true });
     }
 });

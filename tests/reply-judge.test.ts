@@ -10,7 +10,7 @@ import { loadAppConfig } from "../src/config/config-validation.js";
 import { buildReplyJudgeRequest } from "../src/front/build-reply-judge-request.js";
 import type { FrontMode } from "../src/front/wake-level.js";
 import { OpenAICompatibleReplyJudge } from "../src/front/openai-compatible-reply-judge.js";
-import { getLogLevel, setConsoleLogOutputEnabled, setLogLevel, subscribeLogs } from "../src/shared/logger.js";
+import { setConsoleLogOutputEnabled, subscribeLogs } from "../src/shared/logger.js";
 import { parseReplyJudgeOutput, type ReplyJudge, type ReplyJudgeDecision, type ReplyJudgeRequest } from "../src/front/reply-judge.js";
 import { ReplyJudgePromptStore } from "../src/front/reply-judge-prompt-store.js";
 import { registerMessageHandler, type ReplyJudgeTurnWaitScheduler } from "../src/qq/handlers/message-handler.js";
@@ -369,11 +369,9 @@ test("Judge decision logs correlate one canonical result with each initial and r
     configureMemberRepository(new MemoryMemberRepository());
     const state = fakeBot();
     const scheduler = new FakeTurnWaitScheduler();
-    const previousLogLevel = getLogLevel();
     const observedLogs: Array<{ level: string; text: string }> = [];
     const unsubscribe = subscribeLogs((entry) => observedLogs.push(entry));
     setConsoleLogOutputEnabled(false);
-    setLogLevel("all");
     let judgeCalls = 0;
     let mainCalls = 0;
     const handler = register(state, {
@@ -402,7 +400,6 @@ test("Judge decision logs correlate one canonical result with each initial and r
     } finally {
         state.cleanup?.();
         unsubscribe();
-        setLogLevel(previousLogLevel);
         setConsoleLogOutputEnabled(true);
     }
 });
@@ -900,7 +897,6 @@ test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token c
     let requestCount = 0;
     let requestBody: Record<string, unknown> | undefined;
     const originalFetch = globalThis.fetch;
-    const oldLevel = getLogLevel();
     const diagnostics: Array<{ level: string; text: string }> = [];
     const unsubscribe = subscribeLogs((entry) => diagnostics.push(entry));
     setConsoleLogOutputEnabled(false);
@@ -923,7 +919,6 @@ test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token c
     }) as typeof fetch;
 
     try {
-        setLogLevel("all");
         const judge = new OpenAICompatibleReplyJudge(() => ({
             provider: "openai-compatible",
             model: "Qwen3.5-test",
@@ -954,7 +949,6 @@ test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token c
     } finally {
         globalThis.fetch = originalFetch;
         unsubscribe();
-        setLogLevel(oldLevel);
         setConsoleLogOutputEnabled(true);
     }
 });
