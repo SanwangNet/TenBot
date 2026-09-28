@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createViteServer } from "vite";
-import { ApiError, parseJsonResponse } from "../web/src/api/client.js";
+import { ApiError, apiClient, parseJsonResponse, setUnauthorizedHandler } from "../web/src/api/client.js";
 import { parseEventData } from "../web/src/api/events.js";
 import type { PublicConfig, RuntimeStatus } from "../web/src/api/types.js";
 import { initialRuntimeState, runtimeReducer } from "../web/src/runtime/runtime-state.js";
@@ -24,6 +24,7 @@ import { conversationReducer, initialConversationViewState } from "../web/src/co
 import { addNotice, isProminentProviderError } from "../web/src/ui/feedback-state.js";
 import { createEditorDraft, editDraft, isEditorDirty } from "../web/src/editor/editor-state.js";
 import { nextPage } from "../web/src/navigation.js";
+import { AuthGateView, authGateReducer, initialAuthGateState, type AuthGateState } from "../web/src/auth/auth-view.js";
 
 const status: RuntimeStatus = {
     qq: "connected",
@@ -58,6 +59,56 @@ test("API JSON response parser returns successful payloads and reports safe HTTP
     assert.throws(() => parseJsonResponse(404, "{\"error\":{\"message\":\"Not found\"}}"), (error: unknown) =>
         error instanceof ApiError && error.status === 404 && error.message === "Not found");
     assert.throws(() => parseJsonResponse(200, "not json"), /无效 JSON/);
+});
+
+test("auth gate renders the GitHub login screen when unauthenticated and the existing app when authenticated", () => {
+    const login = renderToStaticMarkup(createElement(AuthGateView, { state: { kind: "unauthenticated" } }, createElement("main", null, "Dashboard")));
+    assert.match(login, /TenBot/);
+    assert.match(login, /使用 GitHub 登录/);
+    assert.match(login, /href="\/api\/auth\/github"/);
+    assert.doesNotMatch(login, /Dashboard|password|用户名/);
+
+    const user = { id: "12345678", login: "admin", avatarUrl: null };
+    const authenticated = authGateReducer(initialAuthGateState, { type: "authenticated", user });
+    const dashboard = renderToStaticMarkup(createElement(AuthGateView, { state: authenticated }, createElement("main", null, "Existing Dashboard")));
+    assert.match(dashboard, /Existing Dashboard/);
+    assert.doesNotMatch(dashboard, /使用 GitHub 登录/);
+});
+
+test("API 401 notifies auth gate and logout calls the server before returning to the login view", async () => {
+    const originalFetch = globalThis.fetch;
+    let unauthorizedCalls = 0;
+    let authState: AuthGateState = { kind: "authenticated", user: { id: "12345678", login: "admin", avatarUrl: null } };
+    setUnauthorizedHandler(() => {
+        unauthorizedCalls++;
+        authState = authGateReducer(authState, { type: "unauthenticated" });
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: "Authentication required" } }), {
+        status: 401, headers: { "Content-Type": "application/json" },
+    });
+    try {
+        await assert.rejects(apiClient.getStatus(), (error: unknown) => error instanceof ApiError && error.status === 401);
+        assert.equal(unauthorizedCalls, 1);
+        assert.equal(authState.kind, "unauthenticated");
+        assert.match(renderToStaticMarkup(createElement(AuthGateView, { state: authState })), /使用 GitHub 登录/);
+
+        let logoutPath = "";
+        let logoutMethod = "";
+        globalThis.fetch = async (input, init) => {
+            logoutPath = String(input);
+            logoutMethod = init?.method ?? "";
+            return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        };
+        assert.deepEqual(await apiClient.logout(), { ok: true });
+        assert.equal(logoutPath, "/api/auth/logout");
+        assert.equal(logoutMethod, "POST");
+        const loggedOut = authGateReducer(authState, { type: "unauthenticated" });
+        const markup = renderToStaticMarkup(createElement(AuthGateView, { state: loggedOut }));
+        assert.match(markup, /使用 GitHub 登录/);
+    } finally {
+        globalThis.fetch = originalFetch;
+        setUnauthorizedHandler(undefined);
+    }
 });
 
 test("SSE message parser decodes JSON and rejects malformed frames", () => {

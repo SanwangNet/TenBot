@@ -6,6 +6,7 @@ import { logger } from "../shared/logger.js";
 import { parsePublicConfigPatch, validatePublicConfigPatch } from "../config/config-validation.js";
 import { isEditorResourceId } from "./editor-resources.js";
 import { MAX_MEME_FILE_BYTES, MemeLibraryError, memeLibrary, type MemeLibraryService } from "../skills/meme/library-service.js";
+import { OAUTH_STATE_COOKIE, WEB_SESSION_COOKIE, WebAuthService } from "../auth/web-auth-service.js";
 
 const SSE_HEARTBEAT_MS = 25_000;
 const MAX_CONFIG_PATCH_BODY_BYTES = 16 * 1024;
@@ -22,6 +23,7 @@ interface WebServerOptions {
     /** Optional static root for tests and packaged deployments. Defaults to web/dist. */
     staticDirectory?: string;
     memeService?: MemeLibraryService;
+    auth?: WebAuthService;
 }
 
 interface WebServerAddress {
@@ -41,6 +43,34 @@ function json(response: ServerResponse, statusCode: number, body: unknown): void
     if (response.destroyed || response.writableEnded) return;
     response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(body));
+}
+
+function authPage(response: ServerResponse, statusCode: number, title: string, message: string): void {
+    if (response.destroyed || response.writableEnded) return;
+    response.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+    response.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title} · TenBot</title><body><main><strong>TenBot</strong><h1>${title}</h1><p>${message}</p><a href="/">返回 TenBot</a></main></body></html>`);
+}
+
+function requestCookie(request: import("node:http").IncomingMessage, name: string): string | undefined {
+    for (const part of (request.headers.cookie ?? "").split(";")) {
+        const separator = part.indexOf("=");
+        if (separator < 0 || part.slice(0, separator).trim() !== name) continue;
+        try { return decodeURIComponent(part.slice(separator + 1).trim()); }
+        catch { return undefined; }
+    }
+    return undefined;
+}
+
+function cookie(name: string, value: string, maxAge: number, secure: boolean): string {
+    return `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+}
+
+function clearCookie(name: string, secure: boolean): string {
+    return cookie(name, "", 0, secure);
+}
+
+function csrfAllowed(origin: string | undefined, allowedOrigin: string | undefined): boolean {
+    return Boolean(origin && allowedOrigin && origin === allowedOrigin);
 }
 
 function error(response: ServerResponse, statusCode: number, message: string): void {
@@ -78,12 +108,17 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
     const clients = new Set<SseClient>();
     const staticDirectory = resolve(options.staticDirectory ?? resolve(process.cwd(), "web", "dist"));
     const memes = options.memeService ?? memeLibrary;
+    const auth = options.auth ?? new WebAuthService(process.env, undefined);
     let startPromise: Promise<WebServerAddress> | undefined;
     let closePromise: Promise<void> | undefined;
     let closing = false;
     let started = false;
 
     const server: Server = createServer((request, response) => {
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+        response.setHeader("X-Frame-Options", "DENY");
+        response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://avatars.githubusercontent.com; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://github.com");
         void handleRequest(request, response).catch(() => {
             if (!response.headersSent) error(response, 500, "Internal server error");
             else if (!response.writableEnded) response.end();
@@ -109,10 +144,11 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
     function openEvents(response: ServerResponse): void {
         response.writeHead(200, {
             "Content-Type": "text/event-stream; charset=utf-8",
-            "Cache-Control": "no-cache, no-transform",
+            "Cache-Control": "no-store, no-cache, no-transform",
             Connection: "keep-alive",
         });
         response.flushHeaders();
+        response.write("retry: 10000\n\n");
 
         const client: SseClient = {
             response,
@@ -163,11 +199,124 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
             return;
         }
 
-        let pathname: string;
-        try { pathname = new URL(request.url ?? "/", "http://localhost").pathname; }
+        let requestUrl: URL;
+        try { requestUrl = new URL(request.url ?? "/", "http://localhost"); }
         catch {
             error(response, 400, "Bad request");
             return;
+        }
+        const pathname = requestUrl.pathname;
+
+        if (pathname.startsWith("/api/")) response.setHeader("Cache-Control", "no-store");
+
+        if (pathname === "/api/health" && request.method === "GET") {
+            const status = control.getStatus();
+            json(response, 200, { ok: true, qq: status.qq, shuttingDown: status.shuttingDown });
+            return;
+        }
+
+        if (pathname === "/api/auth/github") {
+            if (request.method !== "GET") {
+                response.setHeader("Allow", "GET");
+                error(response, 405, "Method not allowed");
+                return;
+            }
+            const started = auth.startOAuth();
+            if (!started) {
+                authPage(response, 503, "GitHub 登录不可用", "服务器尚未完成 GitHub OAuth 配置。");
+                return;
+            }
+            response.setHeader("Set-Cookie", cookie(OAUTH_STATE_COOKIE, started.state, 600, auth.secureCookies));
+            response.writeHead(302, { Location: started.location, "Cache-Control": "no-store" });
+            response.end();
+            return;
+        }
+
+        if (pathname === "/api/auth/github/callback") {
+            if (request.method !== "GET") {
+                response.setHeader("Allow", "GET");
+                error(response, 405, "Method not allowed");
+                return;
+            }
+            const completion = await auth.completeOAuth(
+                requestUrl.searchParams.get("code") || undefined,
+                requestUrl.searchParams.get("state") || undefined,
+                requestCookie(request, OAUTH_STATE_COOKIE),
+            );
+            const clearState = clearCookie(OAUTH_STATE_COOKIE, auth.secureCookies);
+            if (completion.kind === "success") {
+                response.setHeader("Set-Cookie", [
+                    cookie(WEB_SESSION_COOKIE, completion.token, 7 * 24 * 60 * 60, auth.secureCookies),
+                    clearState,
+                ]);
+                response.writeHead(302, { Location: "/", "Cache-Control": "no-store" });
+                response.end();
+                return;
+            }
+            response.setHeader("Set-Cookie", clearState);
+            if (completion.kind === "denied") {
+                authPage(response, 403, "GitHub 账号未获授权", "此 GitHub numeric user ID 不在 TenBot 管理员 allowlist 中。");
+                return;
+            }
+            if (completion.kind === "unavailable") {
+                authPage(response, 502, "GitHub 登录失败", "无法完成 GitHub 身份验证，请稍后重试。");
+                return;
+            }
+            authPage(response, 400, "GitHub 登录请求无效", "OAuth state 已失效或请求参数不完整，请重新开始登录。");
+            return;
+        }
+
+        if (pathname === "/api/auth/me") {
+            if (request.method !== "GET") {
+                response.setHeader("Allow", "GET");
+                error(response, 405, "Method not allowed");
+                return;
+            }
+            if (!auth.configured) {
+                error(response, 503, "GitHub OAuth authentication is unavailable");
+                return;
+            }
+            const session = auth.getSession(requestCookie(request, WEB_SESSION_COOKIE));
+            if (!session) {
+                error(response, 401, "Authentication required");
+                return;
+            }
+            json(response, 200, { authenticated: true, user: { id: session.id, login: session.login, avatarUrl: session.avatarUrl } });
+            return;
+        }
+
+        if (pathname === "/api/auth/logout") {
+            if (request.method !== "POST") {
+                response.setHeader("Allow", "POST");
+                error(response, 405, "Method not allowed");
+                return;
+            }
+            const token = requestCookie(request, WEB_SESSION_COOKIE);
+            if (token && auth.configured && !csrfAllowed(request.headers.origin, auth.allowedOrigin)) {
+                error(response, 403, "Invalid request origin");
+                return;
+            }
+            auth.logout(token);
+            response.setHeader("Set-Cookie", clearCookie(WEB_SESSION_COOKIE, auth.secureCookies));
+            json(response, 200, { ok: true });
+            return;
+        }
+
+        if (pathname === "/api" || pathname.startsWith("/api/")) {
+            if (!auth.configured) {
+                error(response, 503, "GitHub OAuth authentication is unavailable");
+                return;
+            }
+            const session = auth.getSession(requestCookie(request, WEB_SESSION_COOKIE));
+            if (!session) {
+                error(response, 401, "Authentication required");
+                return;
+            }
+            if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method ?? "") &&
+                !csrfAllowed(request.headers.origin, auth.allowedOrigin)) {
+                error(response, 403, "Invalid request origin");
+                return;
+            }
         }
 
         if (pathname === "/api/meme-library") {

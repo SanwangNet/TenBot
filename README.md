@@ -58,7 +58,27 @@ Front 使用 `FRONT_MODE=legacy|judge` 配置，默认 `legacy`。只有显式�
 
 ## 运行
 
-Runtime 同时提供本机 Web Control API，默认地址为 `http://127.0.0.1:3000`。用 `WEB_HOST` 和 `WEB_PORT` 可调整监听地址；修改后需重启 Runtime。当前 API 没有身份验证，不要直接暴露到不可信公网。远程访问建议保持 `127.0.0.1` 监听并使用 SSH Tunnel，或通过受信任的反向代理访问。
+Runtime 同时提供本机 Web Control API，默认地址为 `http://127.0.0.1:3000`。用 `WEB_HOST` 和 `WEB_PORT` 可调整监听地址；修改后需重启 Runtime。管理 WebUI 使用 GitHub OAuth 登录，只允许服务端 allowlist 中的 GitHub numeric user ID；未配置认证时管理 API 会 fail closed，不会退化为匿名访问。
+
+### GitHub WebUI 登录
+
+在 GitHub 创建 OAuth App：
+
+1. 打开 `Settings` → `Developer settings` → `OAuth Apps` → `New OAuth App`。
+2. Production Homepage URL 填写 `https://bot.tenqui.ink`。
+3. Authorization callback URL 填写 `https://bot.tenqui.ink/api/auth/github/callback`。
+4. 将 OAuth App 的 Client ID、Client Secret 配置到服务端 `.env`，并配置回调 URL 与允许登录的 numeric user IDs：
+
+```dotenv
+GITHUB_OAUTH_CLIENT_ID=
+GITHUB_OAUTH_CLIENT_SECRET=
+GITHUB_OAUTH_CALLBACK_URL=https://bot.tenqui.ink/api/auth/github/callback
+GITHUB_OAUTH_ALLOWED_USER_IDS=
+```
+
+`GITHUB_OAUTH_ALLOWED_USER_IDS` 使用英文逗号分隔的 GitHub numeric user ID，不是 GitHub 用户名或邮箱。Client Secret 只保存在服务端 `.env`，不要放入 WebUI 或提交到 Git。OAuth 设置是启动级配置，更新后需重启 Runtime。开发环境可将 callback URL 配置为本机 HTTP 地址进行测试。
+
+TenBot 的 `WEB_HOST` 应保持 `127.0.0.1`。公网访问应使用可信反向代理：Internet → Cloudflare → VPS `:443` → Caddy → `127.0.0.1:3000`；不要直接公开 TenBot 管理端口。
 
 普通日志模式：
 
@@ -75,7 +95,7 @@ WebUI 开发时，在另一个终端运行 Vite：
     pnpm web:build
     pnpm dev
 
-构建后，浏览器访问 `http://127.0.0.1:3000/` 即可打开 WebUI；Runtime 仍默认只监听本机。当前 Web Control 没有身份验证，不要把管理接口直接暴露到不可信公网。远程访问建议使用 SSH Tunnel，或仅通过受信任的反向代理访问。
+构建后，浏览器访问 `http://127.0.0.1:3000/` 即可打开 WebUI；Runtime 仍默认只监听本机。未登录时显示 GitHub 登录页，所有管理 API 和 SSE 均要求有效 TenBot Session。
 
 WebUI 提供总览、模型、提示词、梗数据、对话、自动账号、实时日志和设置。提示词与 Meme 数据可在 Monaco 编辑器中保存并热重载；保存会检查文件版本，Meme JSON 会先验证。编辑 API 只允许 TenBot 的四个固定资源 ID，不接受任意服务器路径。自动账号与设置修改仍经由 TenBotControl 应用。
 
@@ -198,7 +218,7 @@ Runtime 会校验 JSON、条目字段及重复 ID、名称和别名，再建立�
 
 ## 数据与隐私
 
-已知群成员资料使用本地 SQLite，默认文件为 data/bot.db；数据库不可用时，本次运行会退回内存存储。最近聊天上下文、活跃会话和自动账号循环限制状态保存在内存中，进程重启后清零。
+已知群成员资料、运行状态和 WebUI Session 使用本地 SQLite，默认文件为 `data/bot.db`；新环境自动应用新增的 Web auth migration。WebUI Cookie 保存随机 Session token，数据库仅保存 SHA-256 hash；Session 默认 7 天有效，登出后立即失效。SQLite 不可用时管理 API 保持锁定。最近聊天上下文、活跃会话和自动账号循环限制状态保存在内存中，进程重启后清零。
 
 API 密钥、QQ 凭据和 Authorization、Bearer token、Cookie、access/refresh token 会在 Console、UI 与三份磁盘日志中持续脱敏。ALL 日志仍可能包含聊天内容、member/group OpenID、Prompt、模型请求/响应和 Tool 参数及结果；它只适合本机临时诊断，排障后恢复 debug/info，并且不要上传公开 issue。日志文件保存在被 Git ignore 的 `logs/` 目录。
 

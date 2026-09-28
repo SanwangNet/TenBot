@@ -286,3 +286,26 @@ button:focus-visible {
 .setting-toggle-copy span { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .setting-toggle-input { width: 20px; height: 20px; flex: 0 0 20px; accent-color: var(--accent); cursor: pointer; }
 .setting-toggle-input:disabled { cursor: not-allowed; opacity: .6; }
+
+.auth-screen { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 25%, #1b2c39 0, #111820 42%, var(--canvas) 78%); }
+.auth-card { width: min(430px, 100%); padding: clamp(26px, 6vw, 42px); border: 1px solid #344353; border-radius: 12px; background: rgb(20 27 35 / 94%); box-shadow: 0 24px 90px rgb(0 0 0 / 34%); }
+.auth-brand { display: flex; align-items: center; gap: 12px; color: #edf4fa; font-size: 19px; font-weight: 650; }
+.auth-kicker { margin-top: 38px; color: #84b9dd; font-family: "DM Mono", monospace; font-size: 10px; letter-spacing: .16em; }
+.auth-card h1 { margin: 9px 0 10px; color: #f2f5f8; font-size: 29px; font-weight: 600; letter-spacing: -.035em; }
+.auth-card p { margin: 0; color: #a3afbc; font-size: 14px; line-height: 1.7; }
+.github-login { display: flex; min-height: 48px; align-items: center; justify-content: center; gap: 11px; margin-top: 27px; border: 1px solid #e4e8ec; border-radius: 7px; background: #f4f5f6; color: #171b20; font-size: 14px; font-weight: 600; text-decoration: none; transition: background .15s ease, transform .15s ease; }
+.github-login:hover { transform: translateY(-1px); background: #fff; }
+.auth-footnote { margin-top: 30px; padding-top: 16px; border-top: 1px solid #293440; color: #778696; font-size: 11px; line-height: 1.5; }
+.auth-error { margin-top: 19px; padding: 12px; border: 1px solid #75484e; border-radius: 6px; background: #2a2024; color: #f1b9bc; font-size: 13px; line-height: 1.6; }
+.auth-profile { display: flex; min-width: 0; align-items: center; gap: 10px; margin-left: 24px; color: #c7d1db; font-size: 12px; }
+.auth-profile img { width: 27px; height: 27px; border: 1px solid #435264; border-radius: 50%; object-fit: cover; }
+.auth-profile span { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 620px) {
+    .topbar { gap: 10px; padding: 0 12px; }
+    .topbar-statuses { gap: 8px; }
+    .auth-profile { gap: 6px; margin-left: auto; font-size: 11px; }
+    .auth-profile img { width: 24px; height: 24px; }
+    .auth-profile span { display: none; }
+    .auth-profile .button { min-height: 32px; padding: 0 8px; font-size: 11px; }
+}

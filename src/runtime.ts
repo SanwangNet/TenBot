@@ -35,6 +35,8 @@ import { createEditorResourceStore } from "./control/editor-resources.js";
 import { ReplyJudgePromptStore } from "./front/reply-judge-prompt-store.js";
 import { OpenAICompatibleReplyJudge } from "./front/openai-compatible-reply-judge.js";
 import { GroupReplyControl } from "./runtime/group-reply-control.js";
+import { WebSessionRepository } from "./auth/web-session-repository.js";
+import { WebAuthService } from "./auth/web-auth-service.js";
 
 export interface TenBotRuntime {
     control: TenBotControl;
@@ -104,6 +106,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
 
     let control: ReturnType<typeof createTenBotControl> | undefined;
     let webServer: ReturnType<typeof createTenBotWebServer> | undefined;
+    let webSessionRepository: WebSessionRepository | undefined;
     let groupReplyControl: GroupReplyControl | undefined;
     let unsubscribeProviderErrors: () => void = () => undefined;
     let unsubscribeReplyLifecycle: () => void = () => undefined;
@@ -407,6 +410,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                 } finally {
                     try { sqliteMemberRepository?.close(); }
                     catch (error) { logger.error("[Members] SQLite close failed", error); }
+                    try { webSessionRepository?.close(); }
+                    catch (error) { logger.error("[Auth] Session database close failed", error); }
                     qqState = "disconnected";
                     control?.publishStatus();
                     clearInterval(statusTimer);
@@ -422,9 +427,13 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         },
     });
 
+    try { webSessionRepository = new WebSessionRepository(); }
+    catch { logger.error("[Auth] Session storage unavailable; management API remains locked"); }
+    const webAuth = new WebAuthService(process.env, webSessionRepository);
     webServer = createTenBotWebServer(control, {
         host: runtimeSnapshot.appConfig.web.host,
         port: runtimeSnapshot.appConfig.web.port,
+        auth: webAuth,
     });
 
     envWatcher = new FileChangeWatcher(configStore.getEnvPath(), async () => {

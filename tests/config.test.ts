@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { createConfigStore } from "../src/config/config-store.js";
 import { loadAppConfig, parseBotAdminIds, parseLogLevel, parsePublicConfigPatch, validatePublicConfigPatch } from "../src/config/config-validation.js";
+import { loadGitHubOAuthConfig } from "../src/auth/web-auth-service.js";
 
 test("BOT_ADMIN_IDS accepts opaque IDs, normalizes case, and rejects malformed entries", () => {
     assert.deepEqual(parseBotAdminIds(" 4d53c611 &#x20;," + "A".repeat(64)), ["4D53C611", "A".repeat(64)]);
@@ -174,6 +175,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
         environment: {
             AI_PROVIDER: "gpt",
             CODEX_API_KEY: "SECRET_API_KEY",
+            GITHUB_OAUTH_CLIENT_SECRET: "PRIVATE_GITHUB_OAUTH_SECRET",
             CODEX_BASE_URL: "https://secret.example",
             CODEX_MODEL: "gpt-test",
             CODEX_REASONING_EFFORT: "low",
@@ -196,7 +198,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
     assert.equal(publicConfig.botLoopGuard.automatedPeerCount, 2);
     assert.equal(publicConfig.logLevel, "debug");
     assert.deepEqual(publicConfig.replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000, provider: "openai-compatible" });
-    assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example|4D53C611|botAdminIds/);
+    assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|PRIVATE_GITHUB_OAUTH_SECRET|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example|4D53C611|botAdminIds/);
 });
 
 test("Reply Judge config patches map to their env keys and validate safe model IDs and timeout bounds", async () => {
@@ -350,4 +352,31 @@ test("Web host rejects malformed bind addresses", () => {
     for (const host of ["0.0.0.0:3000", "bad host", "bad/host"]) {
         assert.throws(() => loadAppConfig({ WEB_HOST: host }), /WEB_HOST/);
     }
+});
+
+test("GitHub OAuth config requires every setting and parses only positive numeric allowlist IDs", () => {
+    assert.deepEqual(loadGitHubOAuthConfig({}), { error: "GitHub OAuth is not configured" });
+    const configured = loadGitHubOAuthConfig({
+        GITHUB_OAUTH_CLIENT_ID: " client ",
+        GITHUB_OAUTH_CLIENT_SECRET: " secret ",
+        GITHUB_OAUTH_CALLBACK_URL: "https://bot.tenqui.ink/api/auth/github/callback",
+        GITHUB_OAUTH_ALLOWED_USER_IDS: " 12345678, , 87654321 ",
+    });
+    assert.ok(configured.config);
+    assert.deepEqual([...configured.config.allowedUserIds], ["12345678", "87654321"]);
+    assert.equal(configured.config.clientSecret, "secret");
+    for (const invalid of ["username", "0", "-1", "1.2", "123,username"]) {
+        assert.equal(loadGitHubOAuthConfig({
+            GITHUB_OAUTH_CLIENT_ID: "client",
+            GITHUB_OAUTH_CLIENT_SECRET: "secret",
+            GITHUB_OAUTH_CALLBACK_URL: "https://bot.tenqui.ink/api/auth/github/callback",
+            GITHUB_OAUTH_ALLOWED_USER_IDS: invalid,
+        }).config, undefined, invalid);
+    }
+    assert.equal(loadGitHubOAuthConfig({
+        GITHUB_OAUTH_CLIENT_ID: "client",
+        GITHUB_OAUTH_CLIENT_SECRET: "secret",
+        GITHUB_OAUTH_CALLBACK_URL: "http://public.example/callback",
+        GITHUB_OAUTH_ALLOWED_USER_IDS: "12345678",
+    }).config, undefined);
 });

@@ -8,6 +8,8 @@ import { ConversationsPage } from "./conversations/conversations-page.js";
 import { PeersPage } from "./components/peers-page.js";
 import { useFeedback } from "./ui/feedback.js";
 import { nextPage, type PageId } from "./navigation.js";
+import type { AuthMeResponse } from "./api/types.js";
+import { apiClient } from "./api/client.js";
 
 const EditorPage = lazy(async () => ({ default: (await import("./editor/editor-page.js")).EditorPage }));
 const MemeLibraryPage = lazy(async () => ({ default: (await import("./components/meme-library-page.js")).MemeLibraryPage }));
@@ -38,13 +40,13 @@ const qqLabels = {
     error: "连接异常",
 } as const;
 
-export function App() {
+export function App({ user, onLogout }: { user: AuthMeResponse["user"]; onLogout(): void }) {
     const [page, setPage] = useState<PageId>("overview");
     const [editorDirty, setEditorDirty] = useState(false);
     const [leaving, setLeaving] = useState(false);
     const transitionRef = useRef(false);
     const onEditorDirtyChange = useCallback((dirty: boolean) => setEditorDirty(dirty), []);
-    const { confirm } = useFeedback();
+    const { confirm, notify } = useFeedback();
     const { status, connection, error } = useRuntime();
     async function selectPage(requested: PageId) {
         if (page === requested || transitionRef.current) return;
@@ -60,6 +62,11 @@ export function App() {
         setPage(next);
         setLeaving(false);
         transitionRef.current = false;
+    }
+
+    async function logout() {
+        try { await apiClient.logout(); onLogout(); }
+        catch { notify("error", "退出登录失败，请检查网络后重试"); }
     }
 
     return (
@@ -101,6 +108,11 @@ export function App() {
                             <span>{status ? `${status.provider.id} / ${status.provider.model}` : "主模型读取中"}</span>
                         </span>
                         <StatusPill label="运行时" value={connectionLabels[connection]} tone={connectionTone(connection)} />
+                    </div>
+                    <div className="auth-profile">
+                        {user.avatarUrl && <img src={user.avatarUrl} alt="" referrerPolicy="no-referrer" />}
+                        <span>{user.login}</span>
+                        <button className="button button-secondary" type="button" onClick={() => void logout()}>退出</button>
                     </div>
                 </header>
 
