@@ -344,7 +344,9 @@ test("SDK quoteRef resolves a group reference into one normalized quote layer", 
     const bContext = context(b);
     await middleware(bContext, async () => {});
     const normalized = await normalizeQqMessage(bContext, b);
-    assert.deepEqual(normalized.quotedMessage, { authorName: "尘柒喵", content: "我今晚不去了", realMessageId: "real-A" });
+    assert.deepEqual(normalized.quotedMessage, {
+        authorName: "尘柒喵", content: "我今晚不去了", realMessageId: "real-A", timestamp: a.timestamp,
+    });
     commit(normalized);
     const snapshot = buildReplyCycleSnapshot(normalized);
     assert.match(snapshot.text, /尘柒喵：我今晚不去了/);
@@ -476,7 +478,9 @@ test("a quote of a quoted message renders only the direct relation for the newes
     const ctxC = context(rawC);
     await middleware(ctxC, async () => {});
     const c = await normalizeQqMessage(ctxC, rawC);
-    assert.deepEqual(c.quotedMessage, { authorName: "用户", content: "B 回答", realMessageId: "real-B" });
+    assert.deepEqual(c.quotedMessage, {
+        authorName: "用户", content: "B 回答", realMessageId: "real-B", timestamp: Date.parse(rawB.timestamp),
+    });
     assert.equal(c.quotedBot, false);
     assert.equal(c.quotedMessage?.content?.includes("A 原话"), false);
     commit(c);

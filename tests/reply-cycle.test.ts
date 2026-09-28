@@ -306,7 +306,7 @@ test("name-soft upgrades to hard mention and passive interruption cannot relax i
     coordinateAiReply(requestFor(bot, passive, 0));
     await waitFor(() => attempts.length === 3);
     assert.match(attempts[2].input, /allowNoReply=false\norigin=name-soft effective=hard-mention/);
-    assert.match(attempts[2].input, /当前更明确的参与邀请：user：@小尘 你倒是说句话/);
+    assert.match(attempts[2].input, /当前更明确的参与邀请：\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：@小尘 你倒是说句话/);
     attempts[0].resolve({ kind: "no_reply" });
     assert.equal(attempts[2].signal.aborted, false);
     attempts[2].resolve({ kind: "no_reply" });
@@ -378,8 +378,8 @@ test("late NO_REPLY from an interrupted name attempt cannot suppress a hard ment
     attempts[0].resolve({ kind: "no_reply" });
     await waitFor(() => attempts.length === 2);
     assert.match(attempts[1].input, /allowNoReply=false\norigin=name-soft effective=hard-mention/);
-    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：user：小尘你看看/);
-    assert.match(attempts[1].input, /当前更明确的参与邀请：user：@小尘 你倒是说句话/);
+    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：小尘你看看/);
+    assert.match(attempts[1].input, /当前更明确的参与邀请：\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：@小尘 你倒是说句话/);
     assert.equal(calls.length, 0);
     attempts[1].resolve(reply("我在"));
     await first;
@@ -406,8 +406,8 @@ test("active-soft restart identifies the original anchor and newer message with 
     coordinateAiReply({ ...requestFor(bot, interruption, 1), buildAttempt });
     await waitFor(() => attempts.length === 2);
     const input = attempts[1].input;
-    assert.match(input, /本轮最初因这条消息开始考虑参与：\[m1\] user：zdjd？/);
-    assert.match(input, /上次生成后新增的群聊内容：\n\[m2\] user：？啥真的假的/);
+    assert.match(input, /本轮最初因这条消息开始考虑参与：\[m1\]\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：zdjd？/);
+    assert.match(input, /上次生成后新增的群聊内容：\n\[m2\]\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：？啥真的假的/);
     assert.match(input, /allowNoReply=true/);
     assert.doesNotMatch(input, new RegExp(anchor.id!));
     assert.doesNotMatch(input, new RegExp(interruption.id!));
@@ -429,8 +429,8 @@ test("three ordinary interruptions keep the first semantic anchor", async () => 
         commit(values[index]);
         coordinateAiReply(requestFor(bot, values[index], 1));
         await waitFor(() => attempts.length === index + 1);
-        assert.match(attempts[index].input, /本轮最初因这条消息开始考虑参与：user：zdjd？/);
-        assert.match(attempts[index].input, new RegExp(`上次生成后新增的群聊内容：\\nuser：${values[index].displayContent}`));
+        assert.match(attempts[index].input, /本轮最初因这条消息开始考虑参与：\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：zdjd？/);
+        assert.match(attempts[index].input, new RegExp(`上次生成后新增的群聊内容：\\n\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\] user：${values[index].displayContent}`));
     }
     attempts[3].resolve({ kind: "no_reply" });
     await first;
@@ -449,8 +449,8 @@ test("name-soft upgrade replaces the effective anchor but keeps optional reply",
     commit(name);
     coordinateAiReply(requestFor(bot, name, 2));
     await waitFor(() => attempts.length === 2);
-    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：user：普通后续/);
-    assert.match(attempts[1].input, /当前更明确的参与邀请：user：小尘你看看这个/);
+    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：普通后续/);
+    assert.match(attempts[1].input, /当前更明确的参与邀请：\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：小尘你看看这个/);
     assert.match(attempts[1].input, /allowNoReply=true/);
     attempts[1].resolve({ kind: "no_reply" });
     await first;
@@ -468,8 +468,8 @@ test("same-level explicit name trigger replaces the effective anchor", async () 
     commit(secondName);
     coordinateAiReply(requestFor(bot, secondName, 2));
     await waitFor(() => attempts.length === 2);
-    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：user：小尘你看看/);
-    assert.match(attempts[1].input, /当前更明确的参与邀请：user：小尘，我说的是这个/);
+    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：小尘你看看/);
+    assert.match(attempts[1].input, /当前更明确的参与邀请：\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：小尘，我说的是这个/);
     attempts[1].resolve({ kind: "no_reply" });
     await first;
 });
@@ -486,8 +486,8 @@ test("same-level hard mention replaces the effective anchor without changing the
     commit(secondHard);
     coordinateAiReply(requestFor(bot, secondHard, 3));
     await waitFor(() => attempts.length === 2);
-    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：user：@小尘 看这里/);
-    assert.match(attempts[1].input, /当前更明确的参与邀请：user：@小尘 我说后面这个/);
+    assert.match(attempts[1].input, /本轮最初因这条消息开始考虑参与：\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：@小尘 看这里/);
+    assert.match(attempts[1].input, /当前更明确的参与邀请：\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：@小尘 我说后面这个/);
     assert.match(attempts[1].input, /allowNoReply=false/);
     attempts[1].resolve(reply("看到了"));
     await first;
@@ -547,7 +547,7 @@ test("new message aborts generation and the replacement sees current context onc
     assert.match(attempts[1].input, /B adds context/);
     const recent = attempts[1].input.match(/<recent_context>([\s\S]*?)<\/recent_context>/)?.[1] ?? "";
     assert.equal((recent.match(/B adds context/g) ?? []).length, 1);
-    assert.match(attempts[1].input, /上次生成后新增的群聊内容：\nuser：B adds context/);
+    assert.match(attempts[1].input, /上次生成后新增的群聊内容：\n\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：B adds context/);
     attempts[1].resolve(reply("updated"));
     await Promise.all([first, second]);
 });
@@ -584,8 +584,8 @@ test("three interruptions cap, trailing messages schedule a fresh cycle and rese
     for (const text of ["E", "F", "G"]) assert.match(attempts[4].input, new RegExp(text));
     assert.match(attempts[4].input, /allowNoReply=true/);
     const nextAnchor = attempts[4].input.match(/<reply_cycle_context>([\s\S]*?)<\/reply_cycle_context>/)?.[1] ?? "";
-    assert.match(nextAnchor, /本轮最初因这条消息开始考虑参与：user：E/);
-    assert.match(nextAnchor, /上次生成后新增的群聊内容：\nuser：F\nuser：G/);
+    assert.match(nextAnchor, /本轮最初因这条消息开始考虑参与：\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：E/);
+    assert.match(nextAnchor, /上次生成后新增的群聊内容：\n\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：F\n\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] user：G/);
     assert.doesNotMatch(nextAnchor, /user：A/);
 
     commit(messages[7]);

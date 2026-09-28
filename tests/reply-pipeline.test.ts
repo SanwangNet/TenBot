@@ -284,7 +284,7 @@ test("successful multi-message reply records separate context entries", async ()
         executeAi: async () => reply(["放心，还早呢", "毕竟我又没有身体"]),
         multiMessageDelayMs: 0,
     });
-    assert.match(buildChatInput(trigger, "next"), /小尘：放心，还早呢\n小尘：毕竟我又没有身体/);
+    assert.match(buildChatInput(trigger, "next"), /小尘：放心，还早呢\n\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] 小尘：毕竟我又没有身体/);
 });
 
 test("cancelling after the first send stops subsequent messages during the delay", async () => {

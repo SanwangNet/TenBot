@@ -47,7 +47,8 @@ Front 使用 `FRONT_MODE=legacy|judge` 配置，默认 `legacy`。只有显式�
 
 | 变量 | 用途 |
 | --- | --- |
-| BOT_LOG_LEVEL | UI/Console 日志级别：all、debug、info、warn 或 error；默认 info。磁盘三份日志始终开启 |
+| BOT_LOG_LEVEL | Console 日志等级：all、debug、info、warn 或 error；默认 info。仅控制终端 / systemd journal 输出量 |
+| BOT_TIME_ZONE | 模型时间语境和聊天记录时间展示使用的 IANA 时区；默认 Asia/Shanghai |
 | AUTOMATED_PEER_IDS | 逗号分隔的已登记自动化账号稳定成员 ID |
 | BOT_LOOP_GUARD_MAX_CYCLES | 每个会话的连续自动账号 AI Cycle 上限，默认 4，必须是大于等于 1 的整数 |
 | REPLY_JUDGE_TIMEOUT_MS | Reply Judge 独立超时，默认 5000 毫秒，接受 1000–30000 毫秒 |
@@ -91,11 +92,10 @@ TUI 是中文全屏控制台，支持 PowerShell 和 WebStorm Terminal。进入�
 - GPT / DeepSeek 模型名称
 - GPT / DeepSeek 推理强度
 - GPT 输出详细度
-- 日志级别
 - 自动账号连续交互上限
 - 自动账号的添加和删除
 
-修改会先经过确认，再只更新 `.env` 中对应的变量；未知变量、secret、注释、空行和原有换行风格会保留。Provider、模型参数、日志级别、连续交互上限和自动账号 ID 会立即热重载；进行中的模型 Attempt 保留启动时的模型和 Prompt 快照，新 Attempt 使用最新配置。当前不支持自动重启。QQ App ID 或密钥变化需要重启 QQ Runtime。
+修改会先经过确认，再只更新 `.env` 中对应的变量；未知变量、secret、注释、空行和原有换行风格会保留。Provider、模型参数、连续交互上限和自动账号 ID 会立即热重载；进行中的模型 Attempt 保留启动时的模型和 Prompt 快照，新 Attempt 使用最新配置。当前不支持自动重启。QQ App ID 或密钥变化需要重启 QQ Runtime。
 
 设置页使用 Provider 卡片浏览 GPT 与 DeepSeek 配置。左右方向键只切换正在查看的卡片；选择“设为当前模型提供商”并确认后才会保存和热切换运行 Provider。密钥和 Base URL 不会显示在 TUI。
 
@@ -129,13 +129,19 @@ TUI 快捷键：
 
 日志缓存会将相邻且级别、正文完全相同的记录折叠为一行，并用结构化重复次数显示；TUI 与 WebUI 共用这份最多 5000 行的缓存。磁盘日志逐条保存每个 logger event，不折叠。
 
-Runtime 无需额外配置，始终异步追加三份本地日志：`logs/tenbot-YYYY-MM-DD.all.log`、`logs/tenbot-YYYY-MM-DD.info.log`、`logs/tenbot-YYYY-MM-DD.warn.log`，按本地日期每天一个文件，跨午夜后自动写入新日期文件。`all.log` 包含 ALL、DEBUG、INFO、WARN、ERROR；`info.log` 包含 INFO、WARN、ERROR；`warn.log` 只包含 WARN、ERROR。三份文件不受 `BOT_LOG_LEVEL` 影响。
+TenBot 始终完整采集所有等级的日志，并异步追加三份本地日志：`logs/tenbot-YYYY-MM-DD.all.log`、`logs/tenbot-YYYY-MM-DD.info.log`、`logs/tenbot-YYYY-MM-DD.warn.log`，按本地日期每天一个文件，跨午夜后自动写入新日期文件。`all.log` 包含 ALL、DEBUG、INFO、WARN、ERROR；`info.log` 包含 INFO、WARN、ERROR；`warn.log` 只包含 WARN、ERROR。文件采集不受 `BOT_LOG_LEVEL` 影响。
 
-`BOT_LOG_LEVEL` 只控制 Console、TUI、WebUI、SSE 与内存日志缓存，支持 `all`、`debug`、`info`、`warn`、`error`，默认 `info`。`debug` 记录安全摘要；`all` 会在 UI 中呈现完整诊断。`all.log` 属于敏感本地诊断数据，可能包含聊天正文、OpenID、Prompt、模型请求/响应和 Tool 数据，不要公开上传。三份日志都会持续脱敏 API key、App Secret、Authorization、Bearer token、Cookie、access/refresh token 和其他凭据。
+`BOT_LOG_LEVEL` 是纯部署环境变量，只在进程启动时读取，并且只控制终端 / systemd journal 的 Console 输出阈值，支持 `all`、`debug`、`info`、`warn`、`error`，默认 `info`。例如 `BOT_LOG_LEVEL=info` 时，journalctl 显示 INFO/WARN/ERROR；DEBUG 和 ALL 仍会完整进入日志系统、日志文件和 WebUI。`BOT_LOG_LEVEL=all` 会让 Console 同时显示完整诊断日志，可能非常详细。该变量不影响 WebUI、SSE 或日志文件。
+
+`BOT_TIME_ZONE` 使用 IANA 时区名称，例如 `BOT_TIME_ZONE=Asia/Shanghai`，用于模型当前时间语境及 Recent Context 消息时间展示，默认 `Asia/Shanghai`。TenBot 在每次模型 Attempt 时读取服务器系统时钟并按此时区格式化，不会请求第三方时间服务。
+
+WebUI 日志页的等级筛选与服务器完全独立，首次默认为“信息”，并通过浏览器 localStorage key `tenbot.logs.level-filter` 持久化。即使服务端设置 `BOT_LOG_LEVEL=warn`，浏览器选择“完整诊断”仍能查看 ALL、DEBUG、INFO、WARN、ERROR。
+
+ALL 是完整诊断类型，可能包含聊天内容和业务身份标识；Secret / credentials 仍会脱敏。`all.log` 属于敏感本地诊断数据，可能包含聊天正文、OpenID、Prompt、模型请求/响应和 Tool 数据，不要公开上传。三份日志都会持续脱敏 API key、App Secret、Authorization、Bearer token、Cookie、access/refresh token 和其他凭据。
 
 ### 运行时热重载
 
-TUI 设置页可保存 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Reply Judge 模型与超时时间、BOT_LOG_LEVEL、BOT_LOOP_GUARD_MAX_CYCLES 和 AUTOMATED_PEER_IDS。API Key 与 Provider Base URL 仍只通过 `.env` 管理，不会暴露给 TUI。TUI 保存配置或外部编辑 `.env` 都会重建配置快照并立即热加载。GPT、DeepSeek 与 Reply Judge Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQBOT_APP_ID 和 QQBOT_APP_SECRET 变化需要重启；TUI 不会自动重启进程。
+TUI 设置页可保存 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Reply Judge 模型与超时时间、BOT_LOOP_GUARD_MAX_CYCLES 和 AUTOMATED_PEER_IDS。BOT_LOG_LEVEL 不属于运行时配置，需通过部署环境设置并重启进程。API Key 与 Provider Base URL 仍只通过 `.env` 管理，不会暴露给 TUI。TUI 保存配置或外部编辑 `.env` 都会重建配置快照并立即热加载。GPT、DeepSeek 与 Reply Judge Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQBOT_APP_ID 和 QQBOT_APP_SECRET 变化需要重启；TUI 不会自动重启进程。
 
 ### 错误码
 

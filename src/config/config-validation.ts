@@ -1,6 +1,7 @@
 import type { ModelVerbosity, ReasoningEffort } from "../ai/model-plugin.js";
 import type { AppConfig, ModelProviderId, PublicConfig, PublicConfigPatch } from "./config-types.js";
 import type { FrontMode } from "../front/wake-level.js";
+import { validateBotTimeZone } from "../ai/time-context.js";
 import { isIP } from "node:net";
 
 export const DEFAULT_GPT_MODEL = "gpt-6-sol";
@@ -186,6 +187,7 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }
     return {
         frontMode,
+        botTimeZone: validateBotTimeZone(env.BOT_TIME_ZONE),
         botAdminIds: parseBotAdminIds(env.BOT_ADMIN_IDS),
         memeSendMaxEdge: parseMemeSendMaxEdge(env.MEME_SEND_MAX_EDGE),
         qq: {

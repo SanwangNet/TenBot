@@ -213,7 +213,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         () => runtimeSnapshots.get().appConfig.replyJudge.turnWaitMs,
         groupReplyControl,
         () => runtimeSnapshots.get().appConfig.botAdminIds,
-        () => runtimeSnapshots.get().appConfig.memeSendMaxEdge);
+        () => runtimeSnapshots.get().appConfig.memeSendMaxEdge,
+        () => runtimeSnapshots.get().appConfig.botTimeZone);
     } catch (error) {
         logs.dispose();
         setConsoleLogOutputEnabled(true);

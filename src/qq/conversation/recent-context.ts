@@ -13,6 +13,7 @@ const MAX_IMAGE_AGE_MS =
 
 import type { NormalizedQqMessage, QuotedMessage } from "../message/normalize-message.js";
 import { logger, shortId } from "../../shared/logger.js";
+import { DEFAULT_BOT_TIME_ZONE, formatModelTimestamp } from "../../ai/time-context.js";
 
 interface HistoryImage {
     url: string;
@@ -27,6 +28,7 @@ interface HistoryMessage {
     refIdx?: string;
     speaker: string;
     content: string;
+    timestamp: number;
     images?: HistoryImage[];
     quote?: QuotedMessage;
     isBotReply?: boolean;
@@ -70,6 +72,18 @@ function getMessageTimestamp(
     }
 
     return Date.now();
+}
+
+function parseAbsoluteTimestamp(value: number | string | undefined): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) return value < 100_000_000_000 ? value * 1000 : value;
+    if (typeof value !== "string") return undefined;
+    const normalized = value.trim();
+    if (/^\d{10,13}$/.test(normalized)) {
+        const numeric = Number(normalized);
+        return normalized.length <= 10 ? numeric * 1000 : numeric;
+    }
+    const parsed = Date.parse(normalized);
+    return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 export function getConversationKey(
@@ -168,9 +182,7 @@ function cleanMessage(
         );
 }
 
-function getImages(
-    message: NormalizedQqMessage,
-): HistoryImage[] {
+function getImages(message: NormalizedQqMessage, timestamp: number): HistoryImage[] {
     const attachments = message.attachments;
 
     return attachments
@@ -204,10 +216,7 @@ function getImages(
                 attachment.width,
             height:
                 attachment.height,
-            timestamp:
-                getMessageTimestamp(
-                    message,
-                ),
+            timestamp,
         }),
     );
 }
@@ -278,8 +287,8 @@ export function rememberIncomingMessage(
     message: NormalizedQqMessage,
     content: string,
 ) {
-    const images =
-        getImages(message);
+    const timestamp = getMessageTimestamp(message);
+    const images = getImages(message, timestamp);
 
     const cleaned =
         cleanMessage(content);
@@ -312,6 +321,7 @@ export function rememberIncomingMessage(
             getSpeakerName(message),
         content:
             contextContent,
+        timestamp,
         images:
             images.length > 0
                 ? images
@@ -323,7 +333,7 @@ export function rememberIncomingMessage(
 export function rememberBotReply(
     message: NormalizedQqMessage,
     content: string,
-    sent?: { id?: string; refIdx?: string },
+    sent?: { id?: string; refIdx?: string; timestamp?: number | string },
 ) {
     const cleaned =
         cleanMessage(content);
@@ -337,6 +347,7 @@ export function rememberBotReply(
         refIdx: sent?.refIdx,
         speaker: "小尘",
         content: cleaned,
+        timestamp: parseAbsoluteTimestamp(sent?.timestamp) ?? Date.now(),
         isBotReply: true,
     });
 }
@@ -344,6 +355,7 @@ export function rememberBotReply(
 /** Resolve a QQ reference index only inside this conversation's recent memory. */
 export function findRecentQuotedMessage(message: NormalizedQqMessage, refIdx: string):
     { id?: string; authorName: string; content: string; isBotReply: boolean;
+        timestamp: number;
         images?: Array<{ url: string; contentType?: string; width?: number; height?: number }> } | undefined {
     const items = getMemory(message).messages;
     for (let index = items.length - 1; index >= 0; index--) {
@@ -354,6 +366,7 @@ export function findRecentQuotedMessage(message: NormalizedQqMessage, refIdx: st
                 authorName: item.speaker,
                 content: item.content,
                 isBotReply: item.isBotReply === true,
+                timestamp: item.timestamp,
                 images: item.images?.map(({ url, contentType, width, height }) => ({ url, contentType, width, height })),
             };
         }
@@ -363,23 +376,31 @@ export function findRecentQuotedMessage(message: NormalizedQqMessage, refIdx: st
 
 /** Compact recent conversation for Reply Judge, excluding the already committed current message. */
 export function getReplyJudgeHistory(message: NormalizedQqMessage, limit = 8):
-    Array<{ speaker: string; content: string }> {
+    Array<{ speaker: string; content: string; timestamp: number }> {
     const items = getMemory(message).messages;
     if (!items.length) return [];
-    let currentIndex = -1;
-    for (let index = items.length - 1; index >= 0; index--) {
-        const item = items[index];
-        if ((message.id && item.id === message.id) ||
-            (message.source.msgIdx && item.refIdx === message.source.msgIdx)) {
-            currentIndex = index;
-            break;
-        }
-    }
+    const currentIndex = findCurrentMessageIndex(items, message);
     const beforeCurrent = currentIndex >= 0 ? items.slice(0, currentIndex) : items.slice(0, -1);
     return beforeCurrent.slice(-Math.max(0, limit)).map((item) => ({
         speaker: item.speaker,
         content: item.content.slice(0, 400),
+        timestamp: item.timestamp,
     }));
+}
+
+function findCurrentMessageIndex(items: readonly HistoryMessage[], message: NormalizedQqMessage): number {
+    for (let index = items.length - 1; index >= 0; index--) {
+        const item = items[index];
+        if ((message.id && item.id === message.id) ||
+            (message.source.msgIdx && item.refIdx === message.source.msgIdx)) return index;
+    }
+    return -1;
+}
+
+export function getCurrentMessageTimestamp(message: NormalizedQqMessage): number {
+    const memory = getMemory(message);
+    const index = findCurrentMessageIndex(memory.messages, message);
+    return memory.messages[index]?.timestamp ?? getMessageTimestamp(message);
 }
 
 /*
@@ -455,6 +476,7 @@ export function getRecentImages(
 export function buildChatInput(
     message: NormalizedQqMessage,
     currentInput: string,
+    timeZone = DEFAULT_BOT_TIME_ZONE,
 ): string {
     const memory =
         getMemory(message);
@@ -468,6 +490,7 @@ export function buildChatInput(
     ) {
         return [
             `当前发言者昵称：${speaker}`,
+            `当前消息时间：[${formatModelTimestamp(getMessageTimestamp(message), timeZone)}]`,
             "当前用户正在对你说：",
             currentInput,
         ].join("\n");
@@ -477,7 +500,7 @@ export function buildChatInput(
         memory.messages
             .map(
                 (item) =>
-                    `${item.speaker}：${item.content}`,
+                    `[${formatModelTimestamp(item.timestamp, timeZone)}] ${item.speaker}：${item.content}`,
             )
             .join("\n");
 
@@ -499,27 +522,28 @@ export function buildChatInput(
 export interface ReplyCycleSnapshot { text: string; refs: Map<string, string> }
 
 /** Each call constructs a new, attempt-local map; no transport ID enters text. */
-export function buildReplyCycleSnapshot(message: NormalizedQqMessage): ReplyCycleSnapshot {
+export function buildReplyCycleSnapshot(message: NormalizedQqMessage, timeZone = DEFAULT_BOT_TIME_ZONE): ReplyCycleSnapshot {
     const memory = getMemory(message);
     if (memory.messages.length === 0) {
-        return { text: `当前发言者昵称：${getSpeakerName(message)}\n当前用户正在对你说：\n${message.displayContent}`, refs: new Map() };
+        return { text: `当前发言者昵称：${getSpeakerName(message)}\n当前消息时间：[${formatModelTimestamp(getMessageTimestamp(message), timeZone)}]\n当前用户正在对你说：\n${message.displayContent}`, refs: new Map() };
     }
     const refs = new Map<string, string>();
     const byMessageId = new Map<string, string>();
     const lines: string[] = [];
-    const addLine = (speaker: string, content: string, id?: string): string | undefined => {
+    const addLine = (speaker: string, content: string, timestamp: number | string | undefined, id?: string): string | undefined => {
         const ref = id ? `m${refs.size + 1}` : undefined;
         if (ref && id) { refs.set(ref, id); byMessageId.set(id, ref); }
-        lines.push(`${ref ? `[${ref}] ` : ""}${speaker}：${content}`);
+        const time = timestamp === undefined ? "[时间未知]" : `[${formatModelTimestamp(timestamp, timeZone)}]`;
+        lines.push(`${ref ? `[${ref}]` : ""}${time} ${speaker}：${content}`);
         return ref;
     };
     for (const item of memory.messages) {
         const quote = item.quote;
         let quotedRef = quote?.realMessageId ? byMessageId.get(quote.realMessageId) : undefined;
         if (quote?.content && !quotedRef) {
-            quotedRef = addLine(quote.authorName ?? "引用消息", cleanMessage(quote.content), quote.realMessageId);
+            quotedRef = addLine(quote.authorName ?? "引用消息", cleanMessage(quote.content), quote.timestamp, quote.realMessageId);
         }
-        addLine(item.speaker, item.content, item.id);
+        addLine(item.speaker, item.content, item.timestamp, item.id);
         if (quote) lines.push(quotedRef ? `↳ 引用 ${quotedRef}` : quote.content
             ? `↳ 引用 ${quote.authorName ?? "引用消息"}：${cleanMessage(quote.content)}`
             : "↳ [引用消息内容不可用]");

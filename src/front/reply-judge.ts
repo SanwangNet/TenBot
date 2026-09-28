@@ -4,10 +4,16 @@ export interface ReplyJudgeRequest {
     readonly conversation: readonly {
         readonly speaker: string;
         readonly content: string;
+        readonly timestamp: string;
     }[];
     readonly currentMessage: {
         readonly speaker: string;
         readonly content: string;
+        readonly timestamp: string;
+    };
+    readonly temporalContext: {
+        readonly currentTime: string;
+        readonly timeZone: string;
     };
     readonly signals: {
         readonly nameMention: boolean;

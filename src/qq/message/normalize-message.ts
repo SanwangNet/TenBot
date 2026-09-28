@@ -7,6 +7,7 @@ export interface QuotedMessage {
     authorName?: string;
     content?: string;
     realMessageId?: string;
+    timestamp?: number | string;
 }
 
 export interface QuotedImage {
@@ -181,6 +182,7 @@ export async function normalizeQqMessage(
             authorName: recent?.authorName ?? resolved?.entry?.senderName,
             content,
             realMessageId: recent?.id ?? (resolved?.entry?.messageId || undefined),
+            timestamp: recent?.timestamp ?? resolved?.entry?.timestamp,
         };
         normalized.quotedBot = recent?.isBotReply === true;
         if (content) logger.debug("[Quote] resolved inbound reference");

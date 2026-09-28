@@ -4,6 +4,7 @@ import type {
 } from "@tencent-connect/qqbot-nodejs";
 
 import { buildAiInput, buildReplyPolicy } from "../../ai/input-builder.js";
+import { buildTemporalContext, DEFAULT_BOT_TIME_ZONE } from "../../ai/time-context.js";
 import { buildReplyJudgeRequest } from "../../front/build-reply-judge-request.js";
 import { decideFrontPolicy } from "../../front/front-policy.js";
 import type { ReplyJudge, ReplyJudgeDecision, ReplyJudgeRequest } from "../../front/reply-judge.js";
@@ -168,6 +169,9 @@ export function registerMessageHandler(
                     const judgeRequest = buildReplyJudgeRequest(candidate.request.message, {
                         ...candidate.signals,
                         turnWaitExpired: recheckExpired,
+                    }, {
+                        timeZone: coordinatorDependencies.getBotTimeZone?.() ?? DEFAULT_BOT_TIME_ZONE,
+                        now: coordinatorDependencies.now?.() ?? new Date(),
                     });
                     requestSequence = ++judgeRequestSequence;
                     logger.debug(`[ReplyJudge] start request=${requestSequence} recheck=${recheckExpired}`);
@@ -418,7 +422,6 @@ export function registerMessageHandler(
                 let memeFilenames: string[] = [];
                 try { memeFilenames = await memeLibrary.list(); }
                 catch { logger.error("[Meme] unable to list local meme files"); }
-                const snapshot = buildReplyCycleSnapshot(attemptMessage);
                 const knownMembersContext = trigger.isGroup
                     ? await buildKnownMembersContext(attemptMessage)
                     : "";
@@ -447,8 +450,11 @@ export function registerMessageHandler(
                     });
                 }
                 const replyPolicy = buildReplyPolicy(context.allowNoReply);
+                const timeZone = coordinatorDependencies.getBotTimeZone?.() ?? DEFAULT_BOT_TIME_ZONE;
+                const now = coordinatorDependencies.now?.() ?? new Date();
+                const snapshot = buildReplyCycleSnapshot(attemptMessage, timeZone);
                 const aiInput = [
-                    buildAiInput(snapshot.text, knownMembersContext, replyPolicy, memeContext),
+                    buildAiInput(snapshot.text, knownMembersContext, replyPolicy, memeContext, buildTemporalContext(now, timeZone)),
                     buildAvailableMemeContext(memeFilenames),
                 ].filter(Boolean).join("\n");
                 const frontDecision = [
@@ -472,6 +478,7 @@ export function registerMessageHandler(
                     imageUrls: useVision ? recentImageUrls : [],
                     refs: snapshot.refs,
                     memeSnapshot,
+                    timeZone,
                 };
             },
         };

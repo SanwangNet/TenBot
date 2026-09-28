@@ -5,6 +5,7 @@ export type ModelProviderId = "gpt" | "deepseek";
 
 export interface AppConfig {
     frontMode: FrontMode;
+    botTimeZone: string;
     botAdminIds: readonly string[];
     memeSendMaxEdge: number | null;
     qq: {

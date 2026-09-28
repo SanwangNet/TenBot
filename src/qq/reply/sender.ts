@@ -15,7 +15,7 @@ export async function sendAiReply(
     rendered: RenderedQQReply,
     quoteMessageId: string | undefined,
     beforeSend: () => boolean,
-): Promise<{ sent: boolean; id?: string; refIdx?: string }> {
+): Promise<{ sent: boolean; id?: string; refIdx?: string; timestamp?: number | string }> {
 
     // This check and the QQ call have no await between them.
     if (!beforeSend()) return { sent: false };
@@ -30,7 +30,7 @@ export async function sendAiReply(
     const response = payload ? await bot.send(payload) : await bot.sendMarkdown(message.replyTarget, rendered.sendText);
     logger.all("[QQ] outbound response", response);
 
-    return { sent: true, id: response?.id, refIdx: response?.ext_info?.ref_idx };
+    return { sent: true, id: response?.id, refIdx: response?.ext_info?.ref_idx, timestamp: response?.timestamp };
 }
 
 /** Send a selected library image as its own QQ message after all text replies. */
@@ -39,7 +39,7 @@ export async function sendAiMeme(
     message: NormalizedQqMessage,
     localPath: string,
     beforeSend: () => boolean,
-): Promise<{ sent: boolean; id?: string; refIdx?: string }> {
+): Promise<{ sent: boolean; id?: string; refIdx?: string; timestamp?: number | string }> {
     if (!beforeSend()) return { sent: false };
     logger.all("[QQ] outbound image request", { target: message.replyTarget, localPath });
     const response = await bot.sendImage(message.replyTarget, { localPath });
@@ -48,6 +48,7 @@ export async function sendAiMeme(
         sent: true,
         id: response.message?.id,
         refIdx: response.message?.ext_info?.ref_idx,
+        timestamp: response.message?.timestamp,
     };
 }
 
@@ -56,7 +57,7 @@ export async function sendTimeoutReply(
     message: NormalizedQqMessage,
     content: string,
     quoteTrigger: boolean,
-): Promise<{ id?: string; refIdx?: string }> {
+): Promise<{ id?: string; refIdx?: string; timestamp?: number | string }> {
     const triggerMessageId = getTriggerMessageId(message);
     logger.all("[QQ] timeout outbound request", { target: message.replyTarget, content, quoteTrigger, triggerMessageId });
     const response = quoteTrigger && triggerMessageId ? await bot.send({
@@ -66,5 +67,5 @@ export async function sendTimeoutReply(
         messageReference: { message_id: triggerMessageId },
     }) : await bot.sendText(message.replyTarget, content);
     logger.all("[QQ] timeout outbound response", response);
-    return { id: response?.id, refIdx: response?.ext_info?.ref_idx };
+    return { id: response?.id, refIdx: response?.ext_info?.ref_idx, timestamp: response?.timestamp };
 }

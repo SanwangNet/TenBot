@@ -5,6 +5,7 @@ import type { ModelPlugin } from "../../ai/model-plugin.js";
 import { captureAttemptRuntimeSnapshot, type AttemptRuntimeSnapshot } from "../../ai/attempt-snapshot.js";
 import { ToolProtocolLeakError } from "../../ai/tool-protocol.js";
 import type { AiResult } from "../../ai/reply-result.js";
+import { DEFAULT_BOT_TIME_ZONE, formatModelTimestamp } from "../../ai/time-context.js";
 import type { MemeRuntimeSnapshot } from "../../skills/meme/store.js";
 import { memeLibrary, type MemeLibraryService } from "../../skills/meme/library-service.js";
 import { normalizeQQReplyAction, type QuotePreference } from "../../skills/qq-reply/skill.js";
@@ -22,7 +23,7 @@ import {
     BOT_LOOP_GUARD_NOTICE,
     type AutomatedPeerLoopGuard,
 } from "../conversation/automated-peer.js";
-import { getConversationKey, getMessageRevision, rememberBotReply, removeMessageFromContext } from "../conversation/recent-context.js";
+import { getConversationKey, getCurrentMessageTimestamp, getMessageRevision, rememberBotReply, removeMessageFromContext } from "../conversation/recent-context.js";
 import { getConversationGeneration, markConversationActive, stopConversation } from "../conversation/engagement.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
 import type { TriggerKind } from "../message/trigger.js";
@@ -48,7 +49,7 @@ interface TrailingUpdate {
     frontMode?: FrontMode;
     admitted?: boolean;
 }
-export interface AttemptInput { aiInput: string; imageUrls: string[]; refs?: Map<string, string>; memeSnapshot?: MemeRuntimeSnapshot }
+export interface AttemptInput { aiInput: string; imageUrls: string[]; refs?: Map<string, string>; memeSnapshot?: MemeRuntimeSnapshot; timeZone?: string }
 export interface AttemptBuildContext {
     snapshotRevision: number;
     allowNoReply: boolean;
@@ -94,6 +95,9 @@ export interface ReplyCoordinatorDependencies {
     botLoopGuard?: AutomatedPeerLoopGuard;
     /** Injectable snapshot source for deterministic offline runtime tests. */
     captureAttemptSnapshot?: () => AttemptRuntimeSnapshot;
+    /** Model-input clock and timezone providers, evaluated for each input snapshot. */
+    now?: () => Date;
+    getBotTimeZone?: () => string;
     memeLibrary?: MemeLibraryService;
     getMemeSendMaxEdge?: () => number | null;
     memeSendImagePreparer?: MemeSendImagePreparer;
@@ -354,12 +358,13 @@ function admissionOf(request: ReplyRequest, wakeLevel: WakeLevel): WakeAdmission
         ? request.wakeReason
         : "reply-judge";
 }
-function semanticAnchorText(context: AttemptBuildContext, refs?: Map<string, string>): string {
+function semanticAnchorText(context: AttemptBuildContext, refs: Map<string, string> | undefined, timeZone: string): string {
     const byId = new Map<string, string>();
     for (const [ref, id] of refs ?? []) byId.set(id, ref);
     const describe = ({ message }: ReplyCycleAnchor): string => {
         const ref = message.id ? byId.get(message.id) : undefined;
-        return `${ref ? `[${ref}] ` : ""}${message.authorName ?? "群友"}：${message.displayContent}`;
+        const timestamp = formatModelTimestamp(getCurrentMessageTimestamp(message), timeZone);
+        return `${ref ? `[${ref}]` : ""}[${timestamp}] ${message.authorName ?? "群友"}：${message.displayContent}`;
     };
     const origin = context.originAnchor;
     const effective = context.effectiveAnchor;
@@ -939,7 +944,11 @@ async function executeCycle(cycle: Cycle): Promise<void> {
                     : { aiInput: request.aiInput, imageUrls: request.imageUrls };
                 if (!isGroupReplyAllowed(request)) return;
                 if (request.isGroup) input = { ...input,
-                    aiInput: input.aiInput + "\n" + semanticAnchorText(context, input.refs) };
+                    aiInput: input.aiInput + "\n" + semanticAnchorText(
+                        context,
+                        input.refs,
+                        input.timeZone ?? cycle.deps.getBotTimeZone?.() ?? DEFAULT_BOT_TIME_ZONE,
+                    ) };
                 if (cycle.cancelled) return;
                 if (cycle.latestRequest === request && getMessageRevision(request.message) === revision) break;
             }

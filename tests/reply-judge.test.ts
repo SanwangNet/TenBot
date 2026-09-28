@@ -17,6 +17,7 @@ import { registerMessageHandler, type ReplyJudgeTurnWaitScheduler } from "../src
 import { MemoryMemberRepository } from "../src/members/memory-repository.js";
 import { configureMemberRepository } from "../src/qq/conversation/known-members.js";
 import { getMessageRevision, recordIncomingMessageRevision, rememberIncomingMessage } from "../src/qq/conversation/recent-context.js";
+import type { ReplyCoordinatorDependencies } from "../src/qq/reply/coordinator.js";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 import type { QQBot, QQBotInboundMessage } from "@tencent-connect/qqbot-nodejs";
 import type { AutomatedPeerLoopGuard } from "../src/qq/conversation/automated-peer.js";
@@ -105,6 +106,7 @@ function register(
     fallbackToMainOnInvalidOutput: () => boolean = () => false,
     getTurnWaitMs: () => number = () => 20_000,
     turnWaitScheduler?: ReplyJudgeTurnWaitScheduler,
+    modelInputDependencies: Pick<ReplyCoordinatorDependencies, "now" | "getBotTimeZone" | "timeoutMs"> = {},
 ): FakeBotState["handler"] {
     const guard = {
         isAutomatedPeer: () => false,
@@ -116,6 +118,7 @@ function register(
         botLoopGuard: guard,
         executeAi,
         multiMessageDelayMs: 0,
+        ...modelInputDependencies,
     }, typeof frontMode === "function" ? frontMode : () => frontMode, fallbackToMainOnInvalidOutput, getTurnWaitMs, turnWaitScheduler);
     return state.handler;
 }
@@ -327,11 +330,55 @@ test("Judge false stays in Recent Context; Judge true becomes soft and allows NO
     assert.equal(state.sends.length, 0);
 });
 
+test("each timed-out Main Model Attempt gets a fresh temporal input snapshot", async () => {
+    configureMemberRepository(new MemoryMemberRepository());
+    const state = fakeBot();
+    const inputs: string[] = [];
+    const times = [new Date("2026-09-28T09:30:01.000Z"), new Date("2026-09-28T09:30:08.000Z")];
+    let clockReads = 0;
+    let modelCalls = 0;
+    setConsoleLogOutputEnabled(false);
+    const handler = register(state, { async judge() { return { decision: "reply" }; } }, async (input, options) => {
+        inputs.push(input);
+        modelCalls++;
+        if (modelCalls === 1) {
+            return new Promise<AiResult>((_resolve, reject) => {
+                const abort = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+                if (options.signal.aborted) abort();
+                else options.signal.addEventListener("abort", abort, { once: true });
+            });
+        }
+        return reply("second attempt");
+    }, "legacy", () => false, () => 20_000, undefined, {
+        timeoutMs: 25,
+        getBotTimeZone: () => "Asia/Shanghai",
+        now: () => times[clockReads++]!,
+    });
+    try {
+        await handler({}, fakeMessage(randomUUID(), "fresh-time-" + randomUUID(), "What time is it?", true));
+        await waitFor(() => modelCalls === 2 && state.sends.length > 0);
+        assert.equal(clockReads, 2);
+        assert.match(inputs[0] ?? "", /current_time=2026-09-28 17:30:01/);
+        assert.match(inputs[1] ?? "", /current_time=2026-09-28 17:30:08/);
+        assert.match(inputs[0] ?? "", /timezone=Asia\/Shanghai/);
+        assert.match(inputs[1] ?? "", /timezone=Asia\/Shanghai/);
+    } finally {
+        state.cleanup?.();
+        setConsoleLogOutputEnabled(true);
+    }
+});
+
 test("Judge wait stays silent then timeout recheck carries trusted metadata and soft-admits reply", async () => {
     configureMemberRepository(new MemoryMemberRepository());
     const state = fakeBot();
     const scheduler = new FakeTurnWaitScheduler();
     const requests: ReplyJudgeRequest[] = [];
+    const attemptTimes = [
+        new Date("2026-09-28T09:31:42.000Z"),
+        new Date("2026-09-28T09:32:02.000Z"),
+        new Date("2026-09-28T09:32:03.000Z"),
+    ];
+    let timeIndex = 0;
     let judgeCalls = 0;
     let mainCalls = 0;
     const handler = register(state, {
@@ -344,7 +391,10 @@ test("Judge wait stays silent then timeout recheck carries trusted metadata and 
         assert.match(input, /wake_level=soft/);
         assert.match(input, /admission=reply-judge/);
         return { kind: "no_reply" };
-    }, "judge", () => false, () => 20_000, scheduler);
+    }, "judge", () => false, () => 20_000, scheduler, {
+        getBotTimeZone: () => "Asia/Shanghai",
+        now: () => attemptTimes[timeIndex++]!,
+    });
 
     const group = randomUUID();
     await handler({}, fakeMessage(group, "wait-start-" + randomUUID(), "我主要想说的是"));
@@ -353,6 +403,7 @@ test("Judge wait stays silent then timeout recheck carries trusted metadata and 
     assert.equal(scheduler.pendingCount, 1);
     assert.deepEqual(scheduler.delays, [20_000]);
     assert.equal(requests[0]?.signals.turnWaitExpired, false);
+    assert.equal(requests[0]?.temporalContext.currentTime, "2026-09-28 17:31:42");
 
     scheduler.advanceBy(19_999);
     assert.equal(judgeCalls, 1);
@@ -361,6 +412,7 @@ test("Judge wait stays silent then timeout recheck carries trusted metadata and 
     await waitFor(() => mainCalls === 1);
     assert.equal(requests[1]?.signals.turnWaitExpired, true);
     assert.match(requests[1]?.currentMessage.content ?? "", /我主要想说的是/);
+    assert.equal(requests[1]?.temporalContext.currentTime, "2026-09-28 17:32:02");
     assert.equal(scheduler.pendingCount, 0);
     state.cleanup?.();
 });
@@ -832,7 +884,7 @@ test("Reply Judge prompt reload swaps immutable snapshots and preserves the last
     }
 });
 
-function normalized(groupId: string, id: string, content: string): NormalizedQqMessage {
+function normalized(groupId: string, id: string, content: string, timestamp = "2026-09-28T09:00:00.000Z"): NormalizedQqMessage {
     return {
         source: { msgIdx: id } as never,
         id,
@@ -840,6 +892,7 @@ function normalized(groupId: string, id: string, content: string): NormalizedQqM
         eventType: "GROUP_MESSAGE_CREATE",
         content,
         displayContent: content,
+        timestamp,
         groupId,
         author: null,
         authorId: "member",
@@ -854,10 +907,10 @@ function normalized(groupId: string, id: string, content: string): NormalizedQqM
 
 test("Judge request keeps committed current message separate from recent conversation", () => {
     const group = randomUUID();
-    const previous = normalized(group, "previous", "今天真冷");
+    const previous = normalized(group, "previous", "今天真冷", "2026-09-28T09:00:00.000Z");
     recordIncomingMessageRevision(previous);
     rememberIncomingMessage(previous, previous.displayContent);
-    const current = normalized(group, "current", "你怎么看");
+    const current = normalized(group, "current", "你怎么看", "2026-09-28T09:05:00.000Z");
     recordIncomingMessageRevision(current);
     rememberIncomingMessage(current, current.displayContent);
     const request = buildReplyJudgeRequest(current, {
@@ -865,9 +918,10 @@ test("Judge request keeps committed current message separate from recent convers
         conversationActive: true,
         quotedBot: true,
         turnWaitExpired: false,
-    });
-    assert.deepEqual(request.conversation, [{ speaker: "群友", content: "今天真冷" }]);
-    assert.deepEqual(request.currentMessage, { speaker: "群友", content: "你怎么看" });
+    }, { timeZone: "Asia/Shanghai", now: new Date("2026-09-28T09:31:42.000Z") });
+    assert.deepEqual(request.conversation, [{ speaker: "群友", content: "今天真冷", timestamp: "2026-09-28 17:00:00" }]);
+    assert.deepEqual(request.currentMessage, { speaker: "群友", content: "你怎么看", timestamp: "2026-09-28 17:05:00" });
+    assert.deepEqual(request.temporalContext, { currentTime: "2026-09-28 17:31:42", timeZone: "Asia/Shanghai" });
     assert.deepEqual(request.signals, { nameMention: false, conversationActive: true, quotedBot: true, turnWaitExpired: false });
 });
 
@@ -929,7 +983,8 @@ test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token c
         }));
         const decision = await judge.judge({
             conversation: [],
-            currentMessage: { speaker: "member", content: "test" },
+            currentMessage: { speaker: "member", content: "test", timestamp: "2026-09-28 17:31:42" },
+            temporalContext: { currentTime: "2026-09-28 17:31:42", timeZone: "Asia/Shanghai" },
             signals: { nameMention: false, conversationActive: false, quotedBot: false, turnWaitExpired: false },
         });
 
@@ -938,6 +993,9 @@ test("OpenAI-compatible Reply Judge requests non-thinking mode with a 32-token c
         assert.equal(requestBody?.enable_thinking, false);
         assert.equal(requestBody?.max_tokens, 32);
         assert.equal(requestBody?.temperature, 0);
+        const messages = requestBody?.messages as Array<{ role: string; content: string }>;
+        const userInput = JSON.parse(messages.find((item) => item.role === "user")?.content ?? "{}") as ReplyJudgeRequest;
+        assert.deepEqual(userInput.temporalContext, { currentTime: "2026-09-28 17:31:42", timeZone: "Asia/Shanghai" });
         const all = diagnostics.filter((entry) => entry.level === "all").map((entry) => entry.text).join("\n");
         assert.match(all, /\[ReplyJudge\] request/);
         assert.match(all, /\[ReplyJudge\] HTTP response/);

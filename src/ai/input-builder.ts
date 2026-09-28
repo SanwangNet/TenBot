@@ -24,8 +24,10 @@ export function buildAiInput(
     knownMembersContext: string,
     replyPolicy: string,
     memeContext = "",
+    temporalContext = "",
 ): string {
     return [
+        temporalContext,
         chatInput,
         knownMembersContext
             ? `\n${knownMembersContext}`

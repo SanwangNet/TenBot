@@ -3,12 +3,22 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import OpenAI from "openai";
+import { parseLogLevel } from "../src/shared/logger.js";
+import { buildTemporalContext, validateBotTimeZone } from "../src/ai/time-context.js";
 import { mergeMemeCandidatesWithinLimit, serializeMemes, writeMemeJson } from "./meme-update-core.js";
 import { MemeResponseError, parseMemeResearchResponse, responseDiagnostics } from "./meme-response.js";
 import { validateMemeFile } from "../src/skills/meme/validation.js";
 
 const dataUrl = new URL("../src/skills/meme/data/memes.json", import.meta.url);
 const MODEL = "gpt-6-sol";
+const consoleLogLevel = parseLogLevel(process.env.BOT_LOG_LEVEL);
+const consoleLevels = { all: 0, debug: 1, info: 2, warn: 3, error: 4 } as const;
+
+function writeConsole(level: "debug" | "info" | "error", ...values: unknown[]): void {
+    if (consoleLevels[level] < consoleLevels[consoleLogLevel]) return;
+    if (level === "error") console.error(...values);
+    else console.log(...values);
+}
 
 export function parseMemeUpdateArgs(args: string[]): { limit: number; topic?: string; dryRun: boolean } {
     let limit = 8;
@@ -70,14 +80,16 @@ async function main(): Promise<void> {
     const apiKey = process.env.CODEX_API_KEY;
     const baseURL = process.env.CODEX_BASE_URL;
     if (!apiKey || !baseURL) throw new Error("缺少 CODEX_API_KEY 或 CODEX_BASE_URL");
+    const timeZone = validateBotTimeZone(process.env.BOT_TIME_ZONE);
     const existing = validateMemeFile(JSON.parse(await readFile(dataUrl, "utf8")));
-    console.log(`[Meme] researching ${topic ? JSON.stringify(topic) : "current Chinese memes"}...`);
+    writeConsole("info", `[Meme] researching ${topic ? JSON.stringify(topic) : "current Chinese memes"}...`);
     const client = new OpenAI({ apiKey, baseURL });
+    const temporalContext = buildTemporalContext(new Date(), timeZone);
     // The installed SDK assumes a parsed object before returning; asResponse lets us normalize
     // third-party gateways that JSON-encode the whole Response as a string.
     const httpResponse = await client.responses.create({
         model: MODEL,
-        instructions: buildMemeResearchInstructions(limit, topic),
+        instructions: [buildMemeResearchInstructions(limit, topic), temporalContext].join("\n\n"),
         input: topic ? `深入研究这个梗：${topic}` : `寻找近期值得认识的中文网络梗，最多 ${limit} 个。`,
         tools: [{ type: "web_search" }],
         tool_choice: "required",
@@ -91,29 +103,27 @@ async function main(): Promise<void> {
     } catch {
         throw new MemeResponseError("invalid Responses payload: HTTP JSON parse failed");
     }
-    if (process.env.BOT_LOG_LEVEL === "debug") {
-        if (typeof rawResponse === "string") console.log("[Meme:debug] response normalized from string");
-        console.log("[Meme:debug] " + responseDiagnostics(rawResponse));
-    }
+    if (typeof rawResponse === "string") writeConsole("debug", "[Meme:debug] response normalized from string");
+    writeConsole("debug", "[Meme:debug] " + responseDiagnostics(rawResponse));
     const { memes: candidates } = parseMemeResearchResponse(rawResponse);
-    console.log("[Meme] web research completed");
-    console.log(`[Meme] received ${candidates.length} candidates`);
+    writeConsole("info", "[Meme] web research completed");
+    writeConsole("info", `[Meme] received ${candidates.length} candidates`);
     const candidateLimit = researchCandidateLimit(limit, topic);
     const limited = mergeMemeCandidatesWithinLimit(existing, candidates, candidateLimit);
-    for (const reason of limited.prepared.skipped) console.log(`[Meme] skipped ${reason}`);
+    for (const reason of limited.prepared.skipped) writeConsole("info", `[Meme] skipped ${reason}`);
     if (limited.prepared.candidates.length > candidateLimit) {
-        console.log(`[Meme] candidate limit exceeded: valid unique=${limited.prepared.candidates.length} limit=${candidateLimit}, keeping first ${candidateLimit}`);
+        writeConsole("info", `[Meme] candidate limit exceeded: valid unique=${limited.prepared.candidates.length} limit=${candidateLimit}, keeping first ${candidateLimit}`);
     }
     const result = limited.merge;
-    for (const name of result.added) console.log(`[Meme] added ${name}`);
-    for (const name of result.updated) console.log(`[Meme] updated ${name}`);
-    for (const reason of result.skipped) console.log(`[Meme] skipped ${reason}`);
-    console.log(`[Meme] added ${result.added.length}, updated ${result.updated.length}`);
+    for (const name of result.added) writeConsole("info", `[Meme] added ${name}`);
+    for (const name of result.updated) writeConsole("info", `[Meme] updated ${name}`);
+    for (const reason of result.skipped) writeConsole("info", `[Meme] skipped ${reason}`);
+    writeConsole("info", `[Meme] added ${result.added.length}, updated ${result.updated.length}`);
     const output = serializeMemes(result.entries);
     const current = await readFile(dataUrl, "utf8");
     const wrote = await writeMemeJson(output, dryRun, current,
         (content) => writeFile(dataUrl, content, "utf8"));
-    console.log(dryRun
+    writeConsole("info", dryRun
         ? `[Meme] dry run complete; would save src/skills/meme/data/memes.json (${result.entries.length} entries)`
         : wrote
           ? `[Meme] saved src/skills/meme/data/memes.json (${result.entries.length} entries)`
@@ -135,7 +145,7 @@ export function formatMemeUpdateError(error: unknown): string {
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
     main().catch((error: unknown) => {
-        console.error("[Meme] update failed:", formatMemeUpdateError(error));
+        writeConsole("error", "[Meme] update failed:", formatMemeUpdateError(error));
         process.exitCode = 1;
     });
 }

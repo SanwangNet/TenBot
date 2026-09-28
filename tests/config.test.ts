@@ -132,9 +132,20 @@ test("BOT_LOG_LEVEL parsing is console-only and never enters AppConfig or Public
     assert.deepEqual(["all", "debug", "info", "warn", "error"].map((level) => parseLogLevel(level)), ["all", "debug", "info", "warn", "error"]);
     assert.equal(parseLogLevel(" DEBUG "), "debug");
     assert.equal(parseLogLevel("invalid"), "info");
-    const appConfig = loadAppConfig({ BOT_LOG_LEVEL: "not-a-level" });
+    const appConfig = loadAppConfig({ BOT_LOG_LEVEL: "not-a-level", BOT_TIME_ZONE: "Asia/Tokyo" });
+    assert.equal(appConfig.botTimeZone, "Asia/Tokyo");
     assert.equal("logging" in appConfig, false);
     assert.equal("logLevel" in createConfigStore({ envPath: join(tmpdir(), "missing-log-level.env"), environment: { BOT_LOG_LEVEL: "all" } }).getPublicConfig(), false);
+});
+
+test("BOT_TIME_ZONE defaults to Asia/Shanghai and accepts Intl-supported IANA zones", () => {
+    assert.equal(loadAppConfig({}).botTimeZone, "Asia/Shanghai");
+    for (const zone of ["Asia/Shanghai", "Asia/Tokyo", "UTC", "America/New_York"]) {
+        assert.equal(loadAppConfig({ BOT_TIME_ZONE: zone }).botTimeZone, zone);
+    }
+    for (const zone of ["UTC+8", "GMT+8", "not/a-timezone"]) {
+        assert.throws(() => loadAppConfig({ BOT_TIME_ZONE: zone }), /BOT_TIME_ZONE/);
+    }
 });
 
 test("meme send maximum edge defaults to 160, supports original size, and hot config patches validate bounds", async () => {
@@ -199,6 +210,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
     assert.equal(publicConfig.deepseek.configured, true);
     assert.equal(publicConfig.botLoopGuard.automatedPeerCount, 2);
     assert.equal("logLevel" in publicConfig, false);
+    assert.equal("botTimeZone" in publicConfig, false);
     assert.deepEqual(publicConfig.replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000, provider: "openai-compatible" });
     assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example|4D53C611|botAdminIds/);
 });
@@ -286,6 +298,7 @@ test("ConfigStore rejects unsafe model names and invalid guard, reasoning, verbo
     assert.throws(() => validatePublicConfigPatch({ field: "botLoopGuard.maxCycles", value: 1.5 }), />=|大于等于/);
     assert.throws(() => validatePublicConfigPatch({ field: "gpt.reasoningEffort", value: "turbo" as never }), /推理强度/);
     assert.throws(() => validatePublicConfigPatch({ field: "gpt.verbosity", value: "verbose" as never }), /输出详细度/);
+    assert.equal(parsePublicConfigPatch({ field: "botTimeZone", value: "Asia/Tokyo" }), undefined);
     assert.equal(parsePublicConfigPatch({ field: "logLevel", value: "debug" }), undefined);
 });
 
