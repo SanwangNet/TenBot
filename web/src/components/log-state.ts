@@ -4,7 +4,36 @@ export const MAX_WEB_LOG_ENTRIES = 5_000;
 export const MAX_RENDERED_LOG_ENTRIES = 500;
 export const LOG_LEVEL_FILTER_STORAGE_KEY = "tenbot.logs.level-filter";
 export type LogLevelFilter = "all" | "all-level" | Exclude<LogEntry["level"], "all">;
+
 const LOG_LEVEL_FILTERS: readonly LogLevelFilter[] = ["all", "all-level", "debug", "info", "warn", "error"];
+
+interface LogLevelFilterStorage {
+    getItem?(key: string): string | null;
+    setItem?(key: string, value: string): void;
+}
+
+function browserLogStorage(): LogLevelFilterStorage | undefined {
+    try { return typeof window === "undefined" ? undefined : window.localStorage; }
+    catch { return undefined; }
+}
+
+export function isLogLevelFilter(value: unknown): value is LogLevelFilter {
+    return typeof value === "string" && LOG_LEVEL_FILTERS.includes(value as LogLevelFilter);
+}
+
+export function loadLogLevelFilter(storage = browserLogStorage()): LogLevelFilter {
+    try {
+        const value = storage?.getItem?.(LOG_LEVEL_FILTER_STORAGE_KEY);
+        return isLogLevelFilter(value) ? value : "info";
+    } catch {
+        return "info";
+    }
+}
+
+export function saveLogLevelFilter(value: LogLevelFilter, storage = browserLogStorage()): void {
+    try { storage?.setItem?.(LOG_LEVEL_FILTER_STORAGE_KEY, value); }
+    catch { /* Log filtering remains usable when browser storage is unavailable. */ }
+}
 
 export interface LogViewState {
     /** Bounded canonical rows are mutated in place; rowsRevision drives list/filter recomputation. */
@@ -17,16 +46,11 @@ export interface LogViewState {
 export const initialLogViewState: LogViewState = { entries: [], rowsRevision: 0, follow: true, unseenCount: 0 };
 
 export function readStoredLogLevelFilter(storage: Pick<Storage, "getItem"> | undefined): LogLevelFilter {
-    try {
-        const stored = storage?.getItem(LOG_LEVEL_FILTER_STORAGE_KEY);
-        return LOG_LEVEL_FILTERS.includes(stored as LogLevelFilter) ? stored as LogLevelFilter : "info";
-    } catch {
-        return "info";
-    }
+    return loadLogLevelFilter(storage);
 }
 
 export function storeLogLevelFilter(level: LogLevelFilter, storage: Pick<Storage, "setItem"> | undefined): void {
-    try { storage?.setItem(LOG_LEVEL_FILTER_STORAGE_KEY, level); } catch { /* Storage can be disabled by the browser. */ }
+    saveLogLevelFilter(level, storage);
 }
 
 export type LogViewAction =

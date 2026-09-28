@@ -116,16 +116,30 @@ test("plain logger mode continues to write to console", () => {
     assert.match(output, /plain sink check/);
 });
 
-test("logger listeners receive debug events independently of Console output", () => {
+test("every logger level reaches subscribers without a global threshold", () => {
+    const previousConsole = console.error;
     const entries: string[] = [];
     const unsubscribe = subscribeLogs((entry) => entries.push(entry.text));
-    setConsoleLogOutputEnabled(false);
+    console.error = () => undefined;
+    const previousLog = console.log;
+    const previousWarn = console.warn;
+    console.log = () => undefined;
+    console.warn = () => undefined;
     try {
-        logger.debug("listener receives debug independent of Console");
-        assert.deepEqual(entries, ["listener receives debug independent of Console"]);
+        logger.all("all without threshold");
+        logger.debug("debug without threshold");
+        logger.info("info without threshold");
+        logger.warn("warn without threshold");
+        logger.error("error without threshold");
+        assert.deepEqual(entries, [
+            "all without threshold", "debug without threshold", "info without threshold",
+            "warn without threshold", "error without threshold",
+        ]);
     } finally {
         unsubscribe();
-        setConsoleLogOutputEnabled(true);
+        console.error = previousConsole;
+        console.log = previousLog;
+        console.warn = previousWarn;
     }
 });
 

@@ -6,6 +6,7 @@ import test from "node:test";
 import { createConfigStore } from "../src/config/config-store.js";
 import { loadAppConfig, parseBotAdminIds, parsePublicConfigPatch, validatePublicConfigPatch } from "../src/config/config-validation.js";
 import { parseLogLevel } from "../src/shared/logger.js";
+import { loadGitHubOAuthConfig } from "../src/auth/web-auth-service.js";
 
 test("BOT_ADMIN_IDS accepts opaque IDs, normalizes case, and rejects malformed entries", () => {
     assert.deepEqual(parseBotAdminIds(" 4d53c611 &#x20;," + "A".repeat(64)), ["4D53C611", "A".repeat(64)]);
@@ -33,10 +34,11 @@ test("ConfigStore patches only managed keys and preserves secrets, unknown field
         "AI_PROVIDER=gpt",
         "",
         "# comment",
-        "BOT_LOG_LEVEL=info",
+        "BOT_LOG_LEVEL=invalid-legacy-value",
         "",
     ].join("\r\n"), async (envPath) => {
         const store = createConfigStore({ envPath, environment: {} });
+        assert.doesNotThrow(() => store.getAppConfig(), "an old invalid log level in .env is ignored");
         const result = await store.updatePublicConfig({ field: "aiProvider", value: "deepseek" });
         assert.equal(result.ok, true);
         const saved = await readFile(envPath, "utf8");
@@ -44,7 +46,7 @@ test("ConfigStore patches only managed keys and preserves secrets, unknown field
         assert.match(saved, /CODEX_API_KEY=SECRET\r\n/);
         assert.match(saved, /UNKNOWN_OPTION=abc\r\n/);
         assert.match(saved, /AI_PROVIDER=deepseek\r\n/);
-        assert.match(saved, /# comment\r\nBOT_LOG_LEVEL=info\r\n/);
+        assert.match(saved, /# comment\r\nBOT_LOG_LEVEL=invalid-legacy-value\r\n/);
         assert.doesNotMatch(saved, /CODEX_REASONING_EFFORT/);
     });
 });
@@ -132,10 +134,11 @@ test("BOT_LOG_LEVEL parsing is console-only and never enters AppConfig or Public
     assert.deepEqual(["all", "debug", "info", "warn", "error"].map((level) => parseLogLevel(level)), ["all", "debug", "info", "warn", "error"]);
     assert.equal(parseLogLevel(" DEBUG "), "debug");
     assert.equal(parseLogLevel("invalid"), "info");
-    const appConfig = loadAppConfig({ BOT_LOG_LEVEL: "not-a-level", BOT_TIME_ZONE: "Asia/Tokyo" });
-    assert.equal(appConfig.botTimeZone, "Asia/Tokyo");
+    const appConfig = loadAppConfig({ BOT_LOG_LEVEL: "not-a-level" });
     assert.equal("logging" in appConfig, false);
-    assert.equal("logLevel" in createConfigStore({ envPath: join(tmpdir(), "missing-log-level.env"), environment: { BOT_LOG_LEVEL: "all" } }).getPublicConfig(), false);
+    const store = createConfigStore({ envPath: join(tmpdir(), "missing-log-level.env"), environment: { BOT_LOG_LEVEL: "all" } });
+    assert.equal("logLevel" in store.getPublicConfig(), false);
+    assert.equal(parsePublicConfigPatch({ field: "logLevel", value: "debug" }), undefined);
 });
 
 test("BOT_TIME_ZONE defaults to Asia/Shanghai and accepts Intl-supported IANA zones", () => {
@@ -143,7 +146,7 @@ test("BOT_TIME_ZONE defaults to Asia/Shanghai and accepts Intl-supported IANA zo
     for (const zone of ["Asia/Shanghai", "Asia/Tokyo", "UTC", "America/New_York"]) {
         assert.equal(loadAppConfig({ BOT_TIME_ZONE: zone }).botTimeZone, zone);
     }
-    for (const zone of ["UTC+8", "GMT+8", "not/a-timezone"]) {
+    for (const zone of ["UTC+8", "GMT+8", "CST", "not/a-timezone"]) {
         assert.throws(() => loadAppConfig({ BOT_TIME_ZONE: zone }), /BOT_TIME_ZONE/);
     }
 });
@@ -180,7 +183,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
         CODEX_REASONING_EFFORT: "low",
         CODEX_VERBOSITY: "medium",
         DEEPSEEK_API_KEY: "DEEP_SECRET",
-        BOT_LOG_LEVEL: "debug",
+        BOT_LOG_LEVEL: "invalid-but-ignored",
         BOT_LOOP_GUARD_MAX_CYCLES: "10",
         AUTOMATED_PEER_IDS: "A,B,A",
     });
@@ -189,6 +192,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
         environment: {
             AI_PROVIDER: "gpt",
             CODEX_API_KEY: "SECRET_API_KEY",
+            GITHUB_OAUTH_CLIENT_SECRET: "PRIVATE_GITHUB_OAUTH_SECRET",
             CODEX_BASE_URL: "https://secret.example",
             CODEX_MODEL: "gpt-test",
             CODEX_REASONING_EFFORT: "low",
@@ -200,7 +204,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
             REPLY_JUDGE_API_KEY: "JUDGE_SECRET",
             REPLY_JUDGE_TIMEOUT_MS: "15000",
             BOT_ADMIN_IDS: "4D53C611",
-            BOT_LOG_LEVEL: "debug",
+            BOT_LOG_LEVEL: "invalid-but-ignored",
             BOT_LOOP_GUARD_MAX_CYCLES: "10",
             AUTOMATED_PEER_IDS: "A,B,A",
         },
@@ -212,7 +216,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
     assert.equal("logLevel" in publicConfig, false);
     assert.equal("botTimeZone" in publicConfig, false);
     assert.deepEqual(publicConfig.replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000, provider: "openai-compatible" });
-    assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example|4D53C611|botAdminIds/);
+    assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|PRIVATE_GITHUB_OAUTH_SECRET|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example|4D53C611|botAdminIds/);
 });
 
 test("Reply Judge config patches map to their env keys and validate safe model IDs and timeout bounds", async () => {
@@ -291,7 +295,7 @@ test("ConfigStore reload parsing follows current disk values instead of stale do
     });
 });
 
-test("ConfigStore rejects unsafe model names and invalid guard, reasoning, verbosity, and log values", async () => {
+test("ConfigStore rejects unsafe model names and invalid guard, reasoning, and verbosity values", async () => {
     assert.throws(() => validatePublicConfigPatch({ field: "gpt.model", value: "   " }), /模型名称/);
     assert.throws(() => validatePublicConfigPatch({ field: "gpt.model", value: "bad\nname" }), /模型名称/);
     assert.throws(() => validatePublicConfigPatch({ field: "botLoopGuard.maxCycles", value: 0 }), />=|大于等于/);
@@ -367,4 +371,31 @@ test("Web host rejects malformed bind addresses", () => {
     for (const host of ["0.0.0.0:3000", "bad host", "bad/host"]) {
         assert.throws(() => loadAppConfig({ WEB_HOST: host }), /WEB_HOST/);
     }
+});
+
+test("GitHub OAuth config requires every setting and parses only positive numeric allowlist IDs", () => {
+    assert.deepEqual(loadGitHubOAuthConfig({}), { error: "GitHub OAuth is not configured" });
+    const configured = loadGitHubOAuthConfig({
+        GITHUB_OAUTH_CLIENT_ID: " client ",
+        GITHUB_OAUTH_CLIENT_SECRET: " secret ",
+        GITHUB_OAUTH_CALLBACK_URL: "https://bot.tenqui.ink/api/auth/github/callback",
+        GITHUB_OAUTH_ALLOWED_USER_IDS: " 12345678, , 87654321 ",
+    });
+    assert.ok(configured.config);
+    assert.deepEqual([...configured.config.allowedUserIds], ["12345678", "87654321"]);
+    assert.equal(configured.config.clientSecret, "secret");
+    for (const invalid of ["username", "0", "-1", "1.2", "123,username"]) {
+        assert.equal(loadGitHubOAuthConfig({
+            GITHUB_OAUTH_CLIENT_ID: "client",
+            GITHUB_OAUTH_CLIENT_SECRET: "secret",
+            GITHUB_OAUTH_CALLBACK_URL: "https://bot.tenqui.ink/api/auth/github/callback",
+            GITHUB_OAUTH_ALLOWED_USER_IDS: invalid,
+        }).config, undefined, invalid);
+    }
+    assert.equal(loadGitHubOAuthConfig({
+        GITHUB_OAUTH_CLIENT_ID: "client",
+        GITHUB_OAUTH_CLIENT_SECRET: "secret",
+        GITHUB_OAUTH_CALLBACK_URL: "http://public.example/callback",
+        GITHUB_OAUTH_ALLOWED_USER_IDS: "12345678",
+    }).config, undefined);
 });

@@ -100,7 +100,7 @@ test("BOT_LOG_LEVEL only filters Console while every entry reaches listeners and
     }
 });
 
-test("legacy local Web log filter persists independently with info as its default", () => {
+test("Web log filter persists independently with info as its default", () => {
     const values = new Map<string, string>();
     const storage = {
         getItem(key: string) { return values.get(key) ?? null; },
@@ -115,28 +115,46 @@ test("legacy local Web log filter persists independently with info as its defaul
     assert.equal(readStoredLogLevelFilter(storage), "info");
 });
 
-test("ALL messages preserve raw business context for Web listeners independently of Console filtering", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "tenbot-level-listener-"));
+test("all logger levels reach listeners and fixed file ranges while secrets remain redacted", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tenbot-levels-"));
+    const oldSecret = process.env.QQBOT_APP_SECRET;
     const buffer = new LogBuffer();
     setConsoleLogOutputEnabled(false);
     configureLogFileSink(directory);
     try {
-        logger.all("listener raw OpenID", { member_openid: "member-visible" });
-        logger.debug("listener debug");
-        logger.info("listener info");
-        logger.warn("listener warn");
-        logger.error("listener error");
-        await flushLogFileSink();
-        const rows = buffer.getEntries().map((entry) => entry.text).join("\n");
-        assert.match(rows, /member-visible/);
-        for (const marker of ["listener debug", "listener info", "listener warn", "listener error"]) assert.match(rows, new RegExp(marker));
+        process.env.QQBOT_APP_SECRET = "UNLABELLED_ENV_SECRET";
+        refreshLogRedactionSecrets();
+        logger.all("level-all", { member_openid: "member-openid-visible", api_key: "UNLABELLED_ENV_SECRET" });
+        logger.all("unlabelled environment secret", "opaque value UNLABELLED_ENV_SECRET");
+        logger.debug("level-debug", { member_openid: "debug-member-id" });
+        logger.info("level-info");
+        logger.warn("level-warn");
+        logger.error("level-error");
+        await closeLogFileSink();
+
         const date = `tenbot-${localDay(new Date())}`;
         const all = await readFile(join(directory, `${date}.all.log`), "utf8");
-        for (const marker of ["listener raw OpenID", "listener debug", "listener info", "listener warn", "listener error"]) assert.match(all, new RegExp(marker));
+        const info = await readFile(join(directory, `${date}.info.log`), "utf8");
+        const warn = await readFile(join(directory, `${date}.warn.log`), "utf8");
+        for (const marker of ["level-all", "level-debug", "level-info", "level-warn", "level-error"]) assert.match(all, new RegExp(marker));
+        assert.doesNotMatch(all, /UNLABELLED_ENV_SECRET/);
+        assert.match(all, /member-openid-visible/);
+        for (const marker of ["level-all", "level-debug"]) assert.doesNotMatch(info, new RegExp(marker));
+        for (const marker of ["level-info", "level-warn", "level-error"]) assert.match(info, new RegExp(marker));
+        for (const marker of ["level-all", "level-debug", "level-info"]) assert.doesNotMatch(warn, new RegExp(marker));
+        for (const marker of ["level-warn", "level-error"]) assert.match(warn, new RegExp(marker));
+        const uiMarkers = buffer.getEntries().map((entry) => entry.text);
+        assert.ok(uiMarkers.some((text) => text.includes("member-openid-visible")));
+        for (const marker of ["level-all", "level-debug", "level-info", "level-warn", "level-error"]) {
+            assert.ok(uiMarkers.some((text) => text.includes(marker)), `UI should include ${marker}`);
+        }
     } finally {
         buffer.dispose();
         await closeLogFileSink();
         setConsoleLogOutputEnabled(true);
+        if (oldSecret === undefined) delete process.env.QQBOT_APP_SECRET;
+        else process.env.QQBOT_APP_SECRET = oldSecret;
+        refreshLogRedactionSecrets();
         await rm(directory, { recursive: true, force: true });
     }
 });
@@ -170,7 +188,7 @@ test("10,000 identical logger events occupy one UI row while all.log keeps every
     }
 });
 
-test("QQ SDK raw diagnostics are captured once as ALL in UI and all.log", async () => {
+test("QQ SDK info/debug each emit one complete diagnostic while warnings and errors keep their levels", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tenbot-qq-sdk-"));
     const buffer = new LogBuffer();
     setConsoleLogOutputEnabled(false);
@@ -178,16 +196,22 @@ test("QQ SDK raw diagnostics are captured once as ALL in UI and all.log", async 
     try {
         qqSdkLogger.debug?.("[qqbot:api] >>> POST https://api.example/messages");
         qqSdkLogger.debug?.('[qqbot:api] Body: {"content":"private message body"}');
-        assert.equal(buffer.getEntries().filter((entry) => entry.level === "all" && entry.text.includes("private message body")).length, 1);
+        qqSdkLogger.info?.("connected");
+        qqSdkLogger.warn?.("SDK warning", { details: "rate limit notice" });
+        qqSdkLogger.error?.("SDK error", { details: "connection lost" });
         assert.equal(buffer.getEntries().filter((entry) => entry.level === "all" && entry.text.includes("POST https://api.example/messages")).length, 1);
+        assert.equal(buffer.getEntries().filter((entry) => entry.level === "debug" && entry.text.includes("[QQ SDK] API POST")).length, 0);
+        assert.equal(buffer.getEntries().filter((entry) => entry.level === "all" && entry.text.includes("private message body")).length, 1);
+        assert.equal(buffer.getEntries().filter((entry) => entry.level === "all" && entry.text.includes("connected")).length, 1);
+        assert.ok(buffer.getEntries().some((entry) => entry.level === "warn" && entry.text.includes("rate limit notice")));
+        assert.ok(buffer.getEntries().some((entry) => entry.level === "error" && entry.text.includes("connection lost")));
         await flushLogFileSink();
         const allFile = await readFile(join(directory, `tenbot-${localDay(new Date())}.all.log`), "utf8");
         assert.match(allFile, /private message body/);
         assert.match(allFile, /POST https:\/\/api\.example\/messages/);
 
         qqSdkLogger.debug?.('[qqbot:api] Body: {"content":"private message body"}');
-        const bodyRow = buffer.getEntries().find((entry) => entry.level === "all" && entry.text.includes("private message body"));
-        assert.equal(bodyRow?.repeatCount, 2);
+        assert.equal(buffer.getEntries().filter((entry) => entry.level === "all" && entry.text.includes("private message body")).length, 2);
         qqSdkLogger.warn?.("SDK warning", { details: "rate limit notice" });
         assert.ok(buffer.getEntries().some((entry) => entry.level === "warn" && entry.text.includes("rate limit notice")));
     } finally {
@@ -428,12 +452,26 @@ test("ALL mode preserves business IDs but redacts credentials in listeners and d
             Authorization: "Bearer TOP_SECRET_DIAGNOSTIC",
             api_key: "TOP_SECRET_DIAGNOSTIC",
             Cookie: "session=TOP_SECRET_DIAGNOSTIC",
+            github_client_secret: "GITHUB_CLIENT_SECRET_VALUE",
+            qqbot_app_secret: "QQ_APP_SECRET_VALUE",
+            access_token: "ACCESS_TOKEN_VALUE",
+            refresh_token: "REFRESH_TOKEN_VALUE",
+            oauth_token: "OAUTH_TOKEN_VALUE",
+            session_token: "SESSION_TOKEN_VALUE",
+            password: "PASSWORD_VALUE",
+            credential: "CREDENTIAL_VALUE",
+            private_key: "PRIVATE_KEY_VALUE",
+            signature: "SIGNATURE_VALUE",
             content: "visible conversation text",
             toolError: Object.assign(new Error("tool failed with useful detail"), { status: 503, authorization: "Bearer TOP_SECRET_DIAGNOSTIC" }),
         });
         logger.all("raw authorization", "Authorization: Bearer TOP_SECRET_DIAGNOSTIC");
         logger.all("raw API key", "api_key=TOP_SECRET_DIAGNOSTIC");
         logger.all("raw cookie", "Cookie: session=TOP_SECRET_DIAGNOSTIC");
+        logger.all("raw session token", "session_token=SESSION_TOKEN_VALUE oauth_token=OAUTH_TOKEN_VALUE");
+        logger.all("raw signature", "signature=SIGNATURE_VALUE");
+        logger.all("raw signature header", "X-Signature: HEADER_SIGNATURE_VALUE");
+        logger.all("raw PEM private key", "-----BEGIN PRIVATE KEY-----PRIVATE_PEM_VALUE-----END PRIVATE KEY-----");
         logger.all("signed URL", "https://cdn.example/resource?hm=SIGNED_VALUE&ex=SIGNED_EXPIRY&plain=kept");
         logger.info("info credential copy", { content: "visible info", apiKey: "TOP_SECRET_DIAGNOSTIC", member_openid: "info-id-not-in-safe-files" });
         logger.warn("warn credential copy", { content: "visible warning", Authorization: "Bearer TOP_SECRET_DIAGNOSTIC", group_openid: "warn-id-not-in-safe-files" });
@@ -445,7 +483,7 @@ test("ALL mode preserves business IDs but redacts credentials in listeners and d
         const infoDisk = await readFile(join(directory, `${filename}.info.log`), "utf8");
         const warnDisk = await readFile(join(directory, `${filename}.warn.log`), "utf8");
         for (const output of [bufferText, allDisk, infoDisk, warnDisk]) {
-            assert.doesNotMatch(output, /TOP_SECRET_DIAGNOSTIC|SIGNED_VALUE|SIGNED_EXPIRY/);
+            assert.doesNotMatch(output, /TOP_SECRET_DIAGNOSTIC|SIGNED_VALUE|SIGNED_EXPIRY|GITHUB_CLIENT_SECRET_VALUE|QQ_APP_SECRET_VALUE|ACCESS_TOKEN_VALUE|REFRESH_TOKEN_VALUE|OAUTH_TOKEN_VALUE|SESSION_TOKEN_VALUE|PASSWORD_VALUE|CREDENTIAL_VALUE|PRIVATE_KEY_VALUE|SIGNATURE_VALUE|HEADER_SIGNATURE_VALUE|PRIVATE_PEM_VALUE/);
         }
         for (const output of [bufferText, allDisk]) {
             assert.match(output, /member-openid-visible-123/);
@@ -468,5 +506,28 @@ test("ALL mode preserves business IDs but redacts credentials in listeners and d
         else process.env.QQBOT_APP_SECRET = oldSecret;
         refreshLogRedactionSecrets();
         await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("debugPeerIdentity always records validated stable IDs as raw diagnostics", () => {
+    const buffer = new LogBuffer();
+    const oldConsole = console.log;
+    const oldBotLogLevel = process.env.BOT_LOG_LEVEL;
+    setConsoleLogOutputEnabled(false);
+    console.log = () => undefined;
+    try {
+        process.env.BOT_LOG_LEVEL = "error";
+        debugPeerIdentity("member", "stable-openid-123456789");
+        debugPeerIdentity("oversized", "x".repeat(257));
+        const entries = buffer.getEntries().filter((entry) => entry.level === "all");
+        assert.equal(entries.length, 2);
+        assert.match(entries[0]!.text, /stable-openid-123456789/);
+        assert.match(entries[1]!.text, /\[invalid-id\]/);
+    } finally {
+        buffer.dispose();
+        console.log = oldConsole;
+        setConsoleLogOutputEnabled(true);
+        if (oldBotLogLevel === undefined) delete process.env.BOT_LOG_LEVEL;
+        else process.env.BOT_LOG_LEVEL = oldBotLogLevel;
     }
 });

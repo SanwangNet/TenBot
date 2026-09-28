@@ -1,5 +1,10 @@
 export type QqConnectionState = "connecting" | "connected" | "disconnected" | "error";
 
+export interface AuthMeResponse {
+    authenticated: true;
+    user: { id: string; login: string; avatarUrl: string | null };
+}
+
 export interface RuntimeStatus {
     qq: QqConnectionState;
     groupRepliesEnabled: boolean;

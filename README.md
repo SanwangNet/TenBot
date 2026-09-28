@@ -59,7 +59,27 @@ Front 使用 `FRONT_MODE=legacy|judge` 配置，默认 `legacy`。只有显式�
 
 ## 运行
 
-Runtime 同时提供本机 Web Control API，默认地址为 `http://127.0.0.1:3000`。用 `WEB_HOST` 和 `WEB_PORT` 可调整监听地址；修改后需重启 Runtime。当前 API 没有身份验证，不要直接暴露到不可信公网。远程访问建议保持 `127.0.0.1` 监听并使用 SSH Tunnel，或通过受信任的反向代理访问。
+Runtime 同时提供本机 Web Control API，默认地址为 `http://127.0.0.1:3000`。用 `WEB_HOST` 和 `WEB_PORT` 可调整监听地址；修改后需重启 Runtime。管理 WebUI 使用 GitHub OAuth 登录，只允许服务端 allowlist 中的 GitHub numeric user ID；未配置认证时管理 API 会 fail closed，不会退化为匿名访问。
+
+### GitHub WebUI 登录
+
+在 GitHub 创建 OAuth App：
+
+1. 打开 `Settings` → `Developer settings` → `OAuth Apps` → `New OAuth App`。
+2. Production Homepage URL 填写 `https://bot.tenqui.ink`。
+3. Authorization callback URL 填写 `https://bot.tenqui.ink/api/auth/github/callback`。
+4. 将 OAuth App 的 Client ID、Client Secret 配置到服务端 `.env`，并配置回调 URL 与允许登录的 numeric user IDs：
+
+```dotenv
+GITHUB_OAUTH_CLIENT_ID=
+GITHUB_OAUTH_CLIENT_SECRET=
+GITHUB_OAUTH_CALLBACK_URL=https://bot.tenqui.ink/api/auth/github/callback
+GITHUB_OAUTH_ALLOWED_USER_IDS=
+```
+
+`GITHUB_OAUTH_ALLOWED_USER_IDS` 使用英文逗号分隔的 GitHub numeric user ID，不是 GitHub 用户名或邮箱。Client Secret 只保存在服务端 `.env`，不要放入 WebUI 或提交到 Git。OAuth 设置是启动级配置，更新后需重启 Runtime。开发环境可将 callback URL 配置为本机 HTTP 地址进行测试。
+
+TenBot 的 `WEB_HOST` 应保持 `127.0.0.1`。公网访问应使用可信反向代理：Internet → Cloudflare → VPS `:443` → Caddy → `127.0.0.1:3000`；不要直接公开 TenBot 管理端口。
 
 普通日志模式：
 
@@ -76,7 +96,7 @@ WebUI 开发时，在另一个终端运行 Vite：
     pnpm web:build
     pnpm dev
 
-构建后，浏览器访问 `http://127.0.0.1:3000/` 即可打开 WebUI；Runtime 仍默认只监听本机。当前 Web Control 没有身份验证，不要把管理接口直接暴露到不可信公网。远程访问建议使用 SSH Tunnel，或仅通过受信任的反向代理访问。
+构建后，浏览器访问 `http://127.0.0.1:3000/` 即可打开 WebUI；Runtime 仍默认只监听本机。未登录时显示 GitHub 登录页，所有管理 API 和 SSE 均要求有效 TenBot Session。
 
 WebUI 提供总览、模型、提示词、梗数据、对话、自动账号、实时日志和设置。提示词与 Meme 数据可在 Monaco 编辑器中保存并热重载；保存会检查文件版本，Meme JSON 会先验证。编辑 API 只允许 TenBot 的四个固定资源 ID，不接受任意服务器路径。自动账号与设置修改仍经由 TenBotControl 应用。
 
@@ -127,9 +147,7 @@ TUI 快捷键：
 
 ### 日志显示
 
-日志缓存会将相邻且级别、正文完全相同的记录折叠为一行，并用结构化重复次数显示；TUI 与 WebUI 共用这份最多 5000 行的缓存。磁盘日志逐条保存每个 logger event，不折叠。
-
-TenBot 始终完整采集所有等级的日志，并异步追加三份本地日志：`logs/tenbot-YYYY-MM-DD.all.log`、`logs/tenbot-YYYY-MM-DD.info.log`、`logs/tenbot-YYYY-MM-DD.warn.log`，按本地日期每天一个文件，跨午夜后自动写入新日期文件。`all.log` 包含 ALL、DEBUG、INFO、WARN、ERROR；`info.log` 包含 INFO、WARN、ERROR；`warn.log` 只包含 WARN、ERROR。文件采集不受 `BOT_LOG_LEVEL` 影响。
+TenBot 始终完整采集所有日志等级。Runtime 将日志发送给文件 sink、TUI/WebUI/SSE listeners，以及独立的 Console 输出。日志异步追加到 `logs/tenbot-YYYY-MM-DD.all.log`、`logs/tenbot-YYYY-MM-DD.info.log`、`logs/tenbot-YYYY-MM-DD.warn.log`，按本地日期每天一个文件；`all.log` 包含 ALL、DEBUG、INFO、WARN、ERROR，`info.log` 包含 INFO、WARN、ERROR，`warn.log` 只包含 WARN、ERROR。WebUI 等级筛选只影响当前浏览器的显示，不影响运行时采集或浏览器日志缓冲；首次默认选择“信息”，并持久化到浏览器 localStorage。日志缓存会将相邻且级别、正文完全相同的记录折叠为一行，并用结构化重复次数显示；TUI 与 WebUI 共用这份最多 5000 行的缓存。磁盘日志逐条保存每个 logger event，不折叠。
 
 `BOT_LOG_LEVEL` 是纯部署环境变量，只在进程启动时读取，并且只控制终端 / systemd journal 的 Console 输出阈值，支持 `all`、`debug`、`info`、`warn`、`error`，默认 `info`。例如 `BOT_LOG_LEVEL=info` 时，journalctl 显示 INFO/WARN/ERROR；DEBUG 和 ALL 仍会完整进入日志系统、日志文件和 WebUI。`BOT_LOG_LEVEL=all` 会让 Console 同时显示完整诊断日志，可能非常详细。该变量不影响 WebUI、SSE 或日志文件。
 
@@ -137,11 +155,13 @@ TenBot 始终完整采集所有等级的日志，并异步追加三份本地日�
 
 WebUI 日志页的等级筛选与服务器完全独立，首次默认为“信息”，并通过浏览器 localStorage key `tenbot.logs.level-filter` 持久化。即使服务端设置 `BOT_LOG_LEVEL=warn`，浏览器选择“完整诊断”仍能查看 ALL、DEBUG、INFO、WARN、ERROR。
 
-ALL 是完整诊断类型，可能包含聊天内容和业务身份标识；Secret / credentials 仍会脱敏。`all.log` 属于敏感本地诊断数据，可能包含聊天正文、OpenID、Prompt、模型请求/响应和 Tool 数据，不要公开上传。三份日志都会持续脱敏 API key、App Secret、Authorization、Bearer token、Cookie、access/refresh token 和其他凭据。
+`all` 是单条完整诊断日志的等级类型，不是全局模式。ALL 可能包含聊天内容、业务身份标识、Prompt、模型请求/响应和 Tool 数据；日志文件与 WebUI 诊断内容不要公开上传。Secret / credentials 仍会脱敏，包括 API key、App Secret、Authorization、Bearer token、Cookie、access/refresh/OAuth/session token、签名和私钥。
 
 ### 运行时热重载
 
-TUI 设置页可保存 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Reply Judge 模型与超时时间、BOT_LOOP_GUARD_MAX_CYCLES 和 AUTOMATED_PEER_IDS。BOT_LOG_LEVEL 不属于运行时配置，需通过部署环境设置并重启进程。API Key 与 Provider Base URL 仍只通过 `.env` 管理，不会暴露给 TUI。TUI 保存配置或外部编辑 `.env` 都会重建配置快照并立即热加载。GPT、DeepSeek 与 Reply Judge Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQBOT_APP_ID 和 QQBOT_APP_SECRET 变化需要重启；TUI 不会自动重启进程。
+TUI 设置页可保存 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Reply Judge 模型与超时时间、BOT_LOOP_GUARD_MAX_CYCLES 和 AUTOMATED_PEER_IDS。修改会先经过确认，再只更新 `.env` 中对应的变量；未知变量、secret、注释、空行和原有换行风格会保留。Provider、模型参数、连续交互上限和自动账号 ID 会立即热重载；进行中的模型 Attempt 保留启动时的模型和 Prompt 快照，新 Attempt 使用最新配置。GPT、DeepSeek 与 Reply Judge Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQ App ID 或密钥变化需要重启；TUI 不会自动重启进程。
+
+API Key 与 Provider Base URL 仍只通过 `.env` 管理，不会暴露给 TUI。`BOT_LOG_LEVEL` 在进程启动时读取，修改后需重启 Runtime；`BOT_TIME_ZONE` 是仅供模型输入使用的内部部署环境配置，不会显示或通过 Web/TUI 修改，外部 `.env` 变更会经 ConfigStore 重建 Runtime 配置快照。
 
 ### 错误码
 
@@ -204,7 +224,7 @@ Runtime 会校验 JSON、条目字段及重复 ID、名称和别名，再建立�
 
 ## 数据与隐私
 
-已知群成员资料使用本地 SQLite，默认文件为 data/bot.db；数据库不可用时，本次运行会退回内存存储。最近聊天上下文、活跃会话和自动账号循环限制状态保存在内存中，进程重启后清零。
+已知群成员资料、运行状态和 WebUI Session 使用本地 SQLite，默认文件为 `data/bot.db`；新环境自动应用新增的 Web auth migration。WebUI Cookie 保存随机 Session token，数据库仅保存 SHA-256 hash；Session 默认 7 天有效，登出后立即失效。SQLite 不可用时管理 API 保持锁定。最近聊天上下文、活跃会话和自动账号循环限制状态保存在内存中，进程重启后清零。
 
 API 密钥、QQ 凭据和 Authorization、Bearer token、Cookie、access/refresh token 会在 Console、UI 与三份磁盘日志中持续脱敏。ALL 日志仍可能包含聊天内容、member/group OpenID、Prompt、模型请求/响应和 Tool 参数及结果；它只适合本机临时诊断，排障后恢复 debug/info，并且不要上传公开 issue。日志文件保存在被 Git ignore 的 `logs/` 目录。
 

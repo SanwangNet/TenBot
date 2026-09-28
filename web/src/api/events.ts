@@ -1,4 +1,5 @@
 import type { LogEntry, RuntimeEvent, RuntimeStatus } from "./types.js";
+import { apiClient, ApiError } from "./client.js";
 
 export type RuntimeConnectionState = "connecting" | "online" | "reconnecting" | "offline";
 
@@ -16,8 +17,16 @@ export function parseEventData<T>(data: string): T {
 
 export function connectRuntimeEvents(handlers: RuntimeEventHandlers): () => void {
     const source = new EventSource("/api/events");
+    let checkingSession = false;
     source.onopen = () => handlers.onConnection("online");
-    source.onerror = () => handlers.onConnection(source.readyState === EventSource.CLOSED ? "offline" : "reconnecting");
+    source.onerror = () => {
+        handlers.onConnection(source.readyState === EventSource.CLOSED ? "offline" : "reconnecting");
+        if (checkingSession || source.readyState === EventSource.CLOSED) return;
+        checkingSession = true;
+        void apiClient.getAuthMe().catch((cause: unknown) => {
+            if (cause instanceof ApiError && cause.status === 401) source.close();
+        }).finally(() => { checkingSession = false; });
+    };
     source.addEventListener("status", (event) => {
         try { handlers.onStatus(parseEventData<RuntimeStatus>((event as MessageEvent<string>).data)); }
         catch { /* Ignore malformed frames and keep the stream available. */ }

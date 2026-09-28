@@ -29,12 +29,20 @@ export function parseLogLevel(value: string | undefined): LogLevel {
     return normalized && Object.hasOwn(levels, normalized) ? normalized as LogLevel : "info";
 }
 
-export function refreshLogRedactionSecrets(additionalSecrets: readonly (string | undefined)[] = []): void {
-    environmentSecrets = [...Object.entries(process.env)
-        .filter(([name, secret]) => Boolean(secret) && /(?:KEY|APP_SECRET|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PASSWORD|CREDENTIAL|AUTHORIZATION|COOKIE|SECRET)$/i.test(name))
+function refreshEnvironmentSecrets(): void {
+    environmentSecrets = Object.entries(process.env)
+        .filter(([name, secret]) => Boolean(secret) && /(?:KEY|APP_SECRET|ACCESS_TOKEN|REFRESH_TOKEN|SESSION|SIGNATURE|SIGN|TOKEN|PASSWORD|CREDENTIAL|AUTHORIZATION|COOKIE|SECRET)$/i.test(name))
         .map(([, secret]) => secret!)
-        .filter((secret) => secret.length > 0), ...additionalSecrets.filter((secret): secret is string => Boolean(secret))];
+        .filter((secret) => secret.length > 0);
 }
+
+export function refreshLogRedactionSecrets(additionalSecrets: readonly (string | undefined)[] = []): void {
+    refreshEnvironmentSecrets();
+    environmentSecrets.push(...additionalSecrets.filter((secret): secret is string => Boolean(secret)));
+}
+
+/** Refresh process-environment secrets after startup or an environment reload. */
+export function refreshLogSecrets(): void { refreshLogRedactionSecrets(); }
 
 refreshLogRedactionSecrets();
 
@@ -49,16 +57,18 @@ function timestamp(): string {
     return new Date().toLocaleTimeString("en-GB", { hour12: false });
 }
 
-const secretKeyPattern = /(?:auth.?token|access.?token|refresh.?token|app.?secret|client.?secret|api.?key|authorization|set.?cookie|cookie|password|credential|session.?key|private.?key|signature|^sig$|^sign$|^key$|^auth$|^secret$|^token$)/i;
+const secretKeyPattern = /(?:auth.?token|oauth.?token|access.?token|refresh.?token|session.?token|app.?secret|client.?secret|api.?key|authorization|set.?cookie|cookie|password|credential|session.?key|private.?key|signature|^sig$|^sign$|^key$|^auth$|^secret$|^token$)/i;
 const safeOpenIdPattern = /\b(?:member|group|user)?[_-]?openid\b(\s*[=:]\s*)([^\s,}&"']+)/gi;
 
 /** Redact credentials while retaining diagnostic IDs, OpenIDs, URLs, and payload structure. */
 export function sanitizeSecrets(value: string): string {
     let safe = value
+        .replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/gi, "[REDACTED]")
         .replace(/\bAuthorization\s*:\s*[^\r\n]+/gi, "Authorization: [REDACTED]")
         .replace(/\b(?:Set-)?Cookie\s*:\s*[^\r\n]+/gi, "Cookie: [REDACTED]")
+        .replace(/\b(?:X-)?Signature\s*:\s*[^\r\n]+/gi, "Signature: [REDACTED]")
         .replace(/\b(Bearer|QQBot)\s+[A-Za-z0-9._~+\/-]+=*/gi, "$1 [REDACTED]")
-        .replace(/(["']?(?:auth[_-]?token|access[_-]?token|refresh[_-]?token|app[_-]?secret|client[_-]?secret|api[_-]?key|authorization|cookie|password|credential|session[_-]?key|private[_-]?key|token)["']?\s*[=:]\s*["']?)([^\s,}&"']+)/gi, "$1[REDACTED]")
+        .replace(/(["']?(?:auth[_-]?token|oauth[_-]?token|access[_-]?token|refresh[_-]?token|session[_-]?token|app[_-]?secret|client[_-]?secret|api[_-]?key|authorization|cookie|password|credential|session[_-]?key|private[_-]?key|signature|token)["']?\s*[=:]\s*["']?)([^\s,}&"']+)/gi, "$1[REDACTED]")
         .replace(/([?&](?:api[_-]?key|key|access[_-]?token|refresh[_-]?token|token|signature|sig|sign|credential|auth|secret|hm|ex)=)[^&#\s]+/gi, "$1[REDACTED]");
 
     // Also redact credentials supplied under deployment-specific environment names.
@@ -126,24 +136,19 @@ function formatValue(value: unknown, includeBusinessIdentifiers: boolean): strin
     }
 }
 
-function formatValues(level: LogLevel, values: unknown[], includeBusinessIdentifiers: boolean, preserveLastString = false): string {
+function formatValues(level: LogLevel, values: unknown[], includeBusinessIdentifiers: boolean): string {
     const presentValues = values.filter((value) => value !== undefined);
     const formalError = level === "error" ? presentValues.find(isTenBotError) : undefined;
     return formalError
         ? includeBusinessIdentifiers
             ? sanitizeSecrets(formatTenBotError(formalError))
             : sanitizeSafeDiagnostic(formatTenBotError(formalError))
-        : presentValues.map((value, index) => {
-            if (preserveLastString && index === presentValues.length - 1 && typeof value === "string") {
-                return sanitizeSecrets(value);
-            }
-            return formatValue(value, includeBusinessIdentifiers);
-        }).join(" ");
+        : presentValues.map((value) => formatValue(value, includeBusinessIdentifiers)).join(" ");
 }
 
-function write(level: LogLevel, values: unknown[], preserveLastString = false): void {
-    const rawText = formatValues(level, values, true, preserveLastString);
-    const safeText = formatValues(level, values, false, preserveLastString);
+function write(level: LogLevel, values: unknown[]): void {
+    const rawText = formatValues(level, values, true);
+    const safeText = formatValues(level, values, false);
     const formalError = level === "error" ? values.find(isTenBotError) : undefined;
     const timestampValue = new Date().toISOString();
     logFileSink?.write({ timestamp: timestampValue, level, text: safeText }, rawText);
@@ -204,11 +209,11 @@ export function truncateLogText(value: string, maxLength = 160): string {
     return safe.length > maxLength ? `${safe.slice(0, maxLength)}…` : safe;
 }
 
-/** ALL diagnostics retain the full peer ID for explicit registration. */
+/** Emit the stable peer identity as an explicitly full diagnostic record. */
 export function debugPeerIdentity(authorName: string | undefined, stableId: string | undefined): void {
     if (!stableId) return;
     const id = stableId.length <= 256 ? JSON.stringify(stableId) : "[invalid-id]";
-    write("all", [`[Peer] author=${JSON.stringify(truncateLogText(authorName || "unknown member", 60))} id=${id}`], true);
+    logger.all(`[Peer] author=${JSON.stringify(truncateLogText(authorName || "unknown member", 60))} id=${id}`);
 }
 
 export function shortId(value: string | undefined, length = 6): string {

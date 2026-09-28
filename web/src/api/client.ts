@@ -1,6 +1,7 @@
 import type {
     AutomatedPeerSummary,
     AutomatedPeerMutationResult,
+    AuthMeResponse,
     ConfigPatchResponse,
     ConversationItem,
     ConversationSummary,
@@ -21,6 +22,16 @@ export class ApiError extends Error {
         super(message);
         this.name = "ApiError";
     }
+}
+
+let unauthorizedHandler: (() => void) | undefined;
+
+export function setUnauthorizedHandler(handler: (() => void) | undefined): void {
+    unauthorizedHandler = handler;
+}
+
+function handleUnauthorized(status: number): void {
+    if (status === 401) unauthorizedHandler?.();
 }
 
 export function parseJsonResponse<T>(status: number, body: string): T {
@@ -50,7 +61,9 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
         if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
         throw new ApiError("无法连接到 TenBot 运行时");
     }
-    return parseJsonResponse<T>(response.status, await response.text());
+    const body = await response.text();
+    handleUnauthorized(response.status);
+    return parseJsonResponse<T>(response.status, body);
 }
 
 async function sendJson<T>(path: string, method: "PATCH" | "POST" | "PUT" | "DELETE", body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -66,10 +79,14 @@ async function sendJson<T>(path: string, method: "PATCH" | "POST" | "PUT" | "DEL
         if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
         throw new ApiError("无法连接到 TenBot 运行时");
     }
-    return parseJsonResponse<T>(response.status, await response.text());
+    const responseBody = await response.text();
+    handleUnauthorized(response.status);
+    return parseJsonResponse<T>(response.status, responseBody);
 }
 
 export const apiClient = {
+    getAuthMe: (signal?: AbortSignal) => getJson<AuthMeResponse>("/api/auth/me", signal),
+    logout: () => sendJson<{ ok: true }>("/api/auth/logout", "POST"),
     getStatus: (signal?: AbortSignal) => getJson<RuntimeStatus>("/api/status", signal),
     getConfig: (signal?: AbortSignal) => getJson<PublicConfig>("/api/config", signal),
     getConversations: (signal?: AbortSignal) => getJson<ConversationSummary[]>("/api/conversations", signal),

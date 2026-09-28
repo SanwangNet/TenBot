@@ -474,6 +474,7 @@ test("settings render Reply Judge as an equal-width settings column with keyboar
     assert.deepEqual(edited, ["replyJudge.model", "replyJudge.timeoutMs"]);
 
     const rows = settingsRows("gpt");
+    assert.equal(rows.some((row) => String(row) === "logLevel"), false);
     const modelIndex = rows.indexOf("replyJudge.model");
     const timeoutIndex = rows.indexOf("replyJudge.timeoutMs");
     assert.equal(rows[modelIndex], "replyJudge.model");

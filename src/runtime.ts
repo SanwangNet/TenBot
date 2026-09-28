@@ -24,7 +24,7 @@ import { getMemeRuntimeSnapshot, loadMemeRuntime, reloadMemes as reloadMemeData 
 import { sampleRecentMemeNames } from "./skills/meme/store.js";
 import { memeStore } from "./skills/meme/store.js";
 import { memeSendImageService } from "./skills/meme/send-image.js";
-import { closeLogFileSink, configureLogFileSink, logger, refreshLogRedactionSecrets, setConsoleLogOutputEnabled, shortId, truncateLogText } from "./shared/logger.js";
+import { closeLogFileSink, configureLogFileSink, logger, refreshLogRedactionSecrets, refreshLogSecrets, setConsoleLogOutputEnabled, shortId, truncateLogText } from "./shared/logger.js";
 import type { NormalizedQqMessage } from "./qq/message/normalize-message.js";
 import { FileChangeWatcher } from "./shared/file-change-watcher.js";
 import { RuntimeConfigSnapshotStore, type RuntimeConfigSnapshot } from "./runtime-config-snapshot.js";
@@ -35,6 +35,8 @@ import { createEditorResourceStore } from "./control/editor-resources.js";
 import { ReplyJudgePromptStore } from "./front/reply-judge-prompt-store.js";
 import { OpenAICompatibleReplyJudge } from "./front/openai-compatible-reply-judge.js";
 import { GroupReplyControl } from "./runtime/group-reply-control.js";
+import { WebSessionRepository } from "./auth/web-session-repository.js";
+import { WebAuthService } from "./auth/web-auth-service.js";
 
 export interface TenBotRuntime {
     control: TenBotControl;
@@ -51,6 +53,7 @@ function absolutePath(path: URL | string): string {
 }
 
 export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = {}): Promise<TenBotRuntime> {
+    refreshLogSecrets();
     setConsoleLogOutputEnabled(options.consoleLogs ?? true);
     configureLogFileSink(options.logDirectory ?? resolve(process.cwd(), "logs"));
     const logs = new LogBuffer();
@@ -103,6 +106,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
 
     let control: ReturnType<typeof createTenBotControl> | undefined;
     let webServer: ReturnType<typeof createTenBotWebServer> | undefined;
+    let webSessionRepository: WebSessionRepository | undefined;
     let groupReplyControl: GroupReplyControl | undefined;
     let unsubscribeProviderErrors: () => void = () => undefined;
     let unsubscribeReplyLifecycle: () => void = () => undefined;
@@ -154,6 +158,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         const operation = configReloadQueue.then(async () => {
             try {
                 const nextConfig = configStore.getAppConfig();
+                refreshLogSecrets();
                 promptStore.get(nextConfig.ai.provider);
                 const nextSnapshot = runtimeSnapshots.replace(nextConfig);
                 const nextModel = nextSnapshot.model;
@@ -411,6 +416,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                 } finally {
                     try { sqliteMemberRepository?.close(); }
                     catch (error) { logger.error("[Members] SQLite close failed", error); }
+                    try { webSessionRepository?.close(); }
+                    catch (error) { logger.error("[Auth] Session database close failed", error); }
                     qqState = "disconnected";
                     control?.publishStatus();
                     clearInterval(statusTimer);
@@ -426,9 +433,13 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         },
     });
 
+    try { webSessionRepository = new WebSessionRepository(); }
+    catch { logger.error("[Auth] Session storage unavailable; management API remains locked"); }
+    const webAuth = new WebAuthService(process.env, webSessionRepository);
     webServer = createTenBotWebServer(control, {
         host: runtimeSnapshot.appConfig.web.host,
         port: runtimeSnapshot.appConfig.web.port,
+        auth: webAuth,
     });
 
     envWatcher = new FileChangeWatcher(configStore.getEnvPath(), async () => {
