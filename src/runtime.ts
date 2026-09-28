@@ -7,17 +7,16 @@ import { createConfigStore } from "./config/config-store.js";
 import { toPublicConfig } from "./config/config-validation.js";
 import { createTenBotControl, type ReloadResult, type TenBotControl } from "./control/tenbot-control.js";
 import { createProviderErrorNotice } from "./control/provider-error.js";
-import { summarizeKnownMembers } from "./control/known-members.js";
-import type { AutomatedPeerSummary } from "./control/automated-peers.js";
 import type { RuntimeStatus } from "./control/runtime-status.js";
 import { LogBuffer } from "./control/log-buffer.js";
 import { SqliteMemberRepository } from "./members/sqlite-repository.js";
 import { MemoryMemberRepository } from "./members/memory-repository.js";
 import type { MemberRepository } from "./members/repository.js";
+import { BotDetector } from "./members/bot-detector.js";
+import { importLegacyAutomatedPeerIds, parseLegacyAutomatedPeerIds } from "./members/legacy-peer-import.js";
 import { createQqBot, shutdownQqMessageHandler, type QqConnectionState } from "./qq/bot.js";
 import { configureMemberRepository } from "./qq/conversation/known-members.js";
-import { automatedPeerLoopGuard } from "./qq/conversation/automated-peer.js";
-import { RecentPeerRegistry } from "./qq/conversation/recent-peers.js";
+import { botLoopGuard } from "./qq/conversation/bot-loop-guard.js";
 import { getRecentContextConversationCount } from "./qq/conversation/recent-context.js";
 import { cancelGroupReplyCycles, getActiveReplyCycleCount, shutdownReplyCoordinator, subscribeProviderErrors, subscribeReplyLifecycle } from "./qq/reply/coordinator.js";
 import { getMemeRuntimeSnapshot, loadMemeRuntime, reloadMemes as reloadMemeData } from "./skills/meme/skill.js";
@@ -58,7 +57,6 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     configureLogFileSink(options.logDirectory ?? resolve(process.cwd(), "logs"));
     const logs = new LogBuffer();
     const configStore = createConfigStore();
-    const recentPeers = new RecentPeerRegistry();
     const promptStore = getPromptStore();
     const replyJudgePromptStore = new ReplyJudgePromptStore();
     let runtimeSnapshot!: RuntimeConfigSnapshot;
@@ -69,8 +67,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         runtimeSnapshot = runtimeSnapshots.get();
         const model = runtimeSnapshot.model;
         if (model.id !== "gpt" && model.id !== "deepseek") throw new Error(`Unsupported model id: ${model.id}`);
-        automatedPeerLoopGuard.replacePeers(appConfig.botLoopGuard.automatedPeerIds);
-        automatedPeerLoopGuard.setMaxCycles(appConfig.botLoopGuard.maxCycles);
+        botLoopGuard.setMaxCycles(appConfig.botLoopGuard.maxCycles);
         await promptStore.load(model.id);
         await replyJudgePromptStore.load();
         await loadMemeRuntime();
@@ -171,8 +168,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                     nextConfig.ai.deepseek.apiKey,
                     nextConfig.replyJudge.apiKey,
                 ]);
-                automatedPeerLoopGuard.replacePeers(nextConfig.botLoopGuard.automatedPeerIds);
-                automatedPeerLoopGuard.setMaxCycles(nextConfig.botLoopGuard.maxCycles);
+                botLoopGuard.setMaxCycles(nextConfig.botLoopGuard.maxCycles);
                 lastReloadFailure = undefined;
                 result = { ok: true, message: "配置已热重载。", requiresRestart: qqRestartRequired };
                 logger.info(`[Runtime] config hot reload revision=${nextSnapshot.revision} provider=${nextModel.id}`);
@@ -189,9 +185,11 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         async getGroupRepliesEnabled() { throw new Error("SQLite state repository is unavailable"); },
         async setGroupRepliesEnabled() { throw new Error("SQLite state repository is unavailable"); },
     };
+    let memberDatabaseAvailable = false;
     try {
         sqliteMemberRepository = new SqliteMemberRepository();
         memberRepository = sqliteMemberRepository;
+        memberDatabaseAvailable = true;
         stateRepository = sqliteMemberRepository;
         configureMemberRepository(memberRepository);
     } catch (error) {
@@ -199,19 +197,29 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         configureMemberRepository(memberRepository);
         logger.error("[Members] SQLite unavailable; using memory for this run", error);
     }
-    groupReplyControl = new GroupReplyControl(stateRepository, (enabled) => {
+    try {
+        await importLegacyAutomatedPeerIds(memberRepository, parseLegacyAutomatedPeerIds(process.env.AUTOMATED_PEER_IDS));
+    } catch (error) {
+        logger.error("[Members] legacy automated peer import failed; group bot state remains unchanged", error);
+    }
+    groupReplyControl = new GroupReplyControl(stateRepository, memberRepository, (enabled) => {
         if (!enabled) cancelGroupReplyCycles();
         control?.publishStatus();
+    }, (groupOpenid, enabled) => {
+        if (!enabled) cancelGroupReplyCycles(groupOpenid);
+        control?.publishStatus();
+        control?.publishEvent({ type: "members-updated" });
     });
     await groupReplyControl.initialize();
 
+    const botDetector = new BotDetector(memberRepository, Date.now, () => control?.publishEvent({ type: "members-updated" }));
     let bot: ReturnType<typeof createQqBot>;
     try {
         bot = createQqBot((state) => {
             qqState = state;
             control?.publishStatus();
         }, (message) => {
-            if (recentPeers.observe(message)) control?.publishEvent({ type: "recent-peers-updated" });
+            if (message.kind === "group") control?.publishEvent({ type: "members-updated" });
         }, observeConversationMessage, runtimeSnapshot.appConfig.qq, replyJudge,
         () => runtimeSnapshots.get().appConfig.frontMode,
         () => runtimeSnapshots.get().appConfig.replyJudge.fallbackToMainOnInvalidOutput,
@@ -219,7 +227,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         groupReplyControl,
         () => runtimeSnapshots.get().appConfig.botAdminIds,
         () => runtimeSnapshots.get().appConfig.memeSendMaxEdge,
-        () => runtimeSnapshots.get().appConfig.botTimeZone);
+        () => runtimeSnapshots.get().appConfig.botTimeZone,
+        botDetector);
     } catch (error) {
         logs.dispose();
         setConsoleLogOutputEnabled(true);
@@ -278,17 +287,6 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         };
     };
 
-    const toPeerSummary = (id: string): AutomatedPeerSummary => {
-        const recent = recentPeers.get(id);
-        return {
-            id,
-            displayId: shortId(id),
-            displayName: recent?.displayName || "未知账号",
-            platformBotHint: recent?.platformBotHint ?? false,
-            ...(recent ? { lastSeenAt: recent.lastSeenAt } : {}),
-        };
-    };
-
     const editorResources = createEditorResourceStore({
         "prompt:main": { path: promptStore.getMainPath()!, displayName: "主提示词", language: "markdown", reload: async () => {
             try {
@@ -325,35 +323,29 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                 message: applied.ok ? "配置已保存并立即生效。" : applied.message,
             };
         },
-        getAutomatedPeers: () => configStore.getAutomatedPeerIds().map(toPeerSummary),
-        getRecentPeers: () => {
-            const registered = new Set(configStore.getAutomatedPeerIds());
-            return recentPeers.list().filter((peer) => !registered.has(peer.id)).map((peer) => toPeerSummary(peer.id));
+        getGroups: () => memberRepository.listGroups(),
+        setGroupRepliesEnabledForGroup: async (groupOpenid, enabled) => {
+            if (!memberDatabaseAvailable) throw new Error("Group settings require SQLite persistence");
+            const result = await groupReplyControl!.setGroupRepliesEnabledForGroup(groupOpenid, enabled, "web-admin");
+            if (result.ok) control?.publishStatus();
+            return result;
         },
-        async getKnownMembers() {
-            try { return summarizeKnownMembers(await memberRepository.listAll()); }
-            catch (error) {
-                logger.error("[Members] summary read failed", error);
-                return [];
-            }
+        getMarkedBots: () => memberRepository.listMarkedBots(),
+        getGroupMembers: (groupOpenid) => memberRepository.listGroupMembers(groupOpenid),
+        getGroupMember: (groupOpenid, memberOpenid) => memberRepository.findGroupMember(groupOpenid, memberOpenid),
+        async setMemberManualBot(groupOpenid, memberOpenid, enabled) {
+            if (!memberDatabaseAvailable) throw new Error("Bot state requires SQLite persistence");
+            if (!await memberRepository.findByOpenid(groupOpenid, memberOpenid)) return null;
+            const state = await memberRepository.setManualBot(groupOpenid, memberOpenid, enabled, Date.now());
+            control?.publishEvent({ type: "members-updated" });
+            return state;
         },
-        async addAutomatedPeer(id) {
-            const result = await configStore.addAutomatedPeer(id);
-            if (result.ok) {
-                await reloadRuntimeConfig();
-                await envWatcher?.markCurrent();
-                control?.publishStatus();
-            }
-            return { ok: result.ok, changed: result.changed, message: result.message, ...("details" in result && result.details ? { details: result.details } : {}) };
-        },
-        async removeAutomatedPeer(id) {
-            const result = await configStore.removeAutomatedPeer(id);
-            if (result.ok) {
-                await reloadRuntimeConfig();
-                await envWatcher?.markCurrent();
-                control?.publishStatus();
-            }
-            return { ok: result.ok, changed: result.changed, message: result.message, ...("details" in result && result.details ? { details: result.details } : {}) };
+        async clearMemberDetection(groupOpenid, memberOpenid) {
+            if (!memberDatabaseAvailable) throw new Error("Bot state requires SQLite persistence");
+            if (!await memberRepository.findByOpenid(groupOpenid, memberOpenid)) return null;
+            const state = await memberRepository.resetDetectionMarks(groupOpenid, memberOpenid, Date.now());
+            control?.publishEvent({ type: "members-updated" });
+            return state;
         },
         subscribeLogs: (listener) => logs.subscribe(listener),
         getEditorResource: (id) => editorResources.get(id),

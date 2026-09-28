@@ -1,14 +1,14 @@
 import type {
-    AutomatedPeerSummary,
-    AutomatedPeerMutationResult,
     AuthMeResponse,
     ConfigPatchResponse,
     ConversationItem,
     ConversationSummary,
+    GroupMemberSummary,
+    GroupSummary,
+    MemberBotState,
     EditorResource,
     EditorResourceId,
     EditorSaveResponse,
-    KnownMemberSummary,
     MemeLibraryResponse,
     MemeUploadResponse,
     MemeDeleteResponse,
@@ -92,8 +92,20 @@ export const apiClient = {
     getConversations: (signal?: AbortSignal) => getJson<ConversationSummary[]>("/api/conversations", signal),
     getConversation: (id: string, signal?: AbortSignal) =>
         getJson<ConversationItem[]>(`/api/conversations/${encodeURIComponent(id)}`, signal),
-    getAutomatedPeers: (signal?: AbortSignal) => getJson<{ registered: AutomatedPeerSummary[]; recent: AutomatedPeerSummary[] }>("/api/automated-peers", signal),
-    getKnownMembers: (signal?: AbortSignal) => getJson<KnownMemberSummary[]>("/api/known-members", signal),
+    getGroups: (signal?: AbortSignal) => getJson<GroupSummary[]>("/api/groups", signal),
+    getMarkedBots: (signal?: AbortSignal) => getJson<GroupMemberSummary[]>("/api/members/marked-bots", signal),
+    getGroupMembers: (groupOpenid: string, signal?: AbortSignal) =>
+        getJson<GroupMemberSummary[]>(`/api/groups/${encodeURIComponent(groupOpenid)}/members`, signal),
+    getGroupMember: (groupOpenid: string, memberOpenid: string, signal?: AbortSignal) =>
+        getJson<GroupMemberSummary>(`/api/groups/${encodeURIComponent(groupOpenid)}/members/${encodeURIComponent(memberOpenid)}`, signal),
+    setGroupRepliesEnabled: (groupOpenid: string, enabled: boolean, signal?: AbortSignal) =>
+        sendJson<{ group: GroupSummary; changed: boolean }>(`/api/groups/${encodeURIComponent(groupOpenid)}/replies`, "PATCH", { enabled }, signal),
+    setMemberManualBot: (groupOpenid: string, memberOpenid: string, enabled: boolean, signal?: AbortSignal) =>
+        sendJson<{ state: MemberBotState; member: GroupMemberSummary | null }>(
+            `/api/groups/${encodeURIComponent(groupOpenid)}/members/${encodeURIComponent(memberOpenid)}/manual-bot`, "PATCH", { enabled }, signal),
+    clearMemberDetections: (groupOpenid: string, memberOpenid: string, signal?: AbortSignal) =>
+        sendJson<{ state: MemberBotState; member: GroupMemberSummary | null }>(
+            `/api/groups/${encodeURIComponent(groupOpenid)}/members/${encodeURIComponent(memberOpenid)}/clear-detections`, "POST", undefined, signal),
     getMemeLibrary: (signal?: AbortSignal) => getJson<MemeLibraryResponse>("/api/meme-library", signal),
     uploadMeme: (name: string, data: string, signal?: AbortSignal) =>
         sendJson<MemeUploadResponse>("/api/meme-library", "POST", { name, data }, signal),
@@ -102,10 +114,6 @@ export const apiClient = {
     memePreviewUrl: (filename: string) => `/api/meme-library/${encodeURIComponent(filename)}`,
     updateConfig: (patch: PublicConfigPatch, signal?: AbortSignal) =>
         sendJson<ConfigPatchResponse>("/api/config", "PATCH", patch, signal),
-    addAutomatedPeer: (id: string, signal?: AbortSignal) =>
-        sendJson<AutomatedPeerMutationResult>("/api/automated-peers", "POST", { id }, signal),
-    removeAutomatedPeer: (id: string, signal?: AbortSignal) =>
-        sendJson<AutomatedPeerMutationResult>(`/api/automated-peers/${encodeURIComponent(id)}`, "DELETE", undefined, signal),
     getEditorResource: (id: EditorResourceId, signal?: AbortSignal) =>
         getJson<EditorResource>(`/api/editor/resources/${encodeURIComponent(id)}`, signal),
     saveEditorResource: (id: EditorResourceId, content: string, expectedVersion: string, signal?: AbortSignal) =>

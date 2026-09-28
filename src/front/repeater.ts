@@ -18,6 +18,11 @@ interface GroupRepeaterState {
 export class GroupRepeater {
     private readonly groups = new Map<string, GroupRepeaterState>();
 
+    reset(groupId?: string): void {
+        if (groupId === undefined) this.groups.clear();
+        else this.groups.delete(groupId);
+    }
+
     observe(input: RepeaterInput): RepeaterDecision {
         const content = input.content.replace(/\r\n/g, "\n");
         if (!input.groupId || !input.senderId || !content) return { repeat: false };

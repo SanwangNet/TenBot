@@ -1,5 +1,5 @@
 import { MemoryMemberRepository } from "../../members/memory-repository.js";
-import type { KnownMember, MemberRepository } from "../../members/repository.js";
+import type { KnownMember, MemberBotState, MemberRepository } from "../../members/repository.js";
 import { logger, truncateLogText } from "../../shared/logger.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
 
@@ -17,7 +17,7 @@ function roleName(role?: string): string {
     return "成员";
 }
 
-async function learn(groupOpenid: string, memberOpenid: string, username: string, role?: string): Promise<void> {
+async function learn(groupOpenid: string, memberOpenid: string, username: string, role?: string, platformBot = false): Promise<void> {
     try {
         const previous = await repository.findByOpenid(groupOpenid, memberOpenid);
         const now = Date.now();
@@ -27,6 +27,7 @@ async function learn(groupOpenid: string, memberOpenid: string, username: string
             lastSeenAt: now,
             updatedAt: now,
         });
+        if (platformBot) await repository.setPlatformBot(groupOpenid, memberOpenid, true, now);
         if (!previous) {
             logger.info("[Members] learned " + truncateLogText(username, 60) + " (" + roleName(role) + ")");
         } else {
@@ -46,17 +47,17 @@ async function learn(groupOpenid: string, memberOpenid: string, username: string
 
 export async function rememberKnownMember(message: NormalizedQqMessage): Promise<void> {
     if (message.kind !== "group" || !message.groupId) return;
-    if (!message.authorIsBot && message.author && message.author.is_you !== true && message.author.isYou !== true) {
+    if (message.author) {
         const id = message.author.member_openid ?? message.author.memberOpenid ?? message.author.id;
         const name = message.author.username ?? message.author.nickname;
         const role = message.author.member_role ?? message.author.memberRole;
         if (typeof id === "string" && id && typeof name === "string" && name) {
-            await learn(message.groupId, id, name, typeof role === "string" ? role : undefined);
+            await learn(message.groupId, id, name, typeof role === "string" ? role : undefined, message.authorIsBot);
         }
     }
     for (const mention of message.mentions) {
-        if (!mention.isBot && !mention.isSelf && mention.memberOpenid && mention.username) {
-            await learn(message.groupId, mention.memberOpenid, mention.username, mention.role);
+        if (mention.memberOpenid && mention.username) {
+            await learn(message.groupId, mention.memberOpenid, mention.username, mention.role, mention.isBot);
         }
     }
 }
@@ -64,10 +65,19 @@ export async function rememberKnownMember(message: NormalizedQqMessage): Promise
 export async function getKnownMembers(message: NormalizedQqMessage): Promise<KnownMember[]> {
     if (message.kind !== "group" || !message.groupId) return [];
     try {
-        return await repository.listByGroup(message.groupId);
+        return (await repository.listGroupMembers(message.groupId))
+            .filter((member) => !member.platformBot && !member.manualBot && !member.autoBot);
     } catch (error) {
         logger.error("[Members] list error", error);
         return [];
+    }
+}
+
+export async function getKnownMemberBotState(groupOpenid: string, memberOpenid: string): Promise<MemberBotState | null> {
+    try { return await repository.getMemberBotState(groupOpenid, memberOpenid); }
+    catch (error) {
+        logger.error("[Members] Bot state lookup failed", error);
+        return null;
     }
 }
 
@@ -84,7 +94,13 @@ export async function getKnownMemberNameById(groupOpenid: string | undefined, me
 export async function findMembersByName(groupOpenid: string | undefined, username: string): Promise<KnownMember[]> {
     if (!groupOpenid) return [];
     try {
-        return await repository.findByUsername(groupOpenid, username);
+        const matches = await repository.findByUsername(groupOpenid, username);
+        const humans: KnownMember[] = [];
+        for (const member of matches) {
+            const state = await repository.getMemberBotState(groupOpenid, member.memberOpenid);
+            if (!state.platformBot && !state.manualBot && !state.autoBot) humans.push(member);
+        }
+        return humans;
     } catch (error) {
         logger.error("[Members] lookup error", error);
         return [];

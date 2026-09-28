@@ -30,10 +30,11 @@ import {
 } from "../conversation/recent-context.js";
 import { isConversationActive } from "../conversation/engagement.js";
 import {
-    automatedPeerLoopGuard,
-    type AutomatedPeerLoopGuard,
-} from "../conversation/automated-peer.js";
-import { buildKnownMembersContext, rememberKnownMember } from "../conversation/known-members.js";
+    botLoopGuard,
+    type BotLoopGuard,
+} from "../conversation/bot-loop-guard.js";
+import { buildKnownMembersContext, getKnownMemberBotState, rememberKnownMember } from "../conversation/known-members.js";
+import type { BotDetector } from "../../members/bot-detector.js";
 import { normalizeQqMessage } from "../message/normalize-message.js";
 import { decideMessageTrigger, isOnlyQQFace, wantsVision } from "../message/trigger.js";
 import { admitConversationWake, hasActiveReplyCycle, observeConversationUpdate, sendFrontFailureNotice } from "../reply/coordinator.js";
@@ -41,6 +42,7 @@ import type { NormalizedQqMessage } from "../message/normalize-message.js";
 import { GroupReplyControl, isConfiguredBotAdmin } from "../../runtime/group-reply-control.js";
 import { toOpaqueMemberDisplayId } from "../../members/opaque-member-id.js";
 import { createQqSendError } from "../reply/error-adapter.js";
+import type { MemberBotState } from "../../members/repository.js";
 
 const SEARCH_NOTICES = [
     "\u7a0d\u7b49\uff0c\u6211\u67e5\u4e00\u4e0b\u3002",
@@ -106,8 +108,8 @@ function isReplyJudgeDecision(value: unknown): value is ReplyJudgeDecision {
 
 export function registerMessageHandler(
     bot: QQBot,
-    loopGuard: AutomatedPeerLoopGuard = automatedPeerLoopGuard,
-    observePeer?: (message: NormalizedQqMessage) => void,
+    loopGuard: BotLoopGuard = botLoopGuard,
+    observeMemberUpdate?: (message: NormalizedQqMessage) => void,
     observeConversationMessage?: (message: NormalizedQqMessage) => void,
     replyJudge?: ReplyJudge,
     coordinatorDependencies: ReplyCoordinatorDependencies = {},
@@ -117,6 +119,7 @@ export function registerMessageHandler(
     turnWaitScheduler: ReplyJudgeTurnWaitScheduler = defaultTurnWaitScheduler,
     groupReplyControl?: GroupReplyControl,
     getBotAdminIds: () => readonly string[] = () => [],
+    botDetector?: BotDetector,
 ): () => void {
     const judgeAdmissionStates = new Map<string, JudgeAdmissionState>();
     const groupRepeater = new GroupRepeater();
@@ -134,10 +137,16 @@ export function registerMessageHandler(
         judgeAdmissionStates.delete(key);
     };
 
-    const clearAllAdmissionStates = (): void => {
-        for (const key of [...judgeAdmissionStates.keys()]) clearAdmissionState(key);
+    const clearAdmissionStatesForGroup = (groupOpenid?: string): void => {
+        for (const [key, state] of judgeAdmissionStates) {
+            if (groupOpenid && state.latest.request.message.groupId !== groupOpenid) continue;
+            clearAdmissionState(key);
+        }
     };
-    const unregisterPendingWorkCanceller = groupReplyControl?.registerPendingWorkCanceller(clearAllAdmissionStates);
+    const unregisterPendingWorkCanceller = groupReplyControl?.registerPendingWorkCanceller((groupOpenid) => {
+        clearAdmissionStatesForGroup(groupOpenid);
+        groupRepeater.reset(groupOpenid);
+    });
 
     const dispose = (): void => {
         if (disposed) return;
@@ -288,6 +297,9 @@ export function registerMessageHandler(
         const frontMode = getFrontMode();
         const normalized = await normalizeQqMessage(context, message);
         logger.all("[QQ] normalized inbound", normalized);
+        if (normalized.kind === "group" && normalized.groupId) {
+            await groupReplyControl?.observeGroup(normalized.groupId);
+        }
         try {
             await memeCandidateTracker.remember(
                 normalized,
@@ -297,17 +309,11 @@ export function registerMessageHandler(
             logger.error("[MemeCandidate] candidate capture failed");
         }
         debugPeerIdentity(normalized.authorName, normalized.authorId);
-        const isAutomatedPeer = loopGuard.isAutomatedPeer(normalized.authorId);
-        // QQ's bot flag is not reliable membership policy; unregistered IDs fail open as human activity.
-
-        const conversationKey = getConversationKey(normalized);
-        if (isAutomatedPeer) loopGuard.observeAutomatedPeerMessage(conversationKey);
-        else loopGuard.resetByHumanMessage(conversationKey, normalized.authorName);
 
         // Learn members and route native commands before they can affect an AI cycle.
         await rememberKnownMember(normalized);
-        try { observePeer?.(normalized); }
-        catch { /* The local TUI directory must not change message handling behavior. */ }
+        try { observeMemberUpdate?.(normalized); }
+        catch { /* The management UI is an observer only. */ }
 
         const isGroupEvent = normalized.kind === "group" ||
             normalized.eventType === "GROUP_MESSAGE_CREATE" ||
@@ -345,11 +351,40 @@ export function registerMessageHandler(
         })) return;
 
         const rawText = typeof normalized.source.content === "string" ? normalized.source.content : "";
+        const eligibleDetectorText = normalized.kind === "group" &&
+            normalized.eventType === "GROUP_MESSAGE_CREATE" &&
+            !commandTrigger.isAtBot && parsedCommand === null &&
+            normalized.mentions.length === 0 && normalized.attachments.length === 0 &&
+            normalized.author?.is_you !== true && normalized.author?.isYou !== true &&
+            !rawText.includes("<faceType=") && !/<@[^>]+>/.test(rawText);
+        let detectedState: MemberBotState | null = null;
+        if (normalized.kind === "group" && normalized.groupId && normalized.authorId && botDetector) {
+            try {
+                detectedState = (await botDetector.observe({
+                    groupOpenid: normalized.groupId,
+                    memberOpenid: normalized.authorId,
+                    text: rawText,
+                    eligibleText: eligibleDetectorText,
+                    platformBot: normalized.authorIsBot,
+                })).state;
+            } catch (error) {
+                logger.error("[BotDetector] observation failed", error);
+            }
+        }
+        const botState = detectedState ?? (normalized.kind === "group" && normalized.groupId && normalized.authorId
+            ? await getKnownMemberBotState(normalized.groupId, normalized.authorId)
+            : null);
+        const botMessage = normalized.authorIsBot || Boolean(botState?.platformBot || botState?.manualBot || botState?.autoBot) ||
+            (normalized.kind === "group" && Boolean(normalized.groupId && normalized.authorId) && botState === null);
+        const conversationKey = getConversationKey(normalized);
+        if (botMessage) loopGuard.observeBotMessage(conversationKey);
+        else loopGuard.resetByHumanMessage(conversationKey, normalized.authorName);
         const repeatDecision = normalized.kind === "group" &&
             normalized.eventType === "GROUP_MESSAGE_CREATE" &&
             Boolean(normalized.groupId && normalized.authorId) &&
+            (!groupReplyControl || groupReplyControl.getGroupRepliesEnabledForGroup(normalized.groupId!)) &&
             !normalized.authorIsBot && normalized.author?.is_you !== true && normalized.author?.isYou !== true &&
-            !isAutomatedPeer && !commandTrigger.isAtBot && parsedCommand === null &&
+            !botMessage && !commandTrigger.isAtBot && parsedCommand === null &&
             normalized.mentions.length === 0 && normalized.attachments.length === 0 &&
             !rawText.includes("<faceType=") && !/<@[^>]+>/.test(rawText)
             ? groupRepeater.observe({ groupId: normalized.groupId!, senderId: normalized.authorId!, content: rawText })
@@ -419,7 +454,10 @@ export function registerMessageHandler(
             aiInput: "",
             imageUrls: [],
             isGroup: trigger.isGroup,
-            groupRepliesEnabled: () => groupReplyControl?.getGroupRepliesEnabled() ?? true,
+            botMessage,
+            groupRepliesEnabled: groupReplyControl
+                ? (groupOpenid) => groupReplyControl!.getGroupRepliesEnabledForGroup(groupOpenid)
+                : undefined,
             frontMode,
             wakeLevel: "pass",
             wakeReason: trigger.triggerKind === "hard-mention" ? undefined :
@@ -502,14 +540,16 @@ export function registerMessageHandler(
             botLoopGuard: coordinatorDependencies.botLoopGuard ?? loopGuard,
         };
 
+        if (trigger.isGroup && groupReplyControl &&
+            (!normalized.groupId || !groupReplyControl.getGroupSettingEnabled(normalized.groupId))) {
+            clearAdmissionState(conversationKey);
+            logger.debug("[Front] skipped: group replies disabled for group");
+            return;
+        }
+
         if (trigger.isGroup && groupReplyControl && !groupReplyControl.getGroupRepliesEnabled()) {
             clearAdmissionState(conversationKey);
-            if (trigger.isAtBot) {
-                try { await bot.sendText(normalized.replyTarget, "模型暂不可用"); }
-                catch (error) { logger.error("[Runtime] unavailable notice send failed", error); }
-            } else {
-                logger.debug("[Front] skipped: group replies disabled");
-            }
+            logger.debug("[Front] skipped: global group reply gate is disabled");
             return;
         }
 

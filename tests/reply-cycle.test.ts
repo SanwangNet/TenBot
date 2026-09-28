@@ -22,7 +22,7 @@ const MODEL_TIMEOUT_CODE = "M:A_MG_MTO";
 const MODEL_TIMEOUT_MESSAGE = `ERROR: ${MODEL_TIMEOUT_CODE}`;
 
 type RecordedAttempt = { input: string; signal: AbortSignal; resolve: (result: AiResult) => void };
-function message(groupId = randomUUID(), content = "A"): NormalizedQqMessage {
+function message(groupId: string = randomUUID(), content = "A"): NormalizedQqMessage {
     return {
         source: {} as never, id: randomUUID(), kind: "group", eventType: "GROUP_MESSAGE_CREATE",
         content, displayContent: content, groupId, author: null, authorId: "user",
@@ -138,7 +138,8 @@ function requestFor(bot: QQBot, value: NormalizedQqMessage, priority: 0 | 1 | 2 
     const wakeReason = priority === 3 ? "hard-mention" as const : priority === 2 ? "name-soft" as const :
         priority === 1 ? "active-soft" as const : undefined;
     return {
-        bot, message: value, aiInput: value.displayContent, imageUrls: [], isGroup: true, wakeLevel, wakeReason,
+        bot, message: value, aiInput: value.displayContent, imageUrls: [], isGroup: true,
+        botMessage: value.authorIsBot, wakeLevel, wakeReason,
         triggerPriority: priority, isAtBot: priority === 3, mentionedByName: priority === 2,
         onWebSearchStart: async () => { await bot.sendText(value.replyTarget, "search notice"); },
         buildAttempt: async (current: NormalizedQqMessage, context: AttemptBuildContext) => ({
@@ -197,6 +198,27 @@ test("global group disable cancels active generation and prevents a stale result
     attempts[0]?.resolve(reply("stale reply"));
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(calls.length, 0);
+});
+
+test("group-scoped cancellation stops only the selected group and global cancellation still stops all groups", async () => {
+    const { bot } = fakeBot();
+    const groupA = message("cancel-scope-a", "A question");
+    const groupB = message("cancel-scope-b", "B question");
+    commit(groupA);
+    commit(groupB);
+    const attemptsA: RecordedAttempt[] = [];
+    const attemptsB: RecordedAttempt[] = [];
+    const cycleA = coordinateAiReply(requestFor(bot, groupA), { executeAi: controlledAttempts(attemptsA) });
+    const cycleB = coordinateAiReply(requestFor(bot, groupB), { executeAi: controlledAttempts(attemptsB) });
+    await waitFor(() => attemptsA.length === 1 && attemptsB.length === 1);
+
+    assert.equal(cancelGroupReplyCycles(groupA.groupId), 1);
+    assert.equal(attemptsA[0]?.signal.aborted, true);
+    assert.equal(attemptsB[0]?.signal.aborted, false);
+    await cycleA;
+    assert.equal(cancelGroupReplyCycles(), 1);
+    assert.equal(attemptsB[0]?.signal.aborted, true);
+    await cycleB;
 });
 
 test("a group reply completed after the gate closes is discarded before outbound send", async () => {

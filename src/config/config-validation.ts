@@ -28,10 +28,6 @@ const MAX_MEME_SEND_MAX_EDGE = 1_024;
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh"];
 const VERBOSITIES: readonly ModelVerbosity[] = ["low", "medium", "high"];
 
-export function parseAutomatedPeerIds(value: string | undefined): readonly string[] {
-    return [...new Set((value ?? "").split(",").map((id) => id.trim()).filter(Boolean))];
-}
-
 export function parseBotAdminIds(value: string | undefined): readonly string[] {
     const normalized = (value ?? "").replace(/&#x20;/gi, " ");
     const ids = normalized.split(",").map((id) => id.trim().toUpperCase()).filter(Boolean);
@@ -41,14 +37,6 @@ export function parseBotAdminIds(value: string | undefined): readonly string[] {
         }
     }
     return [...new Set(ids)];
-}
-
-export function validateAutomatedPeerId(value: string): string {
-    const id = value.trim();
-    if (!id || id.length > 256 || /[,\u0000-\u001f\u007f-\u009f]/.test(id)) {
-        throw new Error("稳定 ID 不能为空、不能包含逗号或换行，且长度不能超过 256 个字符");
-    }
-    return id;
 }
 
 export function parseBotLoopGuardMaxCycles(value: string | undefined): number {
@@ -214,7 +202,6 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         web: { host: parseWebHost(env.WEB_HOST), port: parseWebPort(env.WEB_PORT) },
         botLoopGuard: {
             maxCycles: parseBotLoopGuardMaxCycles(env.BOT_LOOP_GUARD_MAX_CYCLES),
-            automatedPeerIds: parseAutomatedPeerIds(env.AUTOMATED_PEER_IDS),
         },
     };
 }
@@ -243,7 +230,6 @@ export function toPublicConfig(config: AppConfig): PublicConfig {
         },
         botLoopGuard: {
             maxCycles: config.botLoopGuard.maxCycles,
-            automatedPeerCount: config.botLoopGuard.automatedPeerIds.length,
         },
     };
 }
@@ -291,7 +277,7 @@ export function validatePublicConfigPatch(patch: PublicConfigPatch): string {
             return "CODEX_VERBOSITY";
         case "botLoopGuard.maxCycles":
             if (!Number.isSafeInteger(patch.value) || patch.value < 1) {
-                throw new Error("自动账号连续交互上限必须是大于等于 1 的整数");
+                throw new Error("Bot 连续交互上限必须是大于等于 1 的整数");
             }
             return "BOT_LOOP_GUARD_MAX_CYCLES";
     }

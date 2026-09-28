@@ -48,7 +48,7 @@ export interface PublicConfig {
     replyJudge: { model: string; timeoutMs: number; fallbackToMainOnInvalidOutput: boolean; turnWaitMs: number; provider?: string };
     gpt: { model: string; reasoningEffort: ReasoningEffort; verbosity: ModelVerbosity; configured: boolean };
     deepseek: { model: string; reasoningEffort: ReasoningEffort; configured: boolean };
-    botLoopGuard: { maxCycles: number; automatedPeerCount: number };
+    botLoopGuard: { maxCycles: number };
 }
 
 export type PublicConfigPatch =
@@ -86,21 +86,41 @@ export type ConversationItem =
     | { id: string; type: "ai-attempt"; cycleId: string; attemptId: string; timestamp: string; status: "generating" | "interrupted" | "completed" | "failed"; failureStage?: "generation" | "send" }
     | { id: string; type: "ai-reply"; content: string; timestamp: string; sendStatus: "sent" };
 
-export interface AutomatedPeerSummary {
-    id: string;
-    displayId: string;
-    displayName: string;
-    platformBotHint: boolean;
-    lastSeenAt?: string;
+export interface GroupSummary {
+    groupOpenid: string;
+    repliesEnabled: boolean;
+    firstSeenAt: number;
+    lastSeenAt: number;
+    updatedAt: number;
+    displayName?: string;
+    memberCount: number;
 }
 
-export interface KnownMemberSummary {
-    id: string;
-    displayId: string;
-    displayName: string;
+export interface GroupMemberSummary {
+    groupOpenid: string;
+    memberOpenid: string;
+    username: string;
+    role?: string;
+    firstSeenAt: number;
     lastSeenAt: number;
-    groupCount: number;
-    roles?: string[];
+    updatedAt: number;
+    platformBot: boolean;
+    manualBot: boolean;
+    autoBot: boolean;
+    detectionMarks: number;
+    lastDetectionAt: number | null;
+}
+
+export interface MemberBotState {
+    groupOpenid: string;
+    memberOpenid: string;
+    platformBot: boolean;
+    manualBot: boolean;
+    autoBot: boolean;
+    detectionMarks: number;
+    lastDetectionAt: number | null;
+    createdAt: number;
+    updatedAt: number;
 }
 
 export interface MemeLibraryResponse { files: string[] }
@@ -138,10 +158,8 @@ export interface EditorResource {
 }
 export interface ReloadResult { ok: boolean; message: string; revision?: number; count?: number; loadedAt?: string }
 export interface EditorSaveResponse { ok: true; resource: EditorResource; reload: ReloadResult }
-export interface AutomatedPeerMutationResult { ok: boolean; changed: boolean; message: string; details?: string }
-
 export type RuntimeEvent =
     | { type: "provider-error"; notice: ProviderErrorNotice }
-    | { type: "recent-peers-updated" }
+    | { type: "members-updated" }
     | { type: "reload-failure"; target: "config" | "prompt" | "memes"; message: string; timestamp: string }
     | { type: "conversation-item"; conversationId: string; kind: ConversationSummary["kind"]; label: string; item: ConversationItem };

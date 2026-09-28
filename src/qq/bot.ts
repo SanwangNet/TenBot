@@ -7,6 +7,7 @@ import type { NormalizedQqMessage } from "./message/normalize-message.js";
 import type { ReplyJudge } from "../front/reply-judge.js";
 import type { FrontMode } from "../front/wake-level.js";
 import type { GroupReplyControl } from "../runtime/group-reply-control.js";
+import type { BotDetector } from "../members/bot-detector.js";
 
 export type QqConnectionState = "connecting" | "connected" | "disconnected" | "error";
 const messageHandlerCleanup = new WeakMap<QQBot, () => void>();
@@ -19,7 +20,7 @@ export function shutdownQqMessageHandler(bot: QQBot): void {
 
 export function createQqBot(
     onConnectionState?: (state: QqConnectionState) => void,
-    observePeer?: (message: NormalizedQqMessage) => void,
+    observeMemberUpdate?: (message: NormalizedQqMessage) => void,
     observeConversationMessage?: (message: NormalizedQqMessage) => void,
     connectionConfig?: { appId?: string; appSecret?: string },
     replyJudge?: ReplyJudge,
@@ -30,6 +31,7 @@ export function createQqBot(
     getBotAdminIds?: () => readonly string[],
     getMemeSendMaxEdge?: () => number | null,
     getBotTimeZone?: () => string,
+    botDetector?: BotDetector,
 ): QQBot {
     const appId = connectionConfig ? connectionConfig.appId : process.env.QQBOT_APP_ID;
     const appSecret = connectionConfig ? connectionConfig.appSecret : process.env.QQBOT_APP_SECRET;
@@ -65,9 +67,9 @@ export function createQqBot(
         }
     });
 
-    messageHandlerCleanup.set(bot, registerMessageHandler(bot, undefined, observePeer, observeConversationMessage,
+    messageHandlerCleanup.set(bot, registerMessageHandler(bot, undefined, observeMemberUpdate, observeConversationMessage,
         replyJudge, { getMemeSendMaxEdge, getBotTimeZone }, getFrontMode, getReplyJudgeIpoFallbackToMain, getReplyJudgeTurnWaitMs,
-        undefined, groupReplyControl, getBotAdminIds));
+        undefined, groupReplyControl, getBotAdminIds, botDetector));
     registerInteractionHandler(bot);
 
     return bot;

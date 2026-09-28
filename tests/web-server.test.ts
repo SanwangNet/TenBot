@@ -10,8 +10,7 @@ import type { RuntimeEvent } from "../src/control/runtime-event.js";
 import type { LogEntry } from "../src/shared/logger.js";
 import { toPublicConfig } from "../src/config/config-validation.js";
 import type { ConversationItem, ConversationSummary } from "../src/control/conversation-timeline.js";
-import type { AutomatedPeerSummary } from "../src/control/automated-peers.js";
-import type { KnownMemberSummary } from "../src/control/known-members.js";
+import type { GroupSettings, MemberBotState } from "../src/members/repository.js";
 import { loadAppConfig } from "../src/config/config-validation.js";
 import type { ConfigUpdateResult, PublicConfigPatch } from "../src/config/config-types.js";
 import type { EditorResourceId } from "../src/control/editor-resources.js";
@@ -38,6 +37,7 @@ const authEnvironment = {
     GITHUB_OAUTH_CALLBACK_URL: "http://127.0.0.1:3000/api/auth/github/callback",
     GITHUB_OAUTH_ALLOWED_USER_IDS: "12345678",
 };
+let nextTestWebPort = 20_000;
 const authCookies = new Map<string, string>();
 
 async function fetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
@@ -77,31 +77,23 @@ function createFakeControl() {
         REPLY_JUDGE_API_KEY: "private-judge-key",
         DEEPSEEK_API_KEY: "private-deepseek-key",
     }));
-    const registered: AutomatedPeerSummary[] = [{
-        id: "stable-peer-id",
-        displayId: "stable",
-        displayName: "已登记账号",
-        platformBotHint: true,
+    let groups: GroupSettings[] = [{
+        groupOpenid: "group-openid-a", repliesEnabled: true, firstSeenAt: 1, lastSeenAt: 2,
+        updatedAt: 2, displayName: "测试群 A", memberCount: 3,
+    }, {
+        groupOpenid: "group-openid-b", repliesEnabled: true, firstSeenAt: 1, lastSeenAt: 2,
+        updatedAt: 2, displayName: "测试群 B", memberCount: 1,
     }];
-    const recent: AutomatedPeerSummary[] = [{
-        id: "recent-peer-id",
-        displayId: "recent",
-        displayName: "最近账号",
-        platformBotHint: false,
-    }];
-    const members: KnownMemberSummary[] = [{
-        id: "opaque-member-id",
-        displayId: "A1B2C3D4",
-        displayName: "群友",
-        lastSeenAt: 1,
-        groupCount: 1,
-    }];
+    const groupReplyCalls: Array<[string, boolean]> = [];
+    let fakeBotState: MemberBotState = {
+        groupOpenid: "group-openid-a", memberOpenid: "full-member-openid", platformBot: false,
+        manualBot: false, autoBot: true, detectionMarks: 5, lastDetectionAt: 3, createdAt: 1, updatedAt: 3,
+    };
     const statusListeners = new Set<(value: RuntimeStatus) => void>();
     const logListeners = new Set<(value: LogEntry) => void>();
     const eventListeners = new Set<(value: RuntimeEvent) => void>();
     let logReplay: LogEntry[] = [];
     const patchCalls: PublicConfigPatch[] = [];
-    const peerCalls: string[] = [];
     const resourceCalls: string[] = [];
     let updateResult: ConfigUpdateResult = { ok: true, requiresRestart: false, changedFields: [], message: "saved" };
 
@@ -114,11 +106,45 @@ function createFakeControl() {
         },
         getConversations: () => structuredClone(conversations),
         getConversationTimeline: (id: string) => id === conversationId ? structuredClone(timeline) : [],
-        getAutomatedPeers: () => structuredClone(registered),
-        getRecentPeers: () => structuredClone(recent),
-        async getKnownMembers() { return structuredClone(members); },
-        async addAutomatedPeer(id: string) { peerCalls.push(`add:${id}`); return { ok: true, changed: true, message: "added" }; },
-        async removeAutomatedPeer(id: string) { peerCalls.push(`remove:${id}`); return { ok: true, changed: true, message: "removed" }; },
+        async getGroups() { return structuredClone(groups); },
+        async setGroupRepliesEnabledForGroup(groupOpenid: string, enabled: boolean) {
+            groupReplyCalls.push([groupOpenid, enabled]);
+            const group = groups.find((item) => item.groupOpenid === groupOpenid);
+            if (!group) return { ok: false, changed: false, notFound: true };
+            const changed = group.repliesEnabled !== enabled;
+            const index = groups.findIndex((item) => item.groupOpenid === groupOpenid);
+            if (index >= 0) groups[index] = { ...groups[index]!, repliesEnabled: enabled };
+            return { ok: true, changed };
+        },
+        async getMarkedBots() { return fakeBotState.platformBot || fakeBotState.manualBot || fakeBotState.autoBot
+            ? [{
+                groupOpenid: fakeBotState.groupOpenid, memberOpenid: fakeBotState.memberOpenid, username: "群友",
+                firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2, platformBot: fakeBotState.platformBot,
+                manualBot: fakeBotState.manualBot, autoBot: fakeBotState.autoBot, detectionMarks: fakeBotState.detectionMarks,
+                lastDetectionAt: fakeBotState.lastDetectionAt,
+            }] : []; },
+        async getGroupMembers(groupOpenid: string) { return groupOpenid === "group-openid-a" ? [
+            { groupOpenid, memberOpenid: "full-member-openid", username: "群友", firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2,
+                platformBot: fakeBotState.platformBot, manualBot: fakeBotState.manualBot, autoBot: fakeBotState.autoBot,
+                detectionMarks: fakeBotState.detectionMarks, lastDetectionAt: fakeBotState.lastDetectionAt },
+        ] : []; },
+        async getGroupMember(groupOpenid: string, memberOpenid: string) {
+            return groupOpenid === "group-openid-a" && memberOpenid === "full-member-openid" ? {
+                groupOpenid, memberOpenid, username: "群友", firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2,
+                platformBot: fakeBotState.platformBot, manualBot: fakeBotState.manualBot, autoBot: fakeBotState.autoBot,
+                detectionMarks: fakeBotState.detectionMarks, lastDetectionAt: fakeBotState.lastDetectionAt,
+            } : null;
+        },
+        async setMemberManualBot(groupOpenid: string, memberOpenid: string, enabled: boolean) {
+            if (groupOpenid !== "group-openid-a" || memberOpenid !== "full-member-openid") return null;
+            fakeBotState = { ...fakeBotState, manualBot: enabled, updatedAt: 4 };
+            return fakeBotState;
+        },
+        async clearMemberDetection(groupOpenid: string, memberOpenid: string) {
+            if (groupOpenid !== "group-openid-a" || memberOpenid !== "full-member-openid") return null;
+            fakeBotState = { ...fakeBotState, autoBot: false, detectionMarks: 0, lastDetectionAt: null, updatedAt: 5 };
+            return fakeBotState;
+        },
         async getEditorResource(id: EditorResourceId) { resourceCalls.push(`get:${id}`); return { id, displayName: "Prompt", language: "markdown", content: "safe prompt", version: "a".repeat(64) }; },
         async saveEditorResource(id: EditorResourceId, content: string, expectedVersion: string) {
             resourceCalls.push(`save:${id}:${content}:${expectedVersion}`);
@@ -159,7 +185,8 @@ function createFakeControl() {
             return { status: statusListeners.size, logs: logListeners.size, events: eventListeners.size };
         },
         patchCalls,
-        peerCalls,
+        groupReplyCalls,
+        get groups() { return structuredClone(groups); },
         resourceCalls,
         setUpdateResult(result: ConfigUpdateResult) { updateResult = result; },
     };
@@ -172,6 +199,7 @@ async function createAuthFixture(control: TenBotControl, options: {
     staticDirectory?: string;
     memeService?: MemeLibraryService;
     seedSession?: boolean;
+    port?: number;
 } = {}) {
     const directory = await mkdtemp(join(tmpdir(), "tenbot-web-auth-"));
     const repository = new WebSessionRepository(join(directory, "bot.db"));
@@ -181,7 +209,7 @@ async function createAuthFixture(control: TenBotControl, options: {
     if (options.seedSession !== false) repository.create(createTokenHash(rawToken), user, now, now + WEB_SESSION_TTL_MS);
     const auth = new WebAuthService(options.environment ?? authEnvironment, repository, { fetch: options.fetch, now: options.now });
     const web = createTenBotWebServer(control, {
-        host: "127.0.0.1", port: 0,
+        host: "127.0.0.1", port: options.port ?? nextTestWebPort++,
         staticDirectory: options.staticDirectory,
         memeService: options.memeService,
         auth,
@@ -283,17 +311,55 @@ test("HTTP API reads through TenBotControl and keeps config secrets out of respo
         const missing = await fetch(`${baseUrl}/api/conversations/missing`);
         assert.equal(missing.status, 404);
         assert.deepEqual(await missing.json(), { error: { message: "Not found" } });
+        assert.equal((await fetch(`${baseUrl}/api/automated-peers`)).status, 404);
+        assert.equal((await fetch(`${baseUrl}/api/known-members`)).status, 404);
 
-        const peers = await fetch(`${baseUrl}/api/automated-peers`);
-        assert.deepEqual(await peers.json(), {
-            registered: [{ id: "stable-peer-id", displayId: "stable", displayName: "已登记账号", platformBotHint: true }],
-            recent: [{ id: "recent-peer-id", displayId: "recent", displayName: "最近账号", platformBotHint: false }],
+
+        const groups = await fetch(`${baseUrl}/api/groups`);
+        assert.deepEqual(await groups.json(), [
+            { groupOpenid: "group-openid-a", repliesEnabled: true, firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2, displayName: "测试群 A", memberCount: 3 },
+            { groupOpenid: "group-openid-b", repliesEnabled: true, firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2, displayName: "测试群 B", memberCount: 1 },
+        ]);
+        const updatedGroup = await fetch(`${baseUrl}/api/groups/group-openid-a/replies`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: false }),
         });
+        assert.equal(updatedGroup.status, 200);
+        assert.equal(((await updatedGroup.json()) as { group: GroupSettings }).group.repliesEnabled, false);
+        assert.deepEqual(fake.groupReplyCalls, [["group-openid-a", false]]);
+        assert.equal(fake.groups[1]?.repliesEnabled, true, "changing one group leaves another enabled");
 
-        const members = await fetch(`${baseUrl}/api/known-members`);
-        assert.deepEqual(await members.json(), [{
-            id: "opaque-member-id", displayId: "A1B2C3D4", displayName: "群友", lastSeenAt: 1, groupCount: 1,
-        }]);
+        const invalidGroupId = await fetch(`${baseUrl}/api/groups/%20/replies`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: false }),
+        });
+        assert.equal(invalidGroupId.status, 400);
+        const invalidGroupBody = await fetch(`${baseUrl}/api/groups/group-openid-a/replies`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: "false" }),
+        });
+        assert.equal(invalidGroupBody.status, 400);
+        const unknownGroup = await fetch(`${baseUrl}/api/groups/unknown-group/replies`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: false }),
+        });
+        assert.equal(unknownGroup.status, 404);
+
+        const markedBots = await fetch(`${baseUrl}/api/members/marked-bots`);
+        const markedBotRows = await markedBots.json() as Array<{ memberOpenid: string; autoBot: boolean }>;
+        assert.equal(markedBotRows[0]?.memberOpenid, "full-member-openid");
+        assert.equal(markedBotRows[0]?.autoBot, true);
+        const groupMembers = await fetch(`${baseUrl}/api/groups/group-openid-a/members`);
+        assert.equal(((await groupMembers.json()) as Array<{ memberOpenid: string }>)[0]?.memberOpenid, "full-member-openid");
+        const memberDetail = await fetch(`${baseUrl}/api/groups/group-openid-a/members/full-member-openid`);
+        assert.equal(((await memberDetail.json()) as { memberOpenid: string }).memberOpenid, "full-member-openid");
+        const manualMark = await fetch(`${baseUrl}/api/groups/group-openid-a/members/full-member-openid/manual-bot`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }),
+        });
+        assert.equal(manualMark.status, 200);
+        assert.equal(((await manualMark.json()) as { state: MemberBotState }).state.manualBot, true);
+        const clearedDetections = await fetch(`${baseUrl}/api/groups/group-openid-a/members/full-member-openid/clear-detections`, { method: "POST" });
+        const clearedBody = await clearedDetections.json() as { state: MemberBotState };
+        assert.equal(clearedDetections.status, 200);
+        assert.equal(clearedBody.state.detectionMarks, 0);
+        assert.equal(clearedBody.state.autoBot, false);
+        assert.equal(clearedBody.state.manualBot, true, "clearing detector marks preserves manual Bot state");
 
         assert.equal(configResponse.headers.get("access-control-allow-origin"), null);
         const methodNotAllowed = await fetch(`${baseUrl}/api/status`, { method: "POST" });
@@ -506,7 +572,7 @@ test("SSE sends current status and live status, log, and runtime events; disconn
     fake.publishLog(log);
     assert.deepEqual((await nextLog).data, log);
 
-    const runtimeEvent: RuntimeEvent = { type: "recent-peers-updated" };
+    const runtimeEvent: RuntimeEvent = { type: "members-updated" };
     const nextRuntimeEvent = second.waitFor("runtime-event");
     fake.publishEvent(runtimeEvent);
     assert.deepEqual((await nextRuntimeEvent).data, runtimeEvent);
@@ -580,21 +646,6 @@ test("production static server returns the app entry, serves assets, and falls b
     }
 });
 
-test("automated peer mutation routes call TenBotControl", async () => {
-    const fake = createFakeControl();
-    const { server, baseUrl } = await startServer(fake.control);
-    try {
-        const added = await fetch(`${baseUrl}/api/automated-peers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: "recent-peer-id" }) });
-        assert.equal(added.status, 200);
-        assert.equal((await added.json() as { changed: boolean }).changed, true);
-        const removed = await fetch(`${baseUrl}/api/automated-peers/${encodeURIComponent("stable-peer-id")}`, { method: "DELETE" });
-        assert.equal(removed.status, 200);
-        assert.deepEqual(fake.peerCalls, ["add:recent-peer-id", "remove:stable-peer-id"]);
-        const invalid = await fetch(`${baseUrl}/api/automated-peers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: 123 }) });
-        assert.equal(invalid.status, 400);
-    } finally { await server.close(); }
-});
-
 test("editor routes use allowlisted resource IDs and reject paths, secrets, and stale versions", async () => {
     const fake = createFakeControl();
     const { server, baseUrl } = await startServer(fake.control);
@@ -641,6 +692,14 @@ test("anonymous requests are locked out before API work or SSE subscription whil
     try {
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/status`)).status, 401);
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/config`)).status, 401);
+        assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/groups`)).status, 401);
+        assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/members/marked-bots`)).status, 401);
+        assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/groups/group-openid-a/replies`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: false }),
+        })).status, 401);
+        assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/groups/group-openid-a/members/full-member-openid/manual-bot`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }),
+        })).status, 401);
         const events = await globalThis.fetch(`${fixture.baseUrl}/api/events`);
         assert.equal(events.status, 401);
         assert.doesNotMatch(events.headers.get("content-type") ?? "", /text\/event-stream/);

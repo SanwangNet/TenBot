@@ -43,7 +43,6 @@ export interface AppConfig {
     };
     botLoopGuard: {
         maxCycles: number;
-        automatedPeerIds: readonly string[];
     };
 }
 
@@ -70,7 +69,6 @@ export interface PublicConfig {
     };
     botLoopGuard: {
         maxCycles: number;
-        automatedPeerCount: number;
     };
 }
 
@@ -103,17 +101,10 @@ export type ConfigUpdateResult =
         details?: string;
     };
 
-export type AutomatedPeerConfigResult =
-    | { ok: true; changed: boolean; peerIds: string[]; message: string }
-    | { ok: false; changed: false; peerIds: string[]; message: string; details?: string };
-
 export interface ConfigStore {
     /** Internal Runtime input; never exposed through TenBotControl. */
     getAppConfig(): AppConfig;
     getEnvPath(): string;
     getPublicConfig(): PublicConfig;
     updatePublicConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
-    getAutomatedPeerIds(): string[];
-    addAutomatedPeer(id: string): Promise<AutomatedPeerConfigResult>;
-    removeAutomatedPeer(id: string): Promise<AutomatedPeerConfigResult>;
 }

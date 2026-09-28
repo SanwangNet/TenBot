@@ -20,7 +20,7 @@ import { getMessageRevision, recordIncomingMessageRevision, rememberIncomingMess
 import type { ReplyCoordinatorDependencies } from "../src/qq/reply/coordinator.js";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 import type { QQBot, QQBotInboundMessage } from "@tencent-connect/qqbot-nodejs";
-import type { AutomatedPeerLoopGuard } from "../src/qq/conversation/automated-peer.js";
+import type { BotLoopGuard } from "../src/qq/conversation/bot-loop-guard.js";
 import type { AiResult } from "../src/ai/reply-result.js";
 
 interface FakeBotState {
@@ -109,11 +109,10 @@ function register(
     modelInputDependencies: Pick<ReplyCoordinatorDependencies, "now" | "getBotTimeZone" | "timeoutMs"> = {},
 ): FakeBotState["handler"] {
     const guard = {
-        isAutomatedPeer: () => false,
-        observeAutomatedPeerMessage() {},
+        observeBotMessage() {},
         resetByHumanMessage() {},
         beforeNewCycle: () => ({ allowed: true, sendNotice: false }),
-    } as unknown as AutomatedPeerLoopGuard;
+    } as unknown as BotLoopGuard;
     state.cleanup = registerMessageHandler(state.bot, guard, undefined, undefined, judge, {
         botLoopGuard: guard,
         executeAi,

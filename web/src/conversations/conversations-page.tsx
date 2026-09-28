@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { apiClient } from "../api/client.js";
 import type { ConversationItem, ConversationSummary } from "../api/types.js";
 import { useConversations } from "../runtime/runtime-context.js";
+import { followStateFromTimelineScroll, syncTimelineToBottom } from "./conversation-scroll.js";
 import "./conversations.css";
 
 const kindLabels: Record<ConversationSummary["kind"], string> = { group: "群聊", private: "私聊" };
@@ -15,6 +16,7 @@ export function ConversationsPage() {
     const [error, setError] = useState<string | null>(null);
     const [follow, setFollow] = useState(true);
     const timelineRef = useRef<HTMLDivElement>(null);
+    const programmaticScrollTargetRef = useRef<number | null>(null);
     useEffect(() => {
         const controller = new AbortController();
         void apiClient.getConversations(controller.signal).then((summaries) => {
@@ -33,7 +35,9 @@ export function ConversationsPage() {
     }, [selected, state.revision, state.timelines, dispatch]);
     const items = selected ? state.timelines[selected] : undefined;
     const current = state.summaries.find((summary) => summary.conversationId === selected);
-    useEffect(() => { if (follow && timelineRef.current) timelineRef.current.scrollTop = timelineRef.current.scrollHeight; }, [items?.length, selected, follow]);
+    useLayoutEffect(() => {
+        syncTimelineToBottom(timelineRef.current, follow, programmaticScrollTargetRef);
+    }, [items, selected, follow]);
     useEffect(() => { if (!selected && state.summaries.length) setSelected(state.summaries[0]!.conversationId); }, [selected, state.summaries]);
     return <section className="conversations-page">
         <div className="page-heading"><div><div className="eyebrow">控制中心 / 对话时间线</div><h1>对话</h1><p>运行时当前保留的会话与消息时间线。</p></div><span className="page-count">{state.summaries.length} 个会话</span></div>
@@ -49,10 +53,18 @@ export function ConversationsPage() {
             <div className="conversation-detail">
                 {current ? <>
                     <div className="conversation-detail-heading"><div><h2>{current.label}</h2><span>{kindLabels[current.kind]} · {current.conversationId}</span></div><span className="live-indicator">实时更新</span></div>
-                    <div className="conversation-timeline" ref={timelineRef} onScroll={() => { const element = timelineRef.current; if (element) setFollow(element.scrollHeight - element.scrollTop - element.clientHeight < 40); }} role="log" aria-label="对话时间线">
+                    <div className="conversation-timeline" ref={timelineRef} onScroll={() => {
+                        const element = timelineRef.current;
+                        if (!element) return;
+                        const nextFollow = followStateFromTimelineScroll(element, programmaticScrollTargetRef);
+                        if (nextFollow !== null) setFollow(nextFollow);
+                    }} role="log" aria-label="对话时间线">
                         {items?.length ? items.map((item) => <TimelineItem key={item.id} item={item} />) : <p className="empty-message">{items ? "暂无消息" : "正在载入时间线…"}</p>}
                     </div>
-                    {!follow && <button className="conversation-follow" type="button" onClick={() => { setFollow(true); if (timelineRef.current) timelineRef.current.scrollTop = timelineRef.current.scrollHeight; }}>回到底部 · 继续跟随</button>}
+                    {!follow && <button className="conversation-follow" type="button" onClick={() => {
+                        setFollow(true);
+                        syncTimelineToBottom(timelineRef.current, true, programmaticScrollTargetRef);
+                    }}>回到底部 · 继续跟随</button>}
                 </> : <div className="empty-message center-empty">选择一个会话查看时间线</div>}
             </div>
         </div>

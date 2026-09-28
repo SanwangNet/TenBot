@@ -4,6 +4,7 @@ import test from "node:test";
 import type { QQBot, QQBotInboundMessage } from "@tencent-connect/qqbot-nodejs";
 
 import { GroupReplyControl } from "../src/runtime/group-reply-control.js";
+import { MemoryMemberRepository } from "../src/members/memory-repository.js";
 import { toOpaqueMemberDisplayId } from "../src/members/opaque-member-id.js";
 import { registerMessageHandler, type ReplyJudgeTurnWaitScheduler } from "../src/qq/handlers/message-handler.js";
 import { getMessageRevision } from "../src/qq/conversation/recent-context.js";
@@ -51,7 +52,7 @@ function fakeControl(initial = false) {
     const control = new GroupReplyControl({
         async getGroupRepliesEnabled() { return enabled; },
         async setGroupRepliesEnabled(next) { writes++; enabled = next; },
-    });
+    }, new MemoryMemberRepository());
     return { control, get enabled() { return enabled; }, get writes() { return writes; } };
 }
 
@@ -105,7 +106,45 @@ test("hard-mentioned admin commands are local, exact, authorized by stable membe
     }
 });
 
-test("disabled groups keep context, skip Judge, and answer only a hard mention with the fixed local notice", async () => {
+test("a group-level OFF gate suppresses Judge, Main Model, and repeater replies but keeps context and timeline observation", async () => {
+    const groupOpenid = "group-scoped-off";
+    const groups = new MemoryMemberRepository();
+    await groups.ensureGroup(groupOpenid, 1);
+    let globalEnabled = true;
+    const control = new GroupReplyControl({
+        async getGroupRepliesEnabled() { return globalEnabled; },
+        async setGroupRepliesEnabled(enabled) { globalEnabled = enabled; },
+    }, groups);
+    await control.initialize();
+    assert.deepEqual(await control.setGroupRepliesEnabledForGroup(groupOpenid, false, "admin"), { ok: true, changed: true });
+
+    const fake = fakeBot();
+    const timeline: string[] = [];
+    let modelCalls = 0;
+    const dispose = registerMessageHandler(fake.bot, undefined, undefined,
+        (value) => { timeline.push(value.displayContent); }, undefined,
+        { executeAi: async () => { modelCalls++; return { kind: "no_reply" }; } }, undefined,
+        undefined, undefined, undefined, control);
+    try {
+        assert.ok(fake.onMessage);
+        const first = incoming("同一句", { memberOpenid: "member-a", name: "A" });
+        const second = incoming("同一句", { memberOpenid: "member-b", name: "B" });
+        const hard = incoming("@小尘 请回答", { hard: true, memberOpenid: "member-c", name: "C" });
+        for (const value of [first, second, hard]) {
+            value.groupOpenid = groupOpenid;
+            (value.raw as unknown as Record<string, unknown>).group_openid = groupOpenid;
+            value.replyTarget = { ...value.replyTarget, targetId: groupOpenid };
+        }
+        await fake.onMessage({}, first);
+        await fake.onMessage({}, second);
+        await fake.onMessage({}, hard);
+        assert.equal(fake.sent.length, 0, "group OFF suppresses repeater and hard-mention unavailable notices");
+        assert.equal(modelCalls, 0, "group OFF does not start a Main Model cycle");
+        assert.deepEqual(timeline, ["同一句", "同一句", "@小尘 请回答"]);
+    } finally { dispose(); }
+});
+
+test("global OFF keeps context and suppresses hard-mention Bot replies", async () => {
     const state = fakeControl(false);
     await state.control.initialize();
     const fake = fakeBot();
@@ -127,7 +166,7 @@ test("disabled groups keep context, skip Judge, and answer only a hard mention w
         await fake.onMessage({}, hard);
         assert.equal(getMessageRevision(hardNormalized), 1);
         assert.equal(judgeCalls, 0);
-        assert.deepEqual(fake.sent, ["模型暂不可用"]);
+        assert.deepEqual(fake.sent, []);
     } finally {
         dispose();
     }

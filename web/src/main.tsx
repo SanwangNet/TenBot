@@ -6,6 +6,7 @@ import "./styles.css";
 import "./design.css";
 import "./motion.css";
 import "./fonts.css";
+import "./components/members-page.css";
 
 createRoot(document.getElementById("root")!).render(
     <StrictMode>

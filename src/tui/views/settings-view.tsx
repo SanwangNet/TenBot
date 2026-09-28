@@ -77,9 +77,7 @@ export function SettingsView({ status, config, selectedIndex, pendingRestart, vi
                     <Text bold>运行</Text>
                     {editableRow("botLoopGuard.maxCycles", rows.indexOf("botLoopGuard.maxCycles"), 20)}
                     <Text> </Text>
-                    <Text bold>自动账号</Text>
-                    <StatusRow label="已登记" value={`${config.botLoopGuard.automatedPeerCount} 个`} />
-                    <StatusRow label="配置文件" value=".env" />
+                    <Text bold>Bot 互聊保护</Text>
                     <StatusRow label="热重载" value={status.hotReload?.enabled ? "已启用" : "不可用"} />
                     {status.hotReload ? <StatusRow label="配置版本" value={`版本 ${status.hotReload.revision}`} /> : null}
                 </Panel>

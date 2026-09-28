@@ -3,10 +3,10 @@ import type { ConfigUpdateResult, PublicConfig, PublicConfigPatch } from "../con
 import type { LogEntry, LogListener } from "../shared/logger.js";
 import type { RuntimeEvent, RuntimeEventListener } from "./runtime-event.js";
 import type { RuntimeStatus } from "./runtime-status.js";
-import type { AutomatedPeerMutationResult, AutomatedPeerSummary } from "./automated-peers.js";
-import type { KnownMemberSummary } from "./known-members.js";
 import { ConversationTimelineStore, type ConversationSummary, type ConversationItem } from "./conversation-timeline.js";
 import type { EditorResource, EditorResourceId, EditorSaveResult } from "./editor-resources.js";
+import type { GroupMember, GroupSettings, MemberBotState } from "../members/repository.js";
+import type { GroupReplyChangeResult } from "../runtime/group-reply-control.js";
 
 export const MAX_LOG_BUFFER_ENTRIES = 5_000;
 
@@ -20,13 +20,15 @@ export interface TenBotControl {
     getStatus(): RuntimeStatus;
     getConfig(): PublicConfig;
     updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
-    getAutomatedPeers(): AutomatedPeerSummary[];
-    getRecentPeers(): AutomatedPeerSummary[];
-    getKnownMembers(): Promise<KnownMemberSummary[]>;
+    getGroups(): Promise<GroupSettings[]>;
+    setGroupRepliesEnabledForGroup(groupOpenid: string, enabled: boolean): Promise<GroupReplyChangeResult>;
+    getMarkedBots(): Promise<GroupMember[]>;
+    getGroupMembers(groupOpenid: string): Promise<GroupMember[]>;
+    getGroupMember(groupOpenid: string, memberOpenid: string): Promise<GroupMember | null>;
+    setMemberManualBot(groupOpenid: string, memberOpenid: string, enabled: boolean): Promise<MemberBotState | null>;
+    clearMemberDetection(groupOpenid: string, memberOpenid: string): Promise<MemberBotState | null>;
     getConversations(): ConversationSummary[];
     getConversationTimeline(conversationId: string): ConversationItem[];
-    addAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
-    removeAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
     subscribeStatus(listener: StatusListener): () => void;
     subscribeLogs(listener: LogListener): () => void;
     subscribeEvents(listener: RuntimeEventListener): () => void;
@@ -42,11 +44,13 @@ export interface TenBotControlOperations {
     getStatus(): RuntimeStatus;
     getConfig(): PublicConfig;
     updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
-    getAutomatedPeers(): AutomatedPeerSummary[];
-    getRecentPeers(): AutomatedPeerSummary[];
-    getKnownMembers(): Promise<KnownMemberSummary[]>;
-    addAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
-    removeAutomatedPeer(id: string): Promise<AutomatedPeerMutationResult>;
+    getGroups(): Promise<GroupSettings[]>;
+    setGroupRepliesEnabledForGroup(groupOpenid: string, enabled: boolean): Promise<GroupReplyChangeResult>;
+    getMarkedBots(): Promise<GroupMember[]>;
+    getGroupMembers(groupOpenid: string): Promise<GroupMember[]>;
+    getGroupMember(groupOpenid: string, memberOpenid: string): Promise<GroupMember | null>;
+    setMemberManualBot(groupOpenid: string, memberOpenid: string, enabled: boolean): Promise<MemberBotState | null>;
+    clearMemberDetection(groupOpenid: string, memberOpenid: string): Promise<MemberBotState | null>;
     reloadPrompt(provider?: PromptProvider): Promise<ReloadResult>;
     reloadReplyJudgePrompt(): Promise<ReloadResult>;
     reloadMemes(): Promise<ReloadResult>;
@@ -70,13 +74,24 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
         getStatus,
         getConfig: () => structuredClone(operations.getConfig()),
         updateConfig: (patch) => operations.updateConfig(patch),
-        getAutomatedPeers: () => structuredClone(operations.getAutomatedPeers()),
-        getRecentPeers: () => structuredClone(operations.getRecentPeers()),
-        getKnownMembers: async () => structuredClone(await operations.getKnownMembers()),
+        getGroups: async () => structuredClone(await operations.getGroups()),
+        setGroupRepliesEnabledForGroup: (groupOpenid, enabled) => operations.setGroupRepliesEnabledForGroup(groupOpenid, enabled),
+        getMarkedBots: async () => structuredClone(await operations.getMarkedBots()),
+        getGroupMembers: async (groupOpenid) => structuredClone(await operations.getGroupMembers(groupOpenid)),
+        getGroupMember: async (groupOpenid, memberOpenid) => {
+            const member = await operations.getGroupMember(groupOpenid, memberOpenid);
+            return member ? structuredClone(member) : null;
+        },
+        setMemberManualBot: async (groupOpenid, memberOpenid, enabled) => {
+            const state = await operations.setMemberManualBot(groupOpenid, memberOpenid, enabled);
+            return state ? structuredClone(state) : null;
+        },
+        clearMemberDetection: async (groupOpenid, memberOpenid) => {
+            const state = await operations.clearMemberDetection(groupOpenid, memberOpenid);
+            return state ? structuredClone(state) : null;
+        },
         getConversations: () => conversations.list(),
         getConversationTimeline: (conversationId) => conversations.get(conversationId),
-        addAutomatedPeer: (id) => operations.addAutomatedPeer(id),
-        removeAutomatedPeer: (id) => operations.removeAutomatedPeer(id),
         subscribeStatus(listener) {
             statusListeners.add(listener);
             listener(getStatus());

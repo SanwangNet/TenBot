@@ -10,7 +10,7 @@ import { buildChatInput } from "../src/qq/conversation/recent-context.js";
 import { registerMessageHandler } from "../src/qq/handlers/message-handler.js";
 import { normalizeQqMessage } from "../src/qq/message/normalize-message.js";
 import type { FrontMode } from "../src/front/wake-level.js";
-import { createAutomatedPeerLoopGuard } from "../src/qq/conversation/automated-peer.js";
+import { createBotLoopGuard } from "../src/qq/conversation/bot-loop-guard.js";
 
 test("repeater requires different senders and exact normalized text", () => {
     const repeater = new GroupRepeater();
@@ -133,7 +133,6 @@ function reply(content: string): AiResult {
 
 function register(fake: ReturnType<typeof fakeBot>, options: {
     frontMode?: FrontMode;
-    automatedPeerIds?: string[];
     judge?: () => Promise<{ decision: "pass" | "reply" }>;
     executeAi?: () => Promise<AiResult>;
 } = {}) {
@@ -141,7 +140,7 @@ function register(fake: ReturnType<typeof fakeBot>, options: {
     let mainCalls = 0;
     const cleanup = registerMessageHandler(
         fake.bot,
-        createAutomatedPeerLoopGuard(options.automatedPeerIds ?? []),
+        createBotLoopGuard(),
         undefined,
         undefined,
         { async judge() { judgeCalls++; return options.judge ? options.judge() : { decision: "pass" }; } },
@@ -179,10 +178,10 @@ test("matching group text sends one standalone reply and records the successful 
 });
 
 test("only eligible group text changes repeater state", async () => {
-    configureMemberRepository(new MemoryMemberRepository());
+    const memberRepository = new MemoryMemberRepository();
+    configureMemberRepository(memberRepository);
     const fake = fakeBot();
     const runtime = register(fake, {
-        automatedPeerIds: ["automated-peer"],
         executeAi: async () => reply("direct reply"),
     });
     try {
@@ -195,8 +194,9 @@ test("only eligible group text changes repeater state", async () => {
         await fake.onMessage!({}, inbound("好事啊", { groupId: mediaGroup, memberOpenid: "b" }));
 
         const peerGroup = randomUUID();
+        await memberRepository.setManualBot(peerGroup, "marked-bot", true, Date.now());
         await fake.onMessage!({}, inbound("好事啊", { groupId: peerGroup, memberOpenid: "a" }));
-        await fake.onMessage!({}, inbound("好事啊", { groupId: peerGroup, memberOpenid: "automated-peer" }));
+        await fake.onMessage!({}, inbound("好事啊", { groupId: peerGroup, memberOpenid: "marked-bot" }));
         await fake.onMessage!({}, inbound("好事啊", { groupId: peerGroup, memberOpenid: "b" }));
 
         const botGroup = randomUUID();
@@ -214,7 +214,8 @@ test("only eligible group text changes repeater state", async () => {
 
         const echoesBeforeIgnoredFirst = repeated.length;
         const peerFirstGroup = randomUUID();
-        await fake.onMessage!({}, inbound("好事啊", { groupId: peerFirstGroup, memberOpenid: "automated-peer" }));
+        await memberRepository.setManualBot(peerFirstGroup, "marked-bot", true, Date.now());
+        await fake.onMessage!({}, inbound("好事啊", { groupId: peerFirstGroup, memberOpenid: "marked-bot" }));
         await fake.onMessage!({}, inbound("好事啊", { groupId: peerFirstGroup, memberOpenid: "human-a" }));
         assert.equal(fake.sent.filter((item) => item.method === "text" && item.content === "好事啊").length, echoesBeforeIgnoredFirst,
             "an automated peer cannot become the previous human candidate");

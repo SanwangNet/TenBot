@@ -9,8 +9,8 @@ import type { PublicConfig } from "../src/config/config-types.js";
 import { ConversationTimelineStore, createIncomingConversationEvent } from "../src/control/conversation-timeline.js";
 import { toConversationIdentity } from "../src/control/conversation-identity.js";
 import { getConversationKey } from "../src/qq/conversation/recent-context.js";
-import { summarizeKnownMembers } from "../src/control/known-members.js";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
+import type { GroupMember } from "../src/members/repository.js";
 
 const status: RuntimeStatus = {
     qq: "connected",
@@ -28,7 +28,7 @@ const config: PublicConfig = {
     replyJudge: { model: "judge-test", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
     gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: false },
     deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
-    botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
+    botLoopGuard: { maxCycles: 4 },
 };
 
 test("Control exposes only serializable Runtime status and supports subscriptions", async () => {
@@ -38,13 +38,16 @@ test("Control exposes only serializable Runtime status and supports subscription
         getStatus: () => current,
         getConfig: () => config,
         async updateConfig() { return { ok: true, requiresRestart: true, changedFields: ["aiProvider"], message: "saved" }; },
-        getAutomatedPeers: () => [],
-        getRecentPeers: () => [],
-        async getKnownMembers() { return summarizeKnownMembers([
-            { groupOpenid: "group-secret", memberOpenid: "member-secret", username: "尘柒", firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2 },
-        ]); },
-        async addAutomatedPeer() { return { ok: true, changed: true, message: "added" }; },
-        async removeAutomatedPeer() { return { ok: true, changed: true, message: "removed" }; },
+        async getGroups() { return [{ groupOpenid: "group-secret", repliesEnabled: true, firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2, memberCount: 1 }]; },
+        async setGroupRepliesEnabledForGroup() { return { ok: true, changed: false }; },
+        async getMarkedBots() { return [
+            { groupOpenid: "group-secret", memberOpenid: "member-secret", username: "尘柒", firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2,
+                platformBot: false, manualBot: true, autoBot: false, detectionMarks: 0, lastDetectionAt: null },
+        ] satisfies GroupMember[]; },
+        async getGroupMembers() { return []; },
+        async getGroupMember() { return null; },
+        async setMemberManualBot() { return null; },
+        async clearMemberDetection() { return null; },
         async reloadPrompt() { return { ok: true, message: "Prompt reloaded", loadedAt: "2026-01-01T00:00:00.000Z" }; },
         async reloadReplyJudgePrompt() { return { ok: true, message: "Reply Judge Prompt reloaded", loadedAt: "2026-01-01T00:00:00.000Z" }; },
         async reloadMemes() { return { ok: true, message: "Memes reloaded", loadedAt: "2026-01-01T00:00:00.000Z" }; },
@@ -74,9 +77,10 @@ test("Control exposes only serializable Runtime status and supports subscription
     });
     unsubscribeEvent();
     assert.deepEqual(events, ["deepseek"]);
-    const knownMembers = await control.getKnownMembers();
-    assert.equal(knownMembers[0]?.displayName, "尘柒");
-    assert.doesNotMatch(JSON.stringify(knownMembers), /group-secret|member-secret/);
+    const groups = await control.getGroups();
+    assert.equal(groups[0]?.repliesEnabled, true);
+    const markedBots = await control.getMarkedBots();
+    assert.equal(markedBots[0]?.memberOpenid, "member-secret", "authenticated member administration receives the full ID");
     await control.shutdown();
     assert.equal(shutdowns, 1);
 });

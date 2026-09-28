@@ -19,7 +19,8 @@ import {
 } from "../web/src/settings/settings-state.js";
 import { filterLogs, initialLogViewState, isLogLevelFilter, loadLogLevelFilter, logViewReducer, LOG_LEVEL_FILTER_STORAGE_KEY, MAX_WEB_LOG_ENTRIES, saveLogLevelFilter } from "../web/src/components/log-state.js";
 import { LogRows } from "../web/src/components/logs-page.js";
-import type { LogEntry } from "../web/src/api/types.js";
+import { MemberRow, MEMBERS_PAGE_TITLE, MEMBERS_ROOT_SECTION_TITLES } from "../web/src/components/members-page.js";
+import type { GroupMemberSummary, LogEntry } from "../web/src/api/types.js";
 import { conversationReducer, initialConversationViewState } from "../web/src/conversations/conversation-state.js";
 import { addNotice, isProminentProviderError } from "../web/src/ui/feedback-state.js";
 import { createEditorDraft, editDraft, isEditorDirty } from "../web/src/editor/editor-state.js";
@@ -50,7 +51,7 @@ const config: PublicConfig = {
     replyJudge: { model: "judge", timeoutMs: 5000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
     gpt: { model: "gpt-test", reasoningEffort: "high", verbosity: "high", configured: true },
     deepseek: { model: "deepseek-test", reasoningEffort: "high", configured: false },
-    botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
+    botLoopGuard: { maxCycles: 4 },
 };
 
 test("API JSON response parser returns successful payloads and reports safe HTTP or JSON errors", () => {
@@ -126,7 +127,7 @@ test("Runtime reducer preserves live status over bootstrap and tracks connection
     const online = runtimeReducer(bootstrapped, { type: "connection", connection: "online" });
     const recent = runtimeReducer(online, {
         type: "runtime-event",
-        event: { type: "recent-peers-updated" },
+        event: { type: "members-updated" },
         receivedAt: "2026-03-01T12:00:00.000Z",
     });
     assert.equal(recent.connection, "online");
@@ -147,6 +148,23 @@ test("settings form calculates dirty fields and serializable patches with numeri
     assert.equal(parseTimeoutInput("15000"), 15000);
     assert.equal(parseTimeoutInput("999"), null);
     assert.equal(parseTimeoutInput("1500.5"), null);
+});
+
+test("Members root replaces legacy peer categories and exposes full group-scoped member IDs", () => {
+    assert.equal(MEMBERS_PAGE_TITLE, "成员");
+    assert.equal(MEMBERS_ROOT_SECTION_TITLES.markedBots, "已标记的机器人账号");
+    assert.equal(MEMBERS_ROOT_SECTION_TITLES.groups, "群聊");
+    assert.equal("recent" in MEMBERS_ROOT_SECTION_TITLES, false);
+
+    const member: GroupMemberSummary = {
+        groupOpenid: "group-test", memberOpenid: "complete-member-openid", username: "Winter",
+        firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2, platformBot: false, manualBot: true,
+        autoBot: false, detectionMarks: 2, lastDetectionAt: 2,
+    };
+    const row = renderToStaticMarkup(createElement(MemberRow, { member, groupLabel: "测试群", onDetails() {} }));
+    assert.match(row, /complete-member-openid/);
+    assert.match(row, /手动标记/);
+    assert.match(row, /已标记 2 次/);
 });
 
 test("meme send size setting supports original size and custom values", () => {

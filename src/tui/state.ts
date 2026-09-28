@@ -1,5 +1,4 @@
 import type { ProviderErrorNotice } from "../control/provider-error.js";
-import type { AutomatedPeerMutationResult, AutomatedPeerSummary } from "../control/automated-peers.js";
 import type { ConfigUpdateResult, ModelProviderId, PublicConfigPatch } from "../config/config-types.js";
 import type { TuiPage } from "./types.js";
 
@@ -46,10 +45,6 @@ export type ModalState =
     | { type: "provider-error"; notice: ProviderErrorNotice; count: number }
     | { type: "provider-error-details"; notice: ProviderErrorNotice; count: number; scrollOffset: number }
     | { type: "quit-confirm" }
-    | { type: "automated-peer-details"; peer: AutomatedPeerSummary; registered: boolean }
-    | { type: "automated-peer-confirm"; action: "add" | "remove"; peer: AutomatedPeerSummary }
-    | { type: "automated-peer-result"; action: "add" | "remove"; peer: AutomatedPeerSummary; result: AutomatedPeerMutationResult };
-
 export interface TuiState {
     selectedPage: TuiPage;
     page: TuiPage;
@@ -57,7 +52,6 @@ export interface TuiState {
     modal: ModalState;
     logOffset: number;
     settingsIndex: number;
-    automatedPeerIndex: number;
     queuedProviderError?: { notice: ProviderErrorNotice; count: number };
 }
 
@@ -68,7 +62,6 @@ export const initialTuiState: TuiState = {
     modal: { type: "none" },
     logOffset: 0,
     settingsIndex: 0,
-    automatedPeerIndex: 0,
 };
 
 export function moveSidebarSelection(page: TuiPage, delta: number, pages: readonly TuiPage[]): TuiPage {
@@ -78,10 +71,6 @@ export function moveSidebarSelection(page: TuiPage, delta: number, pages: readon
 }
 
 export function moveSettingsSelection(index: number, delta: number, count = SETTINGS_FIELDS.length): number {
-    return Math.min(Math.max(0, count - 1), Math.max(0, index + delta));
-}
-
-export function moveAutomatedPeerSelection(index: number, delta: number, count: number): number {
     return Math.min(Math.max(0, count - 1), Math.max(0, index + delta));
 }
 

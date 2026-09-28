@@ -5,7 +5,7 @@ import { LogsPage } from "./components/logs-page.js";
 import { useRuntime } from "./runtime/runtime-context.js";
 import { ModelPage } from "./components/model-page.js";
 import { ConversationsPage } from "./conversations/conversations-page.js";
-import { PeersPage } from "./components/peers-page.js";
+import { MembersPage } from "./components/members-page.js";
 import { useFeedback } from "./ui/feedback.js";
 import { nextPage, type PageId } from "./navigation.js";
 import type { AuthMeResponse } from "./api/types.js";
@@ -21,7 +21,7 @@ const pages = [
     { id: "memes", label: "梗数据", mark: "✳" },
     { id: "meme-library", label: "表情包", mark: "▣" },
     { id: "conversations", label: "对话", mark: "▤" },
-    { id: "peers", label: "自动账号", mark: "◎" },
+    { id: "members", label: "成员", mark: "◎" },
     { id: "logs", label: "日志", mark: "⌁" },
     { id: "settings", label: "设置", mark: "⚙" },
 ] as const;
@@ -129,7 +129,7 @@ export function App({ user, onLogout }: { user: AuthMeResponse["user"]; onLogout
                             : page === "prompts" || page === "memes" ? <Suspense fallback={<div className="panel">正在载入编辑器…</div>}><EditorPage mode={page} onDirtyChange={onEditorDirtyChange} /></Suspense>
                             : page === "meme-library" ? <Suspense fallback={<div className="panel">正在载入表情包…</div>}><MemeLibraryPage /></Suspense>
                             : page === "conversations" ? <ConversationsPage />
-                            : page === "peers" ? <PeersPage />
+                            : page === "members" ? <MembersPage />
                             : page === "logs" ? <LogsPage />
                             : <SettingsPage />}
                     </div>

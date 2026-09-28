@@ -6,16 +6,15 @@ import type { AiResult } from "../src/ai/reply-result.js";
 import type { ModelPlugin } from "../src/ai/model-plugin.js";
 import {
     BOT_LOOP_GUARD_NOTICE,
-    createAutomatedPeerLoopGuard,
+    createBotLoopGuard,
     DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES,
-    parseAutomatedPeerIds,
     parseBotLoopGuardMaxCycles,
-} from "../src/qq/conversation/automated-peer.js";
+} from "../src/qq/conversation/bot-loop-guard.js";
+import { parseLegacyAutomatedPeerIds } from "../src/members/legacy-peer-import.js";
 import { buildChatInput, getMessageRevision, recordIncomingMessageRevision, rememberIncomingMessage } from "../src/qq/conversation/recent-context.js";
 import { registerMessageHandler } from "../src/qq/handlers/message-handler.js";
 import { normalizeQqMessage, type NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 import { coordinateAiReply, type ReplyRequest } from "../src/qq/reply/coordinator.js";
-import { RecentPeerRegistry } from "../src/qq/conversation/recent-peers.js";
 
 interface SentMessage { method: "text" | "markdown"; content: string; target: unknown }
 
@@ -59,6 +58,7 @@ function requestFor(bot: QQBot, value: NormalizedQqMessage, hardMention = false)
     const revision = getMessageRevision(value);
     return {
         bot, message: value, aiInput: value.displayContent, imageUrls: [], isGroup: true,
+        botMessage: value.authorIsBot,
         wakeLevel: hardMention ? "hard" : "soft",
         wakeReason: hardMention ? "hard-mention" : "name-soft",
         triggerKind: hardMention ? "hard-mention" : "name-soft",
@@ -111,81 +111,49 @@ function inboundMessage(groupId: string, authorId: string, content: string, opti
     } as unknown as QQBotInboundMessage;
 }
 
-test("registry matches only exact stable IDs and validates the default cycle limit", () => {
-    assert.deepEqual([...parseAutomatedPeerIds(" A, B ,, ")], ["A", "B"]);
+test("legacy ID parser remains available for import and validates the default cycle limit", () => {
+    assert.deepEqual(parseLegacyAutomatedPeerIds(" A, B ,, "), ["A", "B"]);
     assert.equal(DEFAULT_BOT_LOOP_GUARD_MAX_CYCLES, 4);
     assert.equal(parseBotLoopGuardMaxCycles(undefined), 4);
     assert.equal(parseBotLoopGuardMaxCycles("7"), 7);
     assert.throws(() => parseBotLoopGuardMaxCycles("0"));
     assert.throws(() => parseBotLoopGuardMaxCycles("four"));
 
-    const guard = createAutomatedPeerLoopGuard("A,B");
-    assert.equal(guard.isAutomatedPeer("A"), true);
-    assert.equal(guard.isAutomatedPeer("B"), true);
-    assert.equal(guard.isAutomatedPeer("C"), false);
-    assert.equal(guard.isAutomatedPeer(undefined), false);
-    // Different names cannot change an ID's registry membership; matching names cannot transfer it.
-    const oldName = message("registry-test", "A", "hello", "小鲸鱼");
-    const newName = message("registry-test", "A", "hello", "大鲸鱼");
-    const sameNameHuman = message("registry-test", "H", "hello", "小鲸鱼");
-    assert.equal(guard.isAutomatedPeer(oldName.authorId), true);
-    assert.equal(guard.isAutomatedPeer(newName.authorId), true);
-    assert.equal(guard.isAutomatedPeer(sameNameHuman.authorId), false);
+    const guard = createBotLoopGuard();
+    assert.equal(guard.beforeNewCycle("group:a", true).botMessage, true);
+    assert.equal(guard.beforeNewCycle("group:a", false).botMessage, false);
 
     let currentTime = 0;
-    const expiring = createAutomatedPeerLoopGuard("A", 1, () => currentTime, 10);
-    assert.equal(expiring.beforeNewCycle("group:ttl", "A").allowed, true);
-    assert.equal(expiring.beforeNewCycle("group:ttl", "A").allowed, false);
+    const expiring = createBotLoopGuard(1, () => currentTime, 10);
+    assert.equal(expiring.beforeNewCycle("group:ttl", true).allowed, true);
+    assert.equal(expiring.beforeNewCycle("group:ttl", true).allowed, false);
     currentTime = 10;
-    assert.equal(expiring.beforeNewCycle("group:ttl", "A").cycle, 1);
+    assert.equal(expiring.beforeNewCycle("group:ttl", true).cycle, 1);
 });
 
-test("loop guard can replace registered IDs without clearing active conversation counts", () => {
-    const guard = createAutomatedPeerLoopGuard(["old-id"], 3);
-    assert.equal(guard.beforeNewCycle("group:replace", "old-id").cycle, 1);
-    guard.replacePeers(["new-id"]);
-    assert.equal(guard.isAutomatedPeer("old-id"), false);
-    assert.equal(guard.isAutomatedPeer("new-id"), true);
-    const next = guard.beforeNewCycle("group:replace", "new-id");
+test("group-scoped bot state drives only the matching conversation loop guard", () => {
+    const guard = createBotLoopGuard(3);
+    assert.equal(guard.beforeNewCycle("group:group-a", true).cycle, 1);
+    assert.equal(guard.beforeNewCycle("group:group-b", false).botMessage, false);
+    const next = guard.beforeNewCycle("group:group-a", true);
     assert.equal(next.cycle, 2);
     assert.equal(next.maxCycles, 3);
 });
 
-test("loop guard hot-updates the global limit without resetting conversation counters", () => {
-    const peer = createAutomatedPeerLoopGuard(["peer"], 4);
-    assert.equal(peer.beforeNewCycle("group:raise", "peer").cycle, 1);
-    assert.equal(peer.beforeNewCycle("group:raise", "peer").cycle, 2);
-    assert.equal(peer.beforeNewCycle("group:raise", "peer").cycle, 3);
+test("loop guard hot-updates the limit without resetting group conversation counters", () => {
+    const peer = createBotLoopGuard(4);
+    assert.equal(peer.beforeNewCycle("group:raise", true).cycle, 1);
+    assert.equal(peer.beforeNewCycle("group:raise", true).cycle, 2);
+    assert.equal(peer.beforeNewCycle("group:raise", true).cycle, 3);
     peer.setMaxCycles(6);
-    assert.equal(peer.beforeNewCycle("group:raise", "peer").cycle, 4);
+    assert.equal(peer.beforeNewCycle("group:raise", true).cycle, 4);
 
-    const lowered = createAutomatedPeerLoopGuard(["peer"], 4);
-    assert.equal(lowered.beforeNewCycle("group:lower", "peer").cycle, 1);
-    assert.equal(lowered.beforeNewCycle("group:lower", "peer").cycle, 2);
-    assert.equal(lowered.beforeNewCycle("group:lower", "peer").cycle, 3);
+    const lowered = createBotLoopGuard(4);
+    assert.equal(lowered.beforeNewCycle("group:lower", true).cycle, 1);
+    assert.equal(lowered.beforeNewCycle("group:lower", true).cycle, 2);
+    assert.equal(lowered.beforeNewCycle("group:lower", true).cycle, 3);
     lowered.setMaxCycles(2);
-    assert.equal(lowered.beforeNewCycle("group:lower", "peer").allowed, false);
-});
-
-test("RecentPeerRegistry is bounded, refreshes order and stores only stable peer metadata", () => {
-    let tick = 0;
-    const registry = new RecentPeerRegistry(2, () => new Date(1_700_000_000_000 + tick++ * 1000));
-    const first = message("g", "peer-A", "message text must not be saved", "小鲸鱼");
-    const bot = message("g", "peer-B", "private body", "测试 Bot", true);
-    const refreshed = message("g", "peer-A", "another body", "新名字");
-    const last = message("g", "peer-C", "secret content", "第三人");
-    registry.observe(first);
-    registry.observe(bot);
-    registry.observe(refreshed);
-    assert.deepEqual(registry.list().map((peer) => peer.id), ["peer-A", "peer-B"]);
-    assert.equal(registry.get("peer-A")?.displayName, "新名字");
-    assert.equal(registry.get("peer-B")?.platformBotHint, true);
-    registry.observe(last);
-    assert.deepEqual(registry.list().map((peer) => peer.id), ["peer-C", "peer-A"]);
-    registry.observe(message("g", "peer-D", "", "恶意\u001b[2J 名称"));
-    assert.deepEqual(registry.list().map((peer) => peer.id), ["peer-D", "peer-C"]);
-    assert.equal(registry.get("peer-D")?.displayName, "恶意 [2J 名称");
-    assert.doesNotMatch(JSON.stringify(registry.list()), /message text|private body|secret content/);
+    assert.equal(lowered.beforeNewCycle("group:lower", true).allowed, false);
 });
 
 test("group normalization prefers member_openid and fails open without a stable group ID", async () => {
@@ -202,7 +170,7 @@ test("group normalization prefers member_openid and fails open without a stable 
 
 test("four automated cycles count across peers, NO_REPLY and multi-message replies; lock notice is local and once", async () => {
     const groupId = "loop-group-main";
-    const guard = createAutomatedPeerLoopGuard("peer-A,peer-B", 4);
+    const guard = createBotLoopGuard(4);
     const { bot, sent } = fakeBot();
     let generateCalls = 0;
     const model = plugin(async (request) => {
@@ -266,7 +234,7 @@ test("four automated cycles count across peers, NO_REPLY and multi-message repli
 
 test("an automated interruption restarts the same human cycle without charging a peer cycle", async () => {
     const groupId = "loop-group-interrupt";
-    const guard = createAutomatedPeerLoopGuard("peer-A", 1);
+    const guard = createBotLoopGuard(1);
     const { bot, sent } = fakeBot();
     const attempts: Array<{ signal: AbortSignal; resolve: (value: AiResult) => void }> = [];
     const executeAi = async (_input: string, options: { signal: AbortSignal }): Promise<AiResult> =>
@@ -304,7 +272,7 @@ test("an automated interruption restarts the same human cycle without charging a
 
 test("trailing automated next Cycle is guarded before another model call", async () => {
     const groupId = "loop-group-trailing";
-    const guard = createAutomatedPeerLoopGuard("peer-A", 1);
+    const guard = createBotLoopGuard(1);
     const initialAuto = message(groupId, "peer-A", "first automated", "Peer A", true);
     commit(initialAuto);
     const { bot, sent } = fakeBot();
@@ -341,10 +309,10 @@ test("trailing automated next Cycle is guarded before another model call", async
 
 test("human QQ face and image reset the guard before context filtering; commands still route while locked", async () => {
     const groupId = "loop-group-human-reset";
-    const guard = createAutomatedPeerLoopGuard("peer-A", 1);
+    const guard = createBotLoopGuard(1);
     const key = `group:${groupId}`;
-    assert.equal(guard.beforeNewCycle(key, "peer-A", "Peer A").allowed, true);
-    assert.equal(guard.beforeNewCycle(key, "peer-A", "Peer A").allowed, false);
+    assert.equal(guard.beforeNewCycle(key, true, "Peer A").allowed, true);
+    assert.equal(guard.beforeNewCycle(key, true, "Peer A").allowed, false);
 
     const fake = fakeBot();
     registerMessageHandler(fake.bot, guard);
@@ -354,25 +322,25 @@ test("human QQ face and image reset the guard before context filtering; commands
     await fake.onMessage({}, face);
     assert.equal(getMessageRevision(normalizedFace), 0, "human face resets state without incrementing Context revision");
     assert.doesNotMatch(buildChatInput(normalizedFace, ""), /faceType=13/);
-    assert.equal(guard.beforeNewCycle(key, "peer-A", "Renamed peer").cycle, 1);
+    assert.equal(guard.beforeNewCycle(key, true, "Renamed peer").cycle, 1);
 
     // Lock again; an image-only human message resets before the normal image path.
-    assert.equal(guard.beforeNewCycle(key, "peer-A", "Peer A").allowed, false);
+    assert.equal(guard.beforeNewCycle(key, true, "Peer A").allowed, false);
     const image = inboundMessage(groupId, "human-A", "", {
         authorName: "Human", attachments: [{ content_type: "image/png", url: "https://invalid.test/image.png" }],
     });
     const normalizedImage = await normalizeQqMessage({}, image);
     await fake.onMessage({}, image);
     assert.equal(getMessageRevision(normalizedImage), 1, "image remains on its existing Context path");
-    assert.equal(guard.beforeNewCycle(key, "peer-A", "Peer A").cycle, 1);
+    assert.equal(guard.beforeNewCycle(key, true, "Peer A").cycle, 1);
 
     // Lock again and prove commands are still local and not sent to a model.
-    assert.equal(guard.beforeNewCycle(key, "peer-A", "Peer A").allowed, false);
+    assert.equal(guard.beforeNewCycle(key, true, "Peer A").allowed, false);
     const help = inboundMessage(groupId, "peer-A", "/help", { authorName: "Peer A", bot: true });
     await fake.onMessage({}, help);
     assert.ok(fake.sent.some((item) => item.content.includes("/help")));
 
-    // An unregistered SDK bot flag does not change the fail-open human path.
+    // QQ platform Bot state is preserved without putting the message in an AI cycle.
     const unknownBotGroup = "loop-group-unknown-bot";
     const unknownBot = inboundMessage(unknownBotGroup, "unregistered", "ordinary message", {
         authorName: "小鲸鱼", bot: true,

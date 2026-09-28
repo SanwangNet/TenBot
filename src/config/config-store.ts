@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { AppConfig, AutomatedPeerConfigResult, ConfigStore, ConfigUpdateResult, PublicConfig, PublicConfigPatch } from "./config-types.js";
-import { loadAppConfig, parseAutomatedPeerIds, patchValueAsString, toPublicConfig, validateAutomatedPeerId, validatePublicConfigPatch } from "./config-validation.js";
+import type { AppConfig, ConfigStore, ConfigUpdateResult, PublicConfig, PublicConfigPatch } from "./config-types.js";
+import { loadAppConfig, patchValueAsString, toPublicConfig, validatePublicConfigPatch } from "./config-validation.js";
 import { isMissingFile, parseEnvDocument, patchEnvDocument, readEnvDocument, writeFileAtomically } from "./env-document.js";
 
 export interface CreateConfigStoreOptions {
@@ -60,12 +60,6 @@ export function createConfigStore(options: CreateConfigStoreOptions = {}): Confi
         return toPublicConfig(getAppConfig());
     };
 
-    const getAutomatedPeerIds = (): string[] => {
-        const document = readEnvSync(envPath);
-        const fileValue = parseEnvDocument(document).AUTOMATED_PEER_IDS;
-        return [...parseAutomatedPeerIds(fileValue ?? baseEnvironment.AUTOMATED_PEER_IDS)];
-    };
-
     const update = async (patch: PublicConfigPatch): Promise<ConfigUpdateResult> => {
         let key: string;
         try {
@@ -102,52 +96,10 @@ export function createConfigStore(options: CreateConfigStoreOptions = {}): Confi
         }
     };
 
-    const mutateAutomatedPeer = (rawId: string, action: "add" | "remove"): Promise<AutomatedPeerConfigResult> => serialize(async () => {
-        let id: string;
-        try {
-            id = validateAutomatedPeerId(rawId);
-        } catch (error) {
-            return {
-                ok: false,
-                changed: false,
-                peerIds: getAutomatedPeerIds(),
-                message: "配置无效",
-                details: error instanceof Error ? error.message : "稳定 ID 不符合要求",
-            };
-        }
-
-        try {
-            const document = await readEnvDocument(envPath);
-            const fileValue = parseEnvDocument(document).AUTOMATED_PEER_IDS;
-            const current = [...parseAutomatedPeerIds(fileValue ?? baseEnvironment.AUTOMATED_PEER_IDS)];
-            const exists = current.includes(id);
-            if (action === "add" && exists) {
-                return { ok: true, changed: false, peerIds: current, message: "该账号已登记。" };
-            }
-            if (action === "remove" && !exists) {
-                return { ok: true, changed: false, peerIds: current, message: "该账号未登记。" };
-            }
-            const peerIds = action === "add" ? [...current, id] : current.filter((peerId) => peerId !== id);
-            await write(envPath, patchEnvDocument(document, { AUTOMATED_PEER_IDS: peerIds.join(",") }));
-            return {
-                ok: true,
-                changed: true,
-                peerIds,
-                message: action === "add" ? "自动账号已添加。" : "自动账号已删除。",
-            };
-        } catch (error) {
-            const failure = safeFailure(error);
-            return { ok: false, changed: false, peerIds: [], message: failure.message, details: failure.details };
-        }
-    });
-
     return {
         getAppConfig,
         getEnvPath: () => envPath,
         getPublicConfig,
         updatePublicConfig: (patch) => serialize(() => update(patch)),
-        getAutomatedPeerIds,
-        addAutomatedPeer: (id) => mutateAutomatedPeer(id, "add"),
-        removeAutomatedPeer: (id) => mutateAutomatedPeer(id, "remove"),
     };
 }

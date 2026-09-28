@@ -1,11 +1,9 @@
 import React from "react";
 import { Box, Text, useWindowSize } from "ink";
 
-export function Footer({ focus, settings, automatedPeers, conversations, logs, notice }: { focus: "sidebar" | "main"; settings?: boolean; automatedPeers?: boolean; conversations?: boolean; logs?: boolean; notice?: string }) {
+export function Footer({ focus, settings, conversations, logs, notice }: { focus: "sidebar" | "main"; settings?: boolean; conversations?: boolean; logs?: boolean; notice?: string }) {
     const { columns } = useWindowSize();
-    const navigation = automatedPeers
-        ? "↑↓ 选择  Enter 详情  A 添加  Del 删除"
-        : focus === "sidebar" ? "↑↓ 选择  Enter 打开"
+    const navigation = focus === "sidebar" ? "↑↓ 选择  Enter 打开"
           : settings ? "↑↓ 选择  ←→ 切换卡片  Enter 修改/应用"
             : conversations ? "←→ 切换对话  ↑↓ 翻行  PgUp/PgDn 翻页  Home/End 定位"
               : logs ? "↑↓ 滚动  PgUp/PgDn 翻页  Home/End 定位"

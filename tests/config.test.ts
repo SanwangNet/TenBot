@@ -61,58 +61,18 @@ test("ConfigStore rereads the file before saving and preserves external changes"
     });
 });
 
-test("ConfigStore adds and removes automated peer IDs while preserving other env content", async () => {
-    const original = "# private config\nCODEX_API_KEY=TOP_SECRET\nUNKNOWN_OPTION=keep\n\nAUTOMATED_PEER_IDS=a,b\n";
+test("legacy AUTOMATED_PEER_IDS is ignored as a config field and never publicly managed", async () => {
+    const original = "# legacy registration\nAUTOMATED_PEER_IDS=old-openid\nUNKNOWN_OPTION=keep\n";
     await withTempEnv(original, async (envPath) => {
         const store = createConfigStore({ envPath, environment: {} });
-        const added = await store.addAutomatedPeer(" c ");
-        assert.deepEqual(added, { ok: true, changed: true, peerIds: ["a", "b", "c"], message: "自动账号已添加。" });
-        assert.deepEqual((await store.addAutomatedPeer("b")).peerIds, ["a", "b", "c"]);
-        const removed = await store.removeAutomatedPeer("b");
-        assert.deepEqual(removed.peerIds, ["a", "c"]);
-        const missing = await store.removeAutomatedPeer("not-registered");
-        assert.equal(missing.ok, true);
-        assert.equal(missing.changed, false);
-        const saved = await readFile(envPath, "utf8");
-        assert.match(saved, /# private config/);
-        assert.match(saved, /CODEX_API_KEY=TOP_SECRET/);
-        assert.match(saved, /UNKNOWN_OPTION=keep/);
-        assert.match(saved, /AUTOMATED_PEER_IDS=a,c/);
-        assert.deepEqual(store.getAutomatedPeerIds(), ["a", "c"]);
-    });
-});
-
-test("ConfigStore automated peer mutations serialize concurrent updates and reject unsafe IDs", async () => {
-    await withTempEnv("AUTOMATED_PEER_IDS=a\n", async (envPath) => {
-        const store = createConfigStore({ envPath, environment: {} });
-        const [first, second] = await Promise.all([store.addAutomatedPeer("b"), store.addAutomatedPeer("c")]);
-        assert.equal(first.ok, true);
-        assert.deepEqual(second.peerIds, ["a", "b", "c"]);
-        const invalid = await store.addAutomatedPeer("bad,id");
-        assert.equal(invalid.ok, false);
-        assert.equal(invalid.peerIds.length, 3);
-        assert.deepEqual(store.getAutomatedPeerIds(), ["a", "b", "c"]);
-    });
-});
-
-test("registered automated peer IDs survive a new ConfigStore instance and do not depend on recent peers", async () => {
-    await withTempEnv("AI_PROVIDER=gpt\n", async (envPath) => {
-        const firstRuntimeStore = createConfigStore({ envPath, environment: {} });
-        const added = await firstRuntimeStore.addAutomatedPeer("stable-peer-a");
-        assert.equal(added.ok, true);
-        const afterRestart = createConfigStore({ envPath, environment: {} });
-        assert.deepEqual(afterRestart.getAutomatedPeerIds(), ["stable-peer-a"]);
-    });
-});
-
-test("ConfigStore automated peer mutations re-read external changes before saving", async () => {
-    await withTempEnv("AUTOMATED_PEER_IDS=a\n", async (envPath) => {
-        const store = createConfigStore({ envPath, environment: {} });
-        await writeFile(envPath, "AUTOMATED_PEER_IDS=a\nEXTERNAL_VALUE=yes\n", "utf8");
-        const result = await store.addAutomatedPeer("b");
+        assert.equal("automatedPeerIds" in store.getAppConfig().botLoopGuard, false);
+        assert.equal("automatedPeerCount" in store.getPublicConfig().botLoopGuard, false);
+        assert.equal("addAutomatedPeer" in store, false);
+        const result = await store.updatePublicConfig({ field: "botLoopGuard.maxCycles", value: 6 });
         assert.equal(result.ok, true);
-        assert.match(await readFile(envPath, "utf8"), /EXTERNAL_VALUE=yes/);
-        assert.deepEqual(result.peerIds, ["a", "b"]);
+        const saved = await readFile(envPath, "utf8");
+        assert.match(saved, /AUTOMATED_PEER_IDS=old-openid/);
+        assert.match(saved, /UNKNOWN_OPTION=keep/);
     });
 });
 
@@ -185,7 +145,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
         DEEPSEEK_API_KEY: "DEEP_SECRET",
         BOT_LOG_LEVEL: "invalid-but-ignored",
         BOT_LOOP_GUARD_MAX_CYCLES: "10",
-        AUTOMATED_PEER_IDS: "A,B,A",
+        AUTOMATED_PEER_IDS: "legacy-id-that-is-not-a-config-field",
     });
     const publicConfig = createConfigStore({
         envPath: join(tmpdir(), "tenbot-config-missing.env"),
@@ -206,13 +166,14 @@ test("public config exposes only safe metadata and shared defaults parse provide
             BOT_ADMIN_IDS: "4D53C611",
             BOT_LOG_LEVEL: "invalid-but-ignored",
             BOT_LOOP_GUARD_MAX_CYCLES: "10",
-            AUTOMATED_PEER_IDS: "A,B,A",
+            AUTOMATED_PEER_IDS: "legacy-id-that-is-not-a-config-field",
         },
     }).getPublicConfig();
     assert.equal(config.ai.gpt.model, "gpt-test");
+    assert.equal("automatedPeerIds" in config.botLoopGuard, false);
     assert.equal(publicConfig.gpt.configured, true);
     assert.equal(publicConfig.deepseek.configured, true);
-    assert.equal(publicConfig.botLoopGuard.automatedPeerCount, 2);
+    assert.equal("automatedPeerCount" in publicConfig.botLoopGuard, false);
     assert.equal("logLevel" in publicConfig, false);
     assert.equal("botTimeZone" in publicConfig, false);
     assert.deepEqual(publicConfig.replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000, provider: "openai-compatible" });

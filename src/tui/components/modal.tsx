@@ -1,6 +1,5 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { AutomatedPeerSummary } from "../../control/automated-peers.js";
 import type { ModalState } from "../state.js";
 import { ClickableRegion } from "./clickable-region.js";
 import type { ClickableRegionRegistry } from "../mouse-input.js";
@@ -36,18 +35,6 @@ function ModalFrame({ title, children, width, maxHeight, compact = false }: { ti
     </Box>;
 }
 
-function PeerDetails({ peer, registered, maxCycles }: { peer: AutomatedPeerSummary; registered: boolean; maxCycles: number }) {
-    return <>
-        <Text>名称       {peer.displayName}</Text>
-        <Text wrap="wrap">稳定 ID   {peer.id}</Text>
-        <Text>类型       {registered ? "Bot" : "普通账号"}</Text>
-        <Text>平台标记   {peer.platformBotHint ? "Bot" : "无"}</Text>
-        <Text>最近出现   {peer.lastSeenAt ? new Date(peer.lastSeenAt).toLocaleTimeString("zh-CN", { hour12: false }) : "未知"}</Text>
-        <Text>自动互聊保护   {registered ? "已启用" : "未启用"}</Text>
-        <Text>连续交互上限   {maxCycles}（全局）</Text>
-    </>;
-}
-
 interface ModalContentProps {
     modal: ModalState;
     width: number;
@@ -57,9 +44,6 @@ interface ModalContentProps {
     onConfirm(): void;
     onOption(index: number): void;
     onProviderDetails(): void;
-    onAddPeer(peer: AutomatedPeerSummary): void;
-    onRemovePeer(peer: AutomatedPeerSummary): void;
-    maxCycles: number;
 }
 
 function ProviderErrorDetailsFrame({ modal, width, maxHeight, registry, onClose }: {
@@ -89,9 +73,6 @@ function ModalContent({
     onConfirm,
     onOption,
     onProviderDetails,
-    onAddPeer,
-    onRemovePeer,
-    maxCycles,
 }: ModalContentProps) {
     if (modal.type === "none") return null;
     if (modal.type === "provider-error-details") {
@@ -153,22 +134,6 @@ function ModalContent({
             summary = modal.message;
         } else if (modal.type === "config-result") {
             title = modal.result.ok ? "配置已保存" : "配置保存失败";
-            summary = modal.result.message;
-        } else if (modal.type === "automated-peer-details") {
-            title = "自动账号详情";
-            summary = `名称 ${modal.peer.displayName}`;
-            onModalConfirm = modal.registered ? () => onRemovePeer(modal.peer) : () => onAddPeer(modal.peer);
-            onModalCancel = onClose;
-            confirmLabel = modal.registered ? "取消 Bot" : "设为 Bot";
-        } else if (modal.type === "automated-peer-confirm") {
-            const add = modal.action === "add";
-            title = add ? "添加自动账号" : "删除自动账号";
-            summary = `确认${add ? "添加" : "删除"} ${modal.peer.displayName}？`;
-            onModalConfirm = onConfirm;
-            onModalCancel = onClose;
-            confirmLabel = add ? "添加" : "删除";
-        } else if (modal.type === "automated-peer-result") {
-            title = modal.result.ok ? "自动账号已更新" : "操作失败";
             summary = modal.result.message;
         }
         return <ModalFrame title={title} width={width} maxHeight={maxHeight} compact>
@@ -269,39 +234,6 @@ function ModalContent({
             <Text>{modal.result.message}</Text>
             {modal.result.ok && modal.result.requiresRestart ? <Text color="yellow">需要重启 TenBot 后生效。</Text> : null}
             {!modal.result.ok && modal.result.details ? <Text dimColor>{modal.result.details}</Text> : null}
-            <Text> </Text>
-            <ModalActions registry={registry} onConfirm={onClose} confirmLabel="关闭" />
-        </ModalFrame>;
-    }
-    if (modal.type === "automated-peer-details") {
-        return <ModalFrame title="自动账号详情" width={width} maxHeight={maxHeight}>
-            <PeerDetails peer={modal.peer} registered={modal.registered} maxCycles={maxCycles} />
-            <Text> </Text>
-            <ModalActions
-                registry={registry}
-                onConfirm={modal.registered ? () => onRemovePeer(modal.peer) : () => onAddPeer(modal.peer)}
-                onCancel={onClose}
-                confirmLabel={modal.registered ? "取消 Bot" : "设为 Bot"}
-                cancelLabel="关闭"
-            />
-        </ModalFrame>;
-    }
-    if (modal.type === "automated-peer-confirm") {
-        const add = modal.action === "add";
-        return <ModalFrame title={add ? "添加自动账号" : "删除自动账号"} width={width} maxHeight={maxHeight}>
-            <Text>名称       {modal.peer.displayName}</Text>
-            <Text wrap="wrap">稳定 ID   {modal.peer.id}</Text>
-            <Text> </Text>
-            <Text>{add ? "加入后，该账号产生的新回复周期将受到自动互聊保护限制。" : "删除后，该账号将不再被视为已登记自动账号。"}</Text>
-            <Text> </Text>
-            <ModalActions registry={registry} onConfirm={onConfirm} onCancel={onClose} confirmLabel={add ? "添加" : "删除"} />
-        </ModalFrame>;
-    }
-    if (modal.type === "automated-peer-result") {
-        const success = modal.result.ok;
-        return <ModalFrame title={success ? "自动账号已更新" : "操作失败"} width={width} maxHeight={maxHeight}>
-            <Text color={success ? "green" : "red"}>{success ? "✓" : "✕"} {modal.result.message}</Text>
-            {modal.result.details ? <Text dimColor>{modal.result.details}</Text> : null}
             <Text> </Text>
             <ModalActions registry={registry} onConfirm={onClose} confirmLabel="关闭" />
         </ModalFrame>;

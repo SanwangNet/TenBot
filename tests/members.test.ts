@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,9 +12,9 @@ import { D1MemberRepository, type D1MemberDatabase } from "../src/members/d1-rep
 import { MemoryMemberRepository } from "../src/members/memory-repository.js";
 import type { KnownMember } from "../src/members/repository.js";
 import { SqliteMemberRepository } from "../src/members/sqlite-repository.js";
+import { importLegacyAutomatedPeerIds } from "../src/members/legacy-peer-import.js";
 import { GroupReplyControl, isConfiguredBotAdmin } from "../src/runtime/group-reply-control.js";
 import { toOpaqueMemberDisplayId, toOpaqueMemberHash } from "../src/members/opaque-member-id.js";
-import { summarizeKnownMembers } from "../src/control/known-members.js";
 import { createTenBotControl } from "../src/control/tenbot-control.js";
 import type { RuntimeStatus } from "../src/control/runtime-status.js";
 import type { PublicConfig } from "../src/config/config-types.js";
@@ -80,6 +81,118 @@ test("global group reply state defaults off and survives repository restarts wit
     }
 });
 
+test("group reply settings default on, persist, and cancel only the disabled group", async () => {
+    const groupA = `group-a-${randomUUID()}`;
+    const groupB = `group-b-${randomUUID()}`;
+    const at = 1_700_000_000_000;
+    const newGroup = await sqlite.ensureGroup(groupA, at, "测试群 A");
+    await sqlite.ensureGroup(groupB, at + 1, "测试群 B");
+    const legacyGroup = `legacy-group-${randomUUID()}`;
+    await sqlite.upsertMember(member(legacyGroup, "legacy-member", "旧成员"));
+    assert.equal(newGroup.repliesEnabled, true);
+    assert.equal(newGroup.displayName, "测试群 A");
+
+    await sqlite.setGroupRepliesEnabled(true);
+    const control = new GroupReplyControl(sqlite, sqlite);
+    await control.initialize();
+    assert.equal(control.getGroupRepliesEnabledForGroup(groupA), true, "global and new group gates allow replies");
+    assert.equal(control.getGroupRepliesEnabledForGroup(groupB), true);
+
+    const cancelled: Array<string | undefined> = [];
+    control.registerPendingWorkCanceller((groupOpenid) => { cancelled.push(groupOpenid); });
+    const changed = await control.setGroupRepliesEnabledForGroup(groupA, false, "admin");
+    assert.deepEqual(changed, { ok: true, changed: true });
+    assert.equal(control.getGroupRepliesEnabledForGroup(groupA), false);
+    assert.equal(control.getGroupRepliesEnabledForGroup(groupB), true);
+    assert.deepEqual(cancelled, [groupA]);
+
+    const reopened = new SqliteMemberRepository(join(directory, "members.db"));
+    try {
+        assert.equal((await reopened.getGroupSettings(groupA))?.repliesEnabled, false);
+        assert.equal((await reopened.getGroupSettings(groupB))?.repliesEnabled, true);
+        assert.equal((await reopened.getGroupSettings(legacyGroup))?.repliesEnabled, true,
+            "migration defaults groups with existing members to enabled");
+    } finally { reopened.close(); }
+
+    await control.setGroupRepliesEnabled(false, "admin");
+    assert.equal(control.getGroupRepliesEnabledForGroup(groupB), false, "the global gate remains the master switch");
+    assert.deepEqual(cancelled, [groupA, undefined], "global shutdown cancels all group work");
+});
+
+test("group setting load or observation failures fail closed even when the global gate is enabled", async () => {
+    const control = new GroupReplyControl({
+        async getGroupRepliesEnabled() { return true; },
+        async setGroupRepliesEnabled() {},
+    }, {
+        async ensureGroup() { throw new Error("group settings unavailable"); },
+        async getGroupSettings() { throw new Error("group settings unavailable"); },
+        async setGroupRepliesEnabledForGroup() { throw new Error("group settings unavailable"); },
+        async listGroups() { throw new Error("group settings unavailable"); },
+    });
+    await control.initialize();
+    assert.equal(control.getGroupRepliesEnabled(), true);
+    assert.equal(control.getGroupRepliesEnabledForGroup("group-a"), false);
+    assert.equal(await control.observeGroup("group-a"), false);
+    assert.equal(control.getGroupRepliesEnabledForGroup("group-a"), false);
+});
+
+test("manual, platform, automatic Bot state and detector marks persist independently per group", async () => {
+    const groupA = `bot-group-a-${randomUUID()}`;
+    const groupB = `bot-group-b-${randomUUID()}`;
+    const memberOpenid = `same-member-${randomUUID()}`;
+    const at = 1_700_001_000_000;
+    await sqlite.upsertMember(member(groupA, memberOpenid, "Bot 甲"));
+    await sqlite.upsertMember(member(groupB, memberOpenid, "Bot 乙"));
+
+    await sqlite.setManualBot(groupA, memberOpenid, true, at);
+    await sqlite.setPlatformBot(groupB, memberOpenid, true, at);
+    for (let mark = 1; mark <= 4; mark++) {
+        const state = await sqlite.incrementDetectionMark(groupA, memberOpenid, at + mark, 5);
+        assert.equal(state.detectionMarks, mark);
+        assert.equal(state.autoBot, false, "four marks do not yet mark an account as automated");
+    }
+    const fifth = await sqlite.incrementDetectionMark(groupA, memberOpenid, at + 5, 5);
+    assert.equal(fifth.autoBot, true, "threshold crossing persists auto_bot atomically with the fifth mark");
+    assert.equal((await sqlite.getMemberBotState(groupA, memberOpenid)).manualBot, true);
+    assert.deepEqual(await sqlite.getMemberBotState(groupB, memberOpenid), {
+        groupOpenid: groupB, memberOpenid, platformBot: true, manualBot: false, autoBot: false,
+        detectionMarks: 0, lastDetectionAt: null, createdAt: at, updatedAt: at,
+    });
+
+    const reopened = new SqliteMemberRepository(join(directory, "members.db"));
+    try {
+        const reopenedA = await reopened.getMemberBotState(groupA, memberOpenid);
+        assert.equal(reopenedA.detectionMarks, 5);
+        assert.equal(reopenedA.autoBot, true);
+        assert.equal(reopenedA.manualBot, true);
+        assert.equal((await reopened.findGroupMember(groupA, memberOpenid))?.username, "Bot 甲");
+        assert.equal((await reopened.findGroupMember(groupB, memberOpenid))?.platformBot, true);
+
+        const cleared = await reopened.resetDetectionMarks(groupA, memberOpenid, at + 6);
+        assert.equal(cleared.detectionMarks, 0);
+        assert.equal(cleared.autoBot, false);
+        assert.equal(cleared.manualBot, true, "clearing detections does not remove a manual Bot flag");
+        assert.equal((await reopened.getMemberBotState(groupB, memberOpenid)).platformBot, true,
+            "clearing one group's marks does not affect another group");
+    } finally { reopened.close(); }
+});
+
+test("legacy AUTOMATED_PEER_IDS imports only IDs mapped to persisted groups once", async () => {
+    const groupA = `legacy-import-a-${randomUUID()}`;
+    const groupB = `legacy-import-b-${randomUUID()}`;
+    const memberOpenid = `legacy-member-${randomUUID()}`;
+    await sqlite.upsertMember(member(groupA, memberOpenid, "旧 Bot A"));
+    await sqlite.upsertMember(member(groupB, memberOpenid, "旧 Bot B"));
+    const result = await importLegacyAutomatedPeerIds(sqlite, [memberOpenid, "unmapped-id"]);
+    assert.deepEqual(result, { imported: 2, unmatched: 1, skipped: false });
+    assert.equal((await sqlite.getMemberBotState(groupA, memberOpenid)).manualBot, true);
+    assert.equal((await sqlite.getMemberBotState(groupB, memberOpenid)).manualBot, true);
+    await sqlite.setManualBot(groupA, memberOpenid, false, Date.now());
+    assert.equal((await importLegacyAutomatedPeerIds(sqlite, [memberOpenid])).skipped, true);
+    assert.equal((await sqlite.getMemberBotState(groupA, memberOpenid)).manualBot, false,
+        "the one-time importer never re-enables a manually removed legacy flag");
+});
+
 test("admin authorization uses the opaque stable member OpenID and accepts display or full hash", () => {
     const memberOpenid = "stable-member-openid";
     const displayId = toOpaqueMemberDisplayId(memberOpenid);
@@ -93,7 +206,7 @@ test("failed state persistence preserves the old enabled state without canceling
     const control = new GroupReplyControl({
         async getGroupRepliesEnabled() { return true; },
         async setGroupRepliesEnabled() { throw new Error("disk failure"); },
-    });
+    }, new MemoryMemberRepository());
     await control.initialize();
     let cancellations = 0;
     control.registerPendingWorkCanceller(() => { cancellations++; });
@@ -107,7 +220,7 @@ test("group reply state load failure fails closed", async () => {
     const control = new GroupReplyControl({
         async getGroupRepliesEnabled() { throw new Error("database unavailable"); },
         async setGroupRepliesEnabled() {},
-    });
+    }, new MemoryMemberRepository());
     assert.equal(await control.initialize(), false);
     assert.equal(control.getGroupRepliesEnabled(), false);
 });
@@ -124,7 +237,7 @@ test("concurrent group reply commands persist in order and publish the final sta
             if (enabled) await enableWait;
             persisted = enabled;
         },
-    });
+    }, new MemoryMemberRepository());
     await control.initialize();
     const enable = control.setGroupRepliesEnabled(true, "4D53C611");
     await new Promise((resolve) => setImmediate(resolve));
@@ -148,20 +261,20 @@ test("SQLite keeps groups separate and returns every duplicate nickname", async 
     assert.equal(await sqlite.findByOpenid("group-b", "person-2"), null);
 });
 
-test("known member summaries aggregate groups and survive reopening SQLite", async () => {
-    assert.deepEqual(summarizeKnownMembers([]), []);
+test("group member names and full IDs survive reopening SQLite and are available to authenticated control", async () => {
     await sqlite.upsertMember({ ...member("summary-group-a", "member-secret", "旧昵称"), lastSeenAt: 10, updatedAt: 10 });
     await sqlite.upsertMember({ ...member("summary-group-b", "member-secret", "新昵称", "admin"), lastSeenAt: 30, updatedAt: 30 });
+    await sqlite.setManualBot("summary-group-b", "member-secret", true, 30);
 
     const reopened = new SqliteMemberRepository(join(directory, "members.db"));
     try {
-        const rows = await reopened.listAll();
-        const summary = summarizeKnownMembers(rows).find((item) => item.displayName === "新昵称");
-        assert.ok(summary);
-        assert.equal(summary.lastSeenAt, 30);
-        assert.equal(summary.groupCount, 2);
-        assert.deepEqual(summary.roles, ["admin"]);
-        assert.doesNotMatch(JSON.stringify(summary), /member-secret|summary-group/);
+        const inGroupA = await reopened.findGroupMember("summary-group-a", "member-secret");
+        const inGroupB = await reopened.findGroupMember("summary-group-b", "member-secret");
+        assert.equal(inGroupA?.username, "旧昵称");
+        assert.equal(inGroupB?.username, "新昵称");
+        assert.equal(inGroupB?.role, "admin");
+        assert.equal(inGroupB?.memberOpenid, "member-secret");
+        assert.equal(inGroupB?.manualBot, true);
 
         const control = createTenBotControl({
             getStatus: () => ({
@@ -173,11 +286,13 @@ test("known member summaries aggregate groups and survive reopening SQLite", asy
             } satisfies RuntimeStatus),
             getConfig: () => ({} as PublicConfig),
             async updateConfig() { return { ok: true, requiresRestart: false, changedFields: [], message: "" }; },
-            getAutomatedPeers: () => [],
-            getRecentPeers: () => [],
-            async getKnownMembers() { return summarizeKnownMembers(await reopened.listAll()); },
-            async addAutomatedPeer() { return { ok: true, changed: false, message: "" }; },
-            async removeAutomatedPeer() { return { ok: true, changed: false, message: "" }; },
+            async getGroups() { return await reopened.listGroups(); },
+            async setGroupRepliesEnabledForGroup() { return { ok: true, changed: false }; },
+            async getMarkedBots() { return reopened.listMarkedBots(); },
+            async getGroupMembers(groupOpenid) { return reopened.listGroupMembers(groupOpenid); },
+            async getGroupMember(groupOpenid, memberOpenid) { return reopened.findGroupMember(groupOpenid, memberOpenid); },
+            async setMemberManualBot(groupOpenid, memberOpenid, enabled) { return reopened.setManualBot(groupOpenid, memberOpenid, enabled, Date.now()); },
+            async clearMemberDetection(groupOpenid, memberOpenid) { return reopened.resetDetectionMarks(groupOpenid, memberOpenid, Date.now()); },
             async reloadPrompt() { return { ok: true, message: "", loadedAt: "now" }; },
             async reloadReplyJudgePrompt() { return { ok: true, message: "", loadedAt: "now" }; },
             async reloadMemes() { return { ok: true, message: "", loadedAt: "now" }; },
@@ -186,13 +301,14 @@ test("known member summaries aggregate groups and survive reopening SQLite", asy
             async shutdown() {},
             subscribeLogs: () => () => undefined,
         });
-        assert.equal((await control.getKnownMembers()).find((item) => item.displayName === "新昵称")?.groupCount, 2);
+        assert.equal((await control.getGroupMember("summary-group-b", "member-secret"))?.username, "新昵称");
+        assert.equal((await control.getMarkedBots()).some((item) => item.memberOpenid === "member-secret" && item.groupOpenid === "summary-group-b"), true);
     } finally {
         reopened.close();
     }
 });
 
-test("service learns author and mentions, skips bot, and resolves only unique names", async () => {
+test("service persists author and platform Bot identity, and resolves only unique human names", async () => {
     const repository = new MemoryMemberRepository();
     configureMemberRepository(repository);
     const incoming = message("service-group", { member_openid: "author-1", username: "尘柒", member_role: "owner" });
@@ -203,7 +319,7 @@ test("service learns author and mentions, skips bot, and resolves only unique na
     await rememberKnownMember(incoming);
     assert.equal((await repository.findByOpenid("service-group", "author-1"))?.role, "owner");
     assert.equal((await repository.findByOpenid("service-group", "person-1"))?.username, "芷");
-    assert.equal(await repository.findByOpenid("service-group", "bot-1"), null);
+    assert.equal((await repository.findGroupMember("service-group", "bot-1"))?.platformBot, true);
     assert.match((await renderStructuredMentions(incoming, "你好", ["芷"])).sendText,
         /<qqbot-at-user id="person-1" \/>/);
 
@@ -214,7 +330,7 @@ test("service learns author and mentions, skips bot, and resolves only unique na
     assert.doesNotMatch(context, /person-1|author-1|service-group/);
 
     await rememberKnownMember({ ...incoming, authorIsBot: true, author: { member_openid: "bot-2", username: "小尘" }, mentions: [] });
-    assert.equal(await repository.findByOpenid("service-group", "bot-2"), null);
+    assert.equal((await repository.findGroupMember("service-group", "bot-2"))?.platformBot, true);
 });
 
 test("main-model member context deduplicates IDs and keeps the 200 most recently active", async () => {
@@ -235,6 +351,12 @@ test("main-model member context deduplicates IDs and keeps the 200 most recently
             const members = await base.listByGroup(groupOpenid);
             const newest = members.find((member) => member.memberOpenid === "openid-secret-204")!;
             return [...members, { ...newest, username: "最新昵称", lastSeenAt: 206 }];
+        }
+        override async listGroupMembers(groupOpenid: string) {
+            return Promise.all((await this.listByGroup(groupOpenid)).map(async (member) => ({
+                ...member,
+                ...await base.getMemberBotState(groupOpenid, member.memberOpenid),
+            })));
         }
         override async findByOpenid(groupOpenid: string, memberOpenid: string) {
             return base.findByOpenid(groupOpenid, memberOpenid);

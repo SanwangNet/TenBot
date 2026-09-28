@@ -9,7 +9,6 @@ export const PAGE_LABELS = {
     prompt: "提示词",
     memes: "梗数据",
     conversations: "对话",
-    "automated-peers": "自动账号",
     logs: "日志",
     settings: "设置",
 } as const;
@@ -76,7 +75,7 @@ export function settingsFieldLabel(field: SettingsField): string {
         "replyJudge.timeoutMs": "超时时间",
         "replyJudge.fallbackToMainOnInvalidOutput": "Judge IPO 回退",
         "replyJudge.turnWaitMs": "未完成发言等待时间",
-        "botLoopGuard.maxCycles": "自动互聊上限",
+        "botLoopGuard.maxCycles": "Bot 连续互聊上限",
     } satisfies Record<SettingsField, string>)[field];
 }
 

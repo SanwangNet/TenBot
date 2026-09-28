@@ -9,9 +9,9 @@ TenBot 是 SanWang 内部使用的 QQ Bot，使用 TypeScript、Node.js 和 QQ �
 - **Reply Cycle**：每个会话同一时间最多运行一个 AI Attempt。新消息可以中断生成并用最新上下文重试；单个 Cycle 最多处理中断 3 次，之后到来的消息会排入后续 Cycle。普通 Attempt 超时为 30 秒，可在同一 Cycle 重试一次；实际开始网页搜索后，Cycle 总时限最多为 120 秒。
 - **QQ 回复**：模型通过统一的 qq_reply 能力决定回复内容，支持 1～3 条消息、每条消息的引用偏好和已知群成员 @。引用消息 ID 和 QQ API payload 由 Runtime 管理，不会交给模型。
 - **网络梗知识**：本地 memes.json 支持中文、别名、拼音和首字母模糊检索。自动检索最多提供 3 个候选，由模型结合聊天上下文判断是否使用；模型也可调用只读 meme_lookup 查询详情。
-- **自动账号防循环**：可按稳定群成员 ID 登记自动化账号。每个会话连续由登记账号启动的 AI Cycle 默认最多 4 次；达到限制后暂停 AI 调用，收到未登记成员的消息后重置。
+- **Bot 防循环**：平台标记、人工标记或自动识别的群成员会触发 group-scoped Loop Guard；每个会话默认连续最多 4 个 Bot 发起的 AI Cycle，真人消息会重置限制。
 - **Minecraft 状态**：/mc 命令、状态卡刷新按钮和 AI 的 Minecraft 状态查询共用同一查询能力。
-- **本地全屏 TUI**：以 alternate screen 接管终端，查看运行状态、模型、Prompt、Meme、对话、自动账号和日志；退出后恢复原来的终端内容。
+- **本地全屏 TUI**：以 alternate screen 接管终端，查看运行状态、模型、Prompt、Meme、对话和日志；退出后恢复原来的终端内容。
 
 ## 安装与配置
 
@@ -49,13 +49,12 @@ Front 使用 `FRONT_MODE=legacy|judge` 配置，默认 `legacy`。只有显式�
 | --- | --- |
 | BOT_LOG_LEVEL | Console 日志等级：all、debug、info、warn 或 error；默认 info。仅控制终端 / systemd journal 输出量 |
 | BOT_TIME_ZONE | 模型时间语境和聊天记录时间展示使用的 IANA 时区；默认 Asia/Shanghai |
-| AUTOMATED_PEER_IDS | 逗号分隔的已登记自动化账号稳定成员 ID |
-| BOT_LOOP_GUARD_MAX_CYCLES | 每个会话的连续自动账号 AI Cycle 上限，默认 4，必须是大于等于 1 的整数 |
+| BOT_LOOP_GUARD_MAX_CYCLES | 每个会话的连续 Bot AI Cycle 上限，默认 4，必须是大于等于 1 的整数 |
 | REPLY_JUDGE_TIMEOUT_MS | Reply Judge 独立超时，默认 5000 毫秒，接受 1000–30000 毫秒 |
 
 也可以复制 [.env.example](.env.example) 作为配置模板。`.env` 仍是配置持久化来源，TUI 只通过 ConfigStore 修改公开的普通配置；secret 只用于判断“已配置”，不会显示原文或掩码。
 
-不要把 .env 或真实凭据提交到 Git。AUTOMATED_PEER_IDS 使用 QQ 事件中的稳定成员 ID（member_openid），不使用昵称，也不会推测账号是否自动化。可在 TUI 的自动账号页查看稳定 ID；完整 ID 属于敏感信息，不要公开粘贴。
+不要把 `.env` 或真实凭据提交到 Git。Bot 标记按 group_openid + member_openid 分别保存在 SQLite。升级时旧 `AUTOMATED_PEER_IDS` 只会一次性导入到已有成员记录；无法确定所属群的 ID 不会猜测或导入，并会记录不含 ID 的迁移警告。导入后旧环境变量不再参与运行。
 
 ## 运行
 
@@ -98,7 +97,7 @@ WebUI 开发时，在另一个终端运行 Vite：
 
 构建后，浏览器访问 `http://127.0.0.1:3000/` 即可打开 WebUI；Runtime 仍默认只监听本机。未登录时显示 GitHub 登录页，所有管理 API 和 SSE 均要求有效 TenBot Session。
 
-WebUI 提供总览、模型、提示词、梗数据、对话、自动账号、实时日志和设置。提示词与 Meme 数据可在 Monaco 编辑器中保存并热重载；保存会检查文件版本，Meme JSON 会先验证。编辑 API 只允许 TenBot 的四个固定资源 ID，不接受任意服务器路径。自动账号与设置修改仍经由 TenBotControl 应用。
+WebUI 提供总览、模型、提示词、梗数据、对话、成员、实时日志和设置。成员页按“已标记的机器人账号 → 群聊 → 群成员”查看和管理 group-scoped Bot 状态及群回复开关。提示词与 Meme 数据可在 Monaco 编辑器中保存并热重载；保存会检查文件版本，Meme JSON 会先验证。编辑 API 只允许 TenBot 的四个固定资源 ID，不接受任意服务器路径。
 
 终端控制界面：
 
@@ -112,10 +111,9 @@ TUI 是中文全屏控制台，支持 PowerShell 和 WebStorm Terminal。进入�
 - GPT / DeepSeek 模型名称
 - GPT / DeepSeek 推理强度
 - GPT 输出详细度
-- 自动账号连续交互上限
-- 自动账号的添加和删除
+- Bot 连续交互上限
 
-修改会先经过确认，再只更新 `.env` 中对应的变量；未知变量、secret、注释、空行和原有换行风格会保留。Provider、模型参数、连续交互上限和自动账号 ID 会立即热重载；进行中的模型 Attempt 保留启动时的模型和 Prompt 快照，新 Attempt 使用最新配置。当前不支持自动重启。QQ App ID 或密钥变化需要重启 QQ Runtime。
+修改会先经过确认，再只更新 `.env` 中对应的变量；未知变量、secret、注释、空行和原有换行风格会保留。Provider、模型参数和连续 Bot 交互上限会立即热重载；进行中的模型 Attempt 保留启动时的模型和 Prompt 快照，新 Attempt 使用最新配置。Bot 的手动标记、自动识别状态和群回复开关由 WebUI 管理并存入 SQLite。当前不支持自动重启。QQ App ID 或密钥变化需要重启 QQ Runtime。
 
 设置页使用 Provider 卡片浏览 GPT 与 DeepSeek 配置。左右方向键只切换正在查看的卡片；选择“设为当前模型提供商”并确认后才会保存和热切换运行 Provider。密钥和 Base URL 不会显示在 TUI。
 
@@ -123,12 +121,11 @@ TUI 快捷键：
 
 | 按键 | 操作 |
 | --- | --- |
-| ↑ / ↓ | 移动侧栏、设置项或自动账号；日志和对话页中逐个视觉行查看 |
+| ↑ / ↓ | 移动侧栏和设置项；日志和对话页中逐个视觉行查看 |
 | ← / → | 设置页切换 Provider 卡片；对话页切换群聊或私聊 |
 | Enter | 打开页面；在设置页修改配置；确认弹窗操作 |
 | Esc | 从主区返回侧栏；关闭或返回弹窗 |
 | Tab | 在侧栏和主内容区之间切换焦点 |
-| A / Delete | 添加最近发现的自动账号 / 删除已登记账号 |
 | P | 重载当前模型提供商的 Prompt |
 | M | 重载 memes.json |
 | R | 弹出确认后同时重载 Prompt 和 Meme 数据 |
@@ -137,9 +134,9 @@ TUI 快捷键：
 | Home / End | 对话页跳到最旧 / 最新；日志页跳到最早 / 最新 |
 | Q 或 Ctrl+C | 打开退出确认；在确认框按 Enter 后优雅关闭 |
 
-### 自动账号
+### 成员管理
 
-自动账号使用 QQ 群消息中的稳定成员 ID 写入 `.env` 的 `AUTOMATED_PEER_IDS`，重启后仍会恢复登记状态；身份判断不依据昵称、消息内容或平台 Bot 标记。管理菜单可查看 Bot/普通账号状态、设为 Bot 或取消 Bot，以及全局互聊上限。最近发现的群成员资料只保存在内存中，最多保留 100 个，重启后清空；缺少昵称时已登记账号仍显示为“未知账号”和短 ID。平台 Bot 标记只作提示，必须由用户主动登记。修改后 Guard 对后续新消息立即使用新列表，不清空已有会话计数。
+成员身份、用户名、群归属和首次/最近出现时间保存在 `group_members`；平台 Bot、人工 Bot、自动 Bot 与识别次数分别保存在 `member_bot_state`。自动识别采用短文本高速 burst 规则，连续 5 次命中后标记为 auto_bot；人工清除识别记录会清空 auto_bot 和次数，但不会移除 manual_bot 或平台 Bot 标记。成员管理 API 只在已认证 WebUI 中提供完整 OpenID。
 
 ### 对话观察
 
@@ -159,7 +156,7 @@ WebUI 日志页的等级筛选与服务器完全独立，首次默认为“信�
 
 ### 运行时热重载
 
-TUI 设置页可保存 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Reply Judge 模型与超时时间、BOT_LOOP_GUARD_MAX_CYCLES 和 AUTOMATED_PEER_IDS。修改会先经过确认，再只更新 `.env` 中对应的变量；未知变量、secret、注释、空行和原有换行风格会保留。Provider、模型参数、连续交互上限和自动账号 ID 会立即热重载；进行中的模型 Attempt 保留启动时的模型和 Prompt 快照，新 Attempt 使用最新配置。GPT、DeepSeek 与 Reply Judge Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQ App ID 或密钥变化需要重启；TUI 不会自动重启进程。
+TUI 设置页可保存 AI_PROVIDER、GPT/DeepSeek 模型、推理强度、GPT 输出详细度、Reply Judge 模型与超时时间及 BOT_LOOP_GUARD_MAX_CYCLES。Provider、模型参数与连续 Bot 交互上限会热重载；Bot 标记、识别次数和群回复状态只由 WebUI 成员页管理。GPT、DeepSeek 与 Reply Judge Prompt 文件以及 `memes.json` 都会在文件保存后自动校验并替换快照；手动 P/M/R 重载仍可用。重载失败时保留旧快照并显示安全提示。QQ App ID 或密钥变化需要重启；TUI 不会自动重启进程。
 
 API Key 与 Provider Base URL 仍只通过 `.env` 管理，不会暴露给 TUI。`BOT_LOG_LEVEL` 在进程启动时读取，修改后需重启 Runtime；`BOT_TIME_ZONE` 是仅供模型输入使用的内部部署环境配置，不会显示或通过 Web/TUI 修改，外部 `.env` 变更会经 ConfigStore 重建 Runtime 配置快照。
 
@@ -169,7 +166,7 @@ API Key 与 Provider Base URL 仍只通过 `.env` 管理，不会暴露给 TUI�
 
 ### 鼠标操作
 
-键盘操作始终可用。支持左键点击侧栏页面、设置项、自动账号列表行、选择项和弹窗按钮；鼠标不可用时自动退回键盘操作。暂不支持右键、拖拽、文本选择或滚轮手势。
+键盘操作始终可用。支持左键点击侧栏页面、设置项、选择项和弹窗按钮；鼠标不可用时自动退回键盘操作。暂不支持右键、拖拽、文本选择或滚轮手势。
 
 ### 退出
 
@@ -224,7 +221,7 @@ Runtime 会校验 JSON、条目字段及重复 ID、名称和别名，再建立�
 
 ## 数据与隐私
 
-已知群成员资料、运行状态和 WebUI Session 使用本地 SQLite，默认文件为 `data/bot.db`；新环境自动应用新增的 Web auth migration。WebUI Cookie 保存随机 Session token，数据库仅保存 SHA-256 hash；Session 默认 7 天有效，登出后立即失效。SQLite 不可用时管理 API 保持锁定。最近聊天上下文、活跃会话和自动账号循环限制状态保存在内存中，进程重启后清零。
+群设置、群成员、Bot 状态、运行状态和 WebUI Session 使用本地 SQLite，默认文件为 `data/bot.db`；schema migrations 包含群回复、成员 Bot 状态和 Web auth。WebUI Cookie 保存随机 Session token，数据库仅保存 SHA-256 hash；Session 默认 7 天有效，登出后立即失效。SQLite 不可用时管理 API 保持锁定，群回复总闸门 fail-closed。短消息 burst 的临时窗口、Recent Context、活跃会话和每会话 Loop Guard 计数保存在内存中，持久 Bot 标记及识别次数重启后保留。
 
 API 密钥、QQ 凭据和 Authorization、Bearer token、Cookie、access/refresh token 会在 Console、UI 与三份磁盘日志中持续脱敏。ALL 日志仍可能包含聊天内容、member/group OpenID、Prompt、模型请求/响应和 Tool 参数及结果；它只适合本机临时诊断，排障后恢复 debug/info，并且不要上传公开 issue。日志文件保存在被 Git ignore 的 `logs/` 目录。
 

@@ -9,7 +9,7 @@ import type { ProviderErrorNotice } from "../src/control/provider-error.js";
 import { TenBotError } from "../src/errors/tenbot-error.js";
 import { logger, subscribeLogs } from "../src/shared/logger.js";
 import { connectionLabel, formatTuiLogText, reasoningLabel, verbosityLabel } from "../src/tui/i18n.js";
-import { closeModal, hasPendingRestart, openConfigModal, readKnownMembers, receiveProviderError, textPatch } from "../src/tui/app.js";
+import { closeModal, hasPendingRestart, openConfigModal, receiveProviderError, textPatch } from "../src/tui/app.js";
 import { activateSidebarPage, clampLogOffset, handleLogsNavigation, initialTuiState, moveSettingsSelection, moveSidebarSelection, quitConfirmationAction, requestQuitConfirmation, toggleTuiFocus } from "../src/tui/state.js";
 import { settingsRows } from "../src/tui/state.js";
 import { SettingsView } from "../src/tui/views/settings-view.js";
@@ -22,7 +22,6 @@ import { exitTuiProcess } from "../src/tui/process-exit.js";
 import { calculateBubbleWidth, layoutConversationViewport, measureConversationItem, moveConversationAnchor, wrapTerminalText, type ConversationScrollAnchor } from "../src/tui/conversation-layout.js";
 import { calculateCenteredModalBounds } from "../src/tui/modal-layout.js";
 import { layoutProviderErrorDetails, moveProviderErrorDetailsScroll, providerErrorSummaryPreview } from "../src/tui/provider-error-layout.js";
-import { calculateAutomatedPeersLayout } from "../src/tui/automated-peers-layout.js";
 import type { ConversationItem } from "../src/control/conversation-timeline.js";
 
 function conversationFixture(count: number, content = "short") : ConversationItem[] {
@@ -193,19 +192,21 @@ function fakeControl(calls: string[], result: ReloadResult = { ok: true, message
         replyJudge: { model: "judge-test", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "test", reasoningEffort: "high", verbosity: "high", configured: false },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: false },
-        botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
+        botLoopGuard: { maxCycles: 4 },
     };
     return {
         getStatus: () => status,
         getConfig: () => config,
         async updateConfig() { return { ok: true, requiresRestart: true, changedFields: [], message: "saved" }; },
-        getAutomatedPeers: () => [],
-        getRecentPeers: () => [],
-        getKnownMembers: async () => [],
+        getGroups: async () => [],
+        setGroupRepliesEnabledForGroup: async () => ({ ok: true, changed: false }),
+        getMarkedBots: async () => [],
+        getGroupMembers: async () => [],
+        getGroupMember: async () => null,
+        setMemberManualBot: async () => null,
+        clearMemberDetection: async () => null,
         getConversations: () => [],
         getConversationTimeline: () => [],
-        async addAutomatedPeer() { return { ok: true, changed: true, message: "added" }; },
-        async removeAutomatedPeer() { return { ok: true, changed: true, message: "removed" }; },
         subscribeStatus: () => () => undefined,
         subscribeLogs: () => () => undefined,
         subscribeEvents: () => () => undefined,
@@ -401,7 +402,7 @@ test("settings select and text editors create safe patches without touching a re
         replyJudge: { model: "Qwen/Qwen3.5-4B", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: false },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: false },
-        botLoopGuard: { maxCycles: 4, automatedPeerCount: 2 },
+        botLoopGuard: { maxCycles: 4 },
     };
     const provider = openConfigModal("aiProvider", config);
     assert.equal(provider.type, "config-select");
@@ -433,7 +434,7 @@ test("settings render Reply Judge as an equal-width settings column with keyboar
         replyJudge: { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: true },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
-        botLoopGuard: { maxCycles: 4, automatedPeerCount: 2 },
+        botLoopGuard: { maxCycles: 4 },
     };
     const status: RuntimeStatus = {
         qq: "connected",
@@ -508,7 +509,7 @@ test("settings shows pending restart only when Runtime marks a non-hot-reloadabl
         replyJudge: { model: "judge-test", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: true },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
-        botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
+        botLoopGuard: { maxCycles: 4 },
     };
     assert.equal(hasPendingRestart(status, config), true);
 });
@@ -567,23 +568,6 @@ test("Provider Error details wrap complete sanitized text, clamp row scrolling, 
     const summary = providerErrorSummaryPreview(notice, 72, 22, 1);
     assert.equal(summary.hasMore, true);
     assert.ok(summary.lines.length > 0);
-});
-
-test("known-member page switches between stacked and two-column layouts", () => {
-    const narrow = calculateAutomatedPeersLayout(58, 8);
-    assert.equal(narrow.mode, "stacked");
-    assert.ok(narrow.leftRows < 8);
-    const medium = calculateAutomatedPeersLayout(88, 8);
-    assert.equal(medium.mode, "stacked");
-    const wide = calculateAutomatedPeersLayout(96, 8);
-    assert.equal(wide.mode, "columns");
-    assert.equal(wide.leftWidth + wide.rightWidth, 96);
-    assert.deepEqual(calculateAutomatedPeersLayout(96, 8).mode, "columns");
-});
-
-test("TUI known-member read degrades to an empty list on repository failure", async () => {
-    const failedControl = { async getKnownMembers() { throw new Error("database unavailable"); } } as unknown as TenBotControl;
-    assert.deepEqual(await readKnownMembers(failedControl), []);
 });
 
 test("provider errors open one modal and queue subsequent errors", () => {

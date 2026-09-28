@@ -19,10 +19,10 @@ import { logger, shortId, truncateLogText } from "../../shared/logger.js";
 import { DEFAULT_MEME_SEND_MAX_EDGE } from "../../config/config-validation.js";
 import { memeSendImageService, type MemeSendImagePreparer } from "../../skills/meme/send-image.js";
 import {
-    automatedPeerLoopGuard,
+    botLoopGuard,
     BOT_LOOP_GUARD_NOTICE,
-    type AutomatedPeerLoopGuard,
-} from "../conversation/automated-peer.js";
+    type BotLoopGuard,
+} from "../conversation/bot-loop-guard.js";
 import { getConversationKey, getCurrentMessageTimestamp, getMessageRevision, rememberBotReply, removeMessageFromContext } from "../conversation/recent-context.js";
 import { getConversationGeneration, markConversationActive, stopConversation } from "../conversation/engagement.js";
 import type { NormalizedQqMessage } from "../message/normalize-message.js";
@@ -73,7 +73,8 @@ export interface ReplyRequest {
     imageUrls: string[];
     isGroup: boolean;
     /** Checked again at outbound boundaries; private chats are unaffected. */
-    groupRepliesEnabled?: () => boolean;
+    groupRepliesEnabled?: (groupOpenid: string) => boolean;
+    botMessage?: boolean;
     frontMode?: FrontMode;
     wakeLevel: WakeLevel;
     wakeReason?: WakeReason;
@@ -92,7 +93,7 @@ export interface ReplyCoordinatorDependencies {
     timeoutMs?: number;
     webSearchTimeoutMs?: number;
     multiMessageDelayMs?: number;
-    botLoopGuard?: AutomatedPeerLoopGuard;
+    botLoopGuard?: BotLoopGuard;
     /** Injectable snapshot source for deterministic offline runtime tests. */
     captureAttemptSnapshot?: () => AttemptRuntimeSnapshot;
     /** Model-input clock and timezone providers, evaluated for each input snapshot. */
@@ -122,7 +123,9 @@ export interface ReplyLifecycleSignal {
 }
 
 function isGroupReplyAllowed(request: ReplyRequest): boolean {
-    return !request.isGroup || request.groupRepliesEnabled?.() !== false;
+    if (!request.isGroup) return true;
+    const groupOpenid = request.message.groupId;
+    return Boolean(groupOpenid) && request.groupRepliesEnabled?.(groupOpenid!) !== false;
 }
 
 type ProviderErrorListener = (signal: ProviderErrorSignal) => void;
@@ -738,11 +741,12 @@ function cancelCycle(cycle: Cycle): boolean {
     return true;
 }
 
-/** Cancels all group cycles, including generation, tool work, and pre-send results. */
-export function cancelGroupReplyCycles(): number {
+/** Cancels all group cycles, or only one group's cycles when an OpenID is supplied. */
+export function cancelGroupReplyCycles(groupOpenid?: string): number {
     let cancelled = 0;
     for (const cycle of cycles.values()) {
         if (!cycle.latestRequest.isGroup) continue;
+        if (groupOpenid && cycle.latestRequest.message.groupId !== groupOpenid) continue;
         cycle.cancelled = true;
         const attempt = cycle.currentAttempt;
         if (attempt) {
@@ -1053,8 +1057,8 @@ export function coordinateAiReply(request: ReplyRequest, dependencies: Dependenc
 function startNewCycle(request: ReplyRequest, dependencies: Dependencies, priority: TriggerPriority,
     trailingUpdates: readonly TrailingUpdate[] = [], isTrailing = false): Promise<void> {
     if (!acceptingCycles) return Promise.resolve();
-    const decision = (dependencies.botLoopGuard ?? automatedPeerLoopGuard).beforeNewCycle(
-        getConversationKey(request.message), request.message.authorId, request.message.authorName,
+    const decision = (dependencies.botLoopGuard ?? botLoopGuard).beforeNewCycle(
+        getConversationKey(request.message), request.botMessage === true, request.message.authorName,
     );
     if (!decision.allowed) {
         return decision.sendNotice ? sendBotLoopNotice(request) : Promise.resolve();

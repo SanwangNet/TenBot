@@ -9,7 +9,6 @@ import type { ProviderErrorNotice } from "../control/provider-error.js";
 import type { RuntimeEvent } from "../control/runtime-event.js";
 import { parseErrorCode } from "../errors/format.js";
 import type { ConversationSummary } from "../control/conversation-timeline.js";
-import type { KnownMemberSummary } from "../control/known-members.js";
 import type { LogEntry } from "../shared/logger.js";
 import { MAX_LOG_BUFFER_ENTRIES } from "../control/tenbot-control.js";
 import { Footer } from "./components/footer.js";
@@ -23,11 +22,9 @@ import { ModelView } from "./views/model-view.js";
 import { OverviewView } from "./views/overview-view.js";
 import { PromptView } from "./views/prompt-view.js";
 import { SettingsView } from "./views/settings-view.js";
-import { AutomatedPeersView } from "./views/automated-peers-view.js";
 import { PAGE_LABELS, PAGES, providerLabel, reasoningLabel, settingsFieldLabel, verbosityLabel } from "./i18n.js";
-import { activateSidebarPage, handleLogsNavigation, initialTuiState, moveAutomatedPeerSelection, moveSettingsSelection, quitConfirmationAction, requestQuitConfirmation, settingsRows, toggleTuiFocus, type ConfigOption, type ConfigSelectField, type ConfigTextField, type ModalState, type SettingsField, type TuiState } from "./state.js";
+import { activateSidebarPage, handleLogsNavigation, initialTuiState, moveSettingsSelection, quitConfirmationAction, requestQuitConfirmation, settingsRows, toggleTuiFocus, type ConfigOption, type ConfigSelectField, type ConfigTextField, type ModalState, type SettingsField, type TuiState } from "./state.js";
 import type { TuiPage } from "./types.js";
-import type { AutomatedPeerSummary } from "../control/automated-peers.js";
 import { ClickableRegionRegistry, isSgrMouseSequence, type TerminalMouseSession } from "./mouse-input.js";
 import { collapseAdjacentLogs } from "./log-collapse.js";
 import { moveConversationAnchor, type ConversationScrollAnchor } from "./conversation-layout.js";
@@ -50,8 +47,6 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const uiRef = useRef(ui);
     uiRef.current = ui;
     const [now, setNow] = useState(() => new Date());
-    const [peerDirectory, setPeerDirectory] = useState(() => readPeerDirectory(control));
-    const [knownMembers, setKnownMembers] = useState<KnownMemberSummary[]>([]);
     const [conversations, setConversations] = useState<ConversationSummary[]>(() => control.getConversations());
     const [selectedConversationId, setSelectedConversationId] = useState<string>();
     const [conversationAnchor, setConversationAnchor] = useState<ConversationScrollAnchor | null>(null);
@@ -63,7 +58,6 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const columns = rawColumns || 80;
     const rows = rawRows || 24;
     const visibleLogLines = Math.max(4, rows - 10);
-    const visiblePeerRows = Math.max(4, rows - 16);
     const size = useRef({ columns, rows });
     if (size.current.columns !== columns || size.current.rows !== rows) {
         regions.clear();
@@ -98,10 +92,6 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         });
         const unsubscribeEvents = control.subscribeEvents((event: RuntimeEvent) => {
             if (event.type === "provider-error") setUi((current) => receiveProviderError(current, event.notice));
-            else if (event.type === "recent-peers-updated") {
-                setPeerDirectory(readPeerDirectory(control));
-                if (uiRef.current.page === "automated-peers") void readKnownMembers(control).then(setKnownMembers);
-            }
             else if (event.type === "conversation-item") setConversations(control.getConversations());
         });
         return () => {
@@ -119,19 +109,6 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
             setViewedProvider(current.aiProvider);
         }
     }, [control, status.hotReload?.revision, ui.page]);
-
-    useEffect(() => {
-        if (ui.page === "automated-peers") setPeerDirectory(readPeerDirectory(control));
-    }, [control, ui.page]);
-
-    useEffect(() => {
-        if (ui.page !== "automated-peers") return;
-        let current = true;
-        void readKnownMembers(control).then((members) => {
-            if (current) setKnownMembers(members);
-        });
-        return () => { current = false; };
-    }, [control, ui.page]);
 
     useEffect(() => mouseSession?.subscribe((click) => {
         if (!quitting.current) regions.dispatch(click);
@@ -153,9 +130,6 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         setUi((current) => requestQuitConfirmation(current));
     }), [registerQuitRequest]);
 
-    const refreshPeerDirectory = () => setPeerDirectory(readPeerDirectory(control));
-
-    const allPeers = [...peerDirectory.registered, ...peerDirectory.recent];
     const requestedConversationIndex = selectedConversationId
         ? conversations.findIndex((conversation) => conversation.conversationId === selectedConversationId)
         : 0;
@@ -186,28 +160,6 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         if (next) setSelectedConversationId(next.conversationId);
         setConversationAnchor(null);
     };
-    const openPeerDetails = (index: number) => {
-        const peer = allPeers[index];
-        if (!peer) return;
-        const registered = index < peerDirectory.registered.length;
-        setUi((current) => ({ ...current, automatedPeerIndex: index, modal: { type: "automated-peer-details", peer, registered } }));
-    };
-
-    const requestPeerMutation = (action: "add" | "remove", peer: AutomatedPeerSummary) => {
-        setUi((current) => ({ ...current, modal: { type: "automated-peer-confirm", action, peer } }));
-    };
-
-    const mutatePeer = async (action: "add" | "remove", peer: AutomatedPeerSummary) => {
-        let result;
-        try {
-            result = action === "add" ? await control.addAutomatedPeer(peer.id) : await control.removeAutomatedPeer(peer.id);
-        } catch {
-            result = { ok: false, changed: false, message: "无法完成自动账号配置操作。", details: "配置文件操作失败" };
-        }
-        refreshPeerDirectory();
-        setUi((current) => ({ ...current, modal: { type: "automated-peer-result", action, peer, result } }));
-    };
-
     const editSetting = (field: SettingsField) => setUi((current) => ({
         ...current,
         settingsIndex: settingsRowIndex(field, viewedProvider),
@@ -251,7 +203,6 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
             return;
         }
         if (modal.type === "config-confirm") { void saveConfig(modal.patch, modal.label); return; }
-        if (modal.type === "automated-peer-confirm") { void mutatePeer(modal.action, modal.peer); return; }
         if (modal.type === "provider-error-details") { setUi((current) => providerDetailsToSummary(current)); return; }
         setUi(closeModal);
     };
@@ -391,15 +342,6 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
                 else if (action === "cancel") setUi(closeModal);
                 return;
             }
-            if (ui.modal.type === "automated-peer-confirm") {
-                if (key.return) confirmModal();
-                return;
-            }
-            if (ui.modal.type === "automated-peer-details") {
-                if (lower === "a" && !ui.modal.registered) requestPeerMutation("add", ui.modal.peer);
-                else if ((key.delete || input === "\u007f") && ui.modal.registered) requestPeerMutation("remove", ui.modal.peer);
-                return;
-            }
             if (key.return) {
                 confirmModal();
                 return;
@@ -470,19 +412,6 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
             }
             return;
         }
-        if (ui.page === "automated-peers" && ui.focus === "main") {
-            if (key.upArrow) setUi((current) => ({ ...current, automatedPeerIndex: moveAutomatedPeerSelection(current.automatedPeerIndex, -1, allPeers.length) }));
-            else if (key.downArrow) setUi((current) => ({ ...current, automatedPeerIndex: moveAutomatedPeerSelection(current.automatedPeerIndex, 1, allPeers.length) }));
-            else if (key.return) openPeerDetails(ui.automatedPeerIndex);
-            else if (lower === "a") {
-                const peer = allPeers[ui.automatedPeerIndex];
-                if (peer && ui.automatedPeerIndex >= peerDirectory.registered.length) requestPeerMutation("add", peer);
-            } else if (key.delete || input === "\u007f") {
-                const peer = peerDirectory.registered[ui.automatedPeerIndex];
-                if (peer) requestPeerMutation("remove", peer);
-            }
-            return;
-        }
         if (ui.focus === "sidebar") {
             if (key.upArrow) setUi((current) => ({ ...current, selectedPage: movePage(current.selectedPage, -1) }));
             else if (key.downArrow) setUi((current) => ({ ...current, selectedPage: movePage(current.selectedPage, 1) }));
@@ -493,7 +422,7 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
     const showPendingRestart = hasPendingRestart(status, config);
     const content = renderView(
         ui.page, status, config, logs, ui.logOffset, visibleLogLines, ui.settingsIndex, showPendingRestart,
-        peerDirectory, knownMembers, ui.automatedPeerIndex, visiblePeerRows, Math.max(1, columns - 22), regions, editSetting, openPeerDetails,
+        Math.max(1, columns - 22), regions, editSetting,
         conversations, safeConversationIndex, conversationItems, conversationAnchor, updateConversationViewport, switchConversation,
         viewedProvider, viewProvider, applyViewedProvider,
     );
@@ -513,14 +442,10 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         onConfirm: confirmModal,
         onOption: selectModalOption,
         onProviderDetails: openProviderDetails,
-        onAddPeer: (peer: AutomatedPeerSummary) => requestPeerMutation("add", peer),
-        onRemovePeer: (peer: AutomatedPeerSummary) => requestPeerMutation("remove", peer),
-        maxCycles: status.runtimeConfig?.botLoopGuardMaxCycles ?? 4,
     };
     const footerProps = {
         focus: ui.focus,
         settings: ui.page === "settings" && ui.focus === "main",
-        automatedPeers: ui.page === "automated-peers" && ui.focus === "main",
         conversations: ui.page === "conversations" && ui.focus === "main",
         logs: ui.page === "logs" && ui.focus === "main",
         notice: status.hotReload?.lastFailure?.message,
@@ -608,14 +533,9 @@ function renderView(
     visibleLines: number,
     settingsIndex: number,
     pendingRestart: boolean,
-    peerDirectory: { registered: AutomatedPeerSummary[]; recent: AutomatedPeerSummary[] },
-    knownMembers: readonly KnownMemberSummary[],
-    automatedPeerIndex: number,
-    visiblePeerRows: number,
     contentWidth: number,
     regions: ClickableRegionRegistry,
     onEditSetting: (field: SettingsField) => void,
-    onOpenPeer: (index: number) => void,
     conversations: readonly ConversationSummary[],
     conversationIndex: number,
     conversationItems: ReturnType<TenBotControl["getConversationTimeline"]>,
@@ -634,21 +554,7 @@ function renderView(
         case "conversations": return <ConversationsView conversations={conversations} selectedIndex={conversationIndex} items={conversationItems} anchor={conversationAnchor} registry={regions} onSwitch={onSwitchConversation} onViewportMeasure={onViewportMeasure} />;
         case "logs": return <LogsView logs={logs} offset={offset} visibleLines={visibleLines} />;
         case "settings": return <SettingsView status={status} config={config} selectedIndex={settingsIndex} pendingRestart={pendingRestart} viewedProvider={viewedProvider} width={contentWidth} registry={regions} onEdit={onEditSetting} onViewProvider={onViewProvider} onApplyProvider={onApplyProvider} />;
-        case "automated-peers": return <AutomatedPeersView registered={peerDirectory.registered} recent={peerDirectory.recent} knownMembers={knownMembers} selectedIndex={automatedPeerIndex} visibleCount={visiblePeerRows} width={contentWidth} registry={regions} onOpen={onOpenPeer} />;
     }
-}
-
-function readPeerDirectory(control: TenBotControl): { registered: AutomatedPeerSummary[]; recent: AutomatedPeerSummary[] } {
-    try {
-        return { registered: control.getAutomatedPeers(), recent: control.getRecentPeers() };
-    } catch {
-        return { registered: [], recent: [] };
-    }
-}
-
-export async function readKnownMembers(control: TenBotControl): Promise<KnownMemberSummary[]> {
-    try { return await control.getKnownMembers(); }
-    catch { return []; }
 }
 
 const reasoningOptions: readonly ConfigOption[] = [
@@ -706,7 +612,7 @@ function optionPatch(field: ConfigSelectField, value: string): PublicConfigPatch
 
 export function textPatch(field: ConfigTextField, value: string): { value: PublicConfigPatch; error?: undefined } | { value?: undefined; error: string } {
     if (field === "botLoopGuard.maxCycles" && !/^\d+$/.test(value.trim())) {
-        return { error: "自动账号连续交互上限必须是大于等于 1 的整数" };
+        return { error: "Bot 连续交互上限必须是大于等于 1 的整数" };
     }
     if (field === "replyJudge.timeoutMs" && !/^\d+$/.test(value.trim())) {
         return { error: "Reply Judge 超时时间必须是 1000 到 30000 毫秒之间的整数" };

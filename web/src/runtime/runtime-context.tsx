@@ -20,7 +20,7 @@ interface LogContextValue {
 const RuntimeContext = createContext<RuntimeContextValue | null>(null);
 const LogContext = createContext<LogContextValue | null>(null);
 const ConversationContext = createContext<{ state: ConversationViewState; dispatch(action: ConversationAction): void } | null>(null);
-const PeerRevisionContext = createContext(0);
+const MemberRevisionContext = createContext(0);
 const LastRuntimeEventContext = createContext<string | null>(null);
 
 export function RuntimeProvider({ children }: { children: ReactNode }) {
@@ -50,7 +50,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         setLogState(next);
     }, []);
     const [conversationState, dispatchConversation] = useReducer(conversationReducer, initialConversationViewState);
-    const [peerRevision, advancePeerRevision] = useReducer((value: number) => value + 1, 0);
+    const [memberRevision, advanceMemberRevision] = useReducer((value: number) => value + 1, 0);
     const [lastRuntimeEventAt, setLastRuntimeEventAt] = useState<string | null>(null);
     const { notify } = useFeedback();
 
@@ -64,7 +64,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
             onRuntimeEvent: (event) => {
                 setLastRuntimeEventAt(new Date().toISOString());
                 if (event.type === "conversation-item") dispatchConversation({ type: "event", event });
-                if (event.type === "recent-peers-updated") advancePeerRevision();
+                if (event.type === "members-updated") advanceMemberRevision();
                 if (event.type === "provider-error" && isProminentProviderError(event.notice)) notify("error", `${event.notice.provider}: ${event.notice.message}`, event.notice);
                 if (event.type === "reload-failure") notify("warning", event.message);
             },
@@ -102,7 +102,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     const logValue = useMemo<LogContextValue>(() => ({ state: logState, dispatch: dispatchLog }), [logState]);
     const conversationValue = useMemo(() => ({ state: conversationState, dispatch: dispatchConversation }), [conversationState]);
     return <RuntimeContext.Provider value={runtimeValue}>
-        <LogContext.Provider value={logValue}><ConversationContext.Provider value={conversationValue}><PeerRevisionContext.Provider value={peerRevision}><LastRuntimeEventContext.Provider value={lastRuntimeEventAt}>{children}</LastRuntimeEventContext.Provider></PeerRevisionContext.Provider></ConversationContext.Provider></LogContext.Provider>
+        <LogContext.Provider value={logValue}><ConversationContext.Provider value={conversationValue}><MemberRevisionContext.Provider value={memberRevision}><LastRuntimeEventContext.Provider value={lastRuntimeEventAt}>{children}</LastRuntimeEventContext.Provider></MemberRevisionContext.Provider></ConversationContext.Provider></LogContext.Provider>
     </RuntimeContext.Provider>;
 }
 
@@ -112,7 +112,7 @@ export function useConversations() {
     return context;
 }
 
-export function usePeerRevision() { return useContext(PeerRevisionContext); }
+export function useMemberRevision() { return useContext(MemberRevisionContext); }
 export function useLastRuntimeEventAt() { return useContext(LastRuntimeEventContext); }
 
 export function useRuntime() {

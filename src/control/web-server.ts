@@ -380,13 +380,114 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
             await updateConfig(request, response);
             return;
         }
-        if (pathname === "/api/automated-peers" && request.method === "POST") {
-            await mutatePeer(request, response, "add");
+        const groupsPrefix = "/api/groups/";
+        if (pathname.startsWith(groupsPrefix) && request.method === "PATCH" && pathname.endsWith("/replies")) {
+            const suffix = pathname.slice(groupsPrefix.length).split("/");
+            if (suffix.length !== 2 || suffix[1] !== "replies" || !suffix[0]) { error(response, 404, "Not found"); return; }
+            let groupOpenid: string;
+            try { groupOpenid = decodeURIComponent(suffix[0]); }
+            catch { error(response, 400, "Invalid group ID"); return; }
+            if (suffix[0].includes("/") || groupOpenid.includes("/") || groupOpenid.includes("\\") || !isValidGroupOpenid(groupOpenid)) {
+                error(response, 400, "Invalid group ID");
+                return;
+            }
+            let body: unknown;
+            try { body = await readJsonBody(request, MAX_CONFIG_PATCH_BODY_BYTES); }
+            catch (cause) {
+                error(response, cause instanceof HttpInputError ? cause.statusCode : 400,
+                    cause instanceof HttpInputError ? cause.message : "Invalid request body");
+                return;
+            }
+            if (!body || typeof body !== "object" || Array.isArray(body) ||
+                Object.keys(body).length !== 1 || typeof (body as Record<string, unknown>).enabled !== "boolean") {
+                error(response, 400, "Invalid group reply setting");
+                return;
+            }
+            try {
+                const result = await control.setGroupRepliesEnabledForGroup(groupOpenid, (body as { enabled: boolean }).enabled);
+                if (!result.ok) {
+                    error(response, result.notFound ? 404 : 500, result.notFound ? "Group not found" : "Unable to update group replies");
+                    return;
+                }
+                const group = (await control.getGroups()).find((item) => item.groupOpenid === groupOpenid);
+                if (!group) { error(response, 404, "Group not found"); return; }
+                json(response, 200, { group, changed: result.changed });
+            } catch { error(response, 500, "Unable to update group replies"); }
             return;
         }
-        if (pathname.startsWith("/api/automated-peers/") && request.method === "DELETE") {
-            await mutatePeer(request, response, "remove", pathname.slice("/api/automated-peers/".length));
-            return;
+        if (pathname.startsWith(groupsPrefix)) {
+            const suffix = pathname.slice(groupsPrefix.length).split("/");
+            let groupOpenid: string;
+            try { groupOpenid = decodeURIComponent(suffix[0] ?? ""); }
+            catch { error(response, 400, "Invalid group ID"); return; }
+            if (!isValidGroupOpenid(groupOpenid)) { error(response, 400, "Invalid group ID"); return; }
+            if (suffix[0]?.includes("/") || groupOpenid.includes("/") || groupOpenid.includes("\\")) {
+                error(response, 400, "Invalid group ID"); return;
+            }
+            if (suffix.length === 2 && suffix[1] === "members" && request.method === "GET") {
+                try {
+                    if (!(await control.getGroups()).some((group) => group.groupOpenid === groupOpenid)) {
+                        error(response, 404, "Group not found"); return;
+                    }
+                    json(response, 200, await control.getGroupMembers(groupOpenid));
+                } catch { error(response, 500, "Unable to read group members"); }
+                return;
+            }
+            if ((suffix.length === 3 && suffix[1] === "members") && request.method === "GET") {
+                let memberOpenid: string;
+                try { memberOpenid = decodeURIComponent(suffix[2]!); }
+                catch { error(response, 400, "Invalid member ID"); return; }
+                if (suffix[2]!.includes("/") || !isValidMemberOpenid(memberOpenid)) {
+                    error(response, 400, "Invalid member ID"); return;
+                }
+                try {
+                    const member = await control.getGroupMember(groupOpenid, memberOpenid);
+                    if (!member) { error(response, 404, "Member not found"); return; }
+                    json(response, 200, member);
+                } catch { error(response, 500, "Unable to read member"); }
+                return;
+            }
+            if (suffix.length === 4 && suffix[1] === "members" && suffix[3] === "manual-bot" && request.method === "PATCH") {
+                let memberOpenid: string;
+                try { memberOpenid = decodeURIComponent(suffix[2]!); }
+                catch { error(response, 400, "Invalid member ID"); return; }
+                if (suffix[2]!.includes("/") || !isValidMemberOpenid(memberOpenid)) {
+                    error(response, 400, "Invalid member ID"); return;
+                }
+                let body: unknown;
+                try { body = await readJsonBody(request, MAX_CONFIG_PATCH_BODY_BYTES); }
+                catch (cause) {
+                    error(response, cause instanceof HttpInputError ? cause.statusCode : 400,
+                        cause instanceof HttpInputError ? cause.message : "Invalid request body");
+                    return;
+                }
+                if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 ||
+                    typeof (body as Record<string, unknown>).enabled !== "boolean") {
+                    error(response, 400, "Invalid manual Bot state"); return;
+                }
+                try {
+                    const state = await control.setMemberManualBot(groupOpenid, memberOpenid, (body as { enabled: boolean }).enabled);
+                    if (!state) { error(response, 404, "Member not found"); return; }
+                    const member = await control.getGroupMember(groupOpenid, memberOpenid);
+                    json(response, 200, { state, member });
+                } catch { error(response, 500, "Unable to update Bot state"); }
+                return;
+            }
+            if (suffix.length === 4 && suffix[1] === "members" && suffix[3] === "clear-detections" && request.method === "POST") {
+                let memberOpenid: string;
+                try { memberOpenid = decodeURIComponent(suffix[2]!); }
+                catch { error(response, 400, "Invalid member ID"); return; }
+                if (suffix[2]!.includes("/") || !isValidMemberOpenid(memberOpenid)) {
+                    error(response, 400, "Invalid member ID"); return;
+                }
+                try {
+                    const state = await control.clearMemberDetection(groupOpenid, memberOpenid);
+                    if (!state) { error(response, 404, "Member not found"); return; }
+                    const member = await control.getGroupMember(groupOpenid, memberOpenid);
+                    json(response, 200, { state, member });
+                } catch { error(response, 500, "Unable to clear Bot detections"); }
+                return;
+            }
         }
         const resourcePrefix = "/api/editor/resources/";
         if (pathname.startsWith(resourcePrefix)) {
@@ -427,7 +528,7 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
         }
 
         if (request.method !== "GET") {
-            response.setHeader("Allow", pathname === "/api/config" ? "GET, PATCH" : pathname === "/api/automated-peers" ? "GET, POST" : "GET");
+            response.setHeader("Allow", pathname === "/api/config" ? "GET, PATCH" : "GET");
             error(response, 405, "Method not allowed");
             return;
         }
@@ -469,12 +570,14 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
             json(response, 200, control.getConversationTimeline(id));
             return;
         }
-        if (pathname === "/api/automated-peers") {
-            json(response, 200, { registered: control.getAutomatedPeers(), recent: control.getRecentPeers() });
+        if (pathname === "/api/groups") {
+            try { json(response, 200, await control.getGroups()); }
+            catch { error(response, 500, "Unable to read groups"); }
             return;
         }
-        if (pathname === "/api/known-members") {
-            json(response, 200, await control.getKnownMembers());
+        if (pathname === "/api/members/marked-bots") {
+            try { json(response, 200, await control.getMarkedBots()); }
+            catch { error(response, 500, "Unable to read marked Bot members"); }
             return;
         }
         if (pathname === "/api/events") {
@@ -562,24 +665,14 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
         }
     }
 
-    async function mutatePeer(request: import("node:http").IncomingMessage, response: ServerResponse, action: "add" | "remove", encodedId?: string): Promise<void> {
-        let id: string;
-        if (action === "add") {
-            let body: unknown;
-            try { body = await readJsonBody(request, MAX_CONFIG_PATCH_BODY_BYTES); }
-            catch (cause) { error(response, cause instanceof HttpInputError ? cause.statusCode : 400, cause instanceof HttpInputError ? cause.message : "Invalid request body"); return; }
-            id = body && typeof body === "object" && !Array.isArray(body) && typeof (body as Record<string, unknown>).id === "string"
-                ? (body as { id: string }).id : "";
-        } else {
-            try { id = decodeURIComponent(encodedId ?? ""); }
-            catch { error(response, 400, "Bad request"); return; }
-        }
-        if (!id || id.length > 256 || encodedId?.includes("/")) { error(response, 400, "Invalid peer ID"); return; }
-        try {
-            const result = action === "add" ? await control.addAutomatedPeer(id) : await control.removeAutomatedPeer(id);
-            if (!result.ok) { error(response, 400, result.message); return; }
-            json(response, 200, result);
-        } catch { error(response, 500, "Unable to update automated peer"); }
+    function isValidGroupOpenid(value: string): boolean {
+        return value.length > 0 && value.length <= 256 && value.trim() === value &&
+            !/[\u0000-\u001f\u007f-\u009f,]/.test(value);
+    }
+
+    function isValidMemberOpenid(value: string): boolean {
+        return value.length > 0 && value.length <= 512 && value.trim() === value &&
+            !/[\u0000-\u001f\u007f-\u009f,]/.test(value);
     }
 
     async function readJsonBody(request: import("node:http").IncomingMessage, maxBytes = MAX_CONFIG_PATCH_BODY_BYTES): Promise<unknown> {
