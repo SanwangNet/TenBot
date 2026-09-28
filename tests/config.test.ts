@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createConfigStore } from "../src/config/config-store.js";
-import { loadAppConfig, parseBotAdminIds, parseLogLevel, parsePublicConfigPatch, validatePublicConfigPatch } from "../src/config/config-validation.js";
+import { loadAppConfig, parseBotAdminIds, parsePublicConfigPatch, validatePublicConfigPatch } from "../src/config/config-validation.js";
 import { loadGitHubOAuthConfig } from "../src/auth/web-auth-service.js";
 
 test("BOT_ADMIN_IDS accepts opaque IDs, normalizes case, and rejects malformed entries", () => {
@@ -33,10 +33,11 @@ test("ConfigStore patches only managed keys and preserves secrets, unknown field
         "AI_PROVIDER=gpt",
         "",
         "# comment",
-        "BOT_LOG_LEVEL=info",
+        "BOT_LOG_LEVEL=invalid-legacy-value",
         "",
     ].join("\r\n"), async (envPath) => {
         const store = createConfigStore({ envPath, environment: {} });
+        assert.doesNotThrow(() => store.getAppConfig(), "an old invalid log level in .env is ignored");
         const result = await store.updatePublicConfig({ field: "aiProvider", value: "deepseek" });
         assert.equal(result.ok, true);
         const saved = await readFile(envPath, "utf8");
@@ -44,7 +45,7 @@ test("ConfigStore patches only managed keys and preserves secrets, unknown field
         assert.match(saved, /CODEX_API_KEY=SECRET\r\n/);
         assert.match(saved, /UNKNOWN_OPTION=abc\r\n/);
         assert.match(saved, /AI_PROVIDER=deepseek\r\n/);
-        assert.match(saved, /# comment\r\nBOT_LOG_LEVEL=info\r\n/);
+        assert.match(saved, /# comment\r\nBOT_LOG_LEVEL=invalid-legacy-value\r\n/);
         assert.doesNotMatch(saved, /CODEX_REASONING_EFFORT/);
     });
 });
@@ -128,10 +129,12 @@ test("ConfigStore appends new managed keys and serializes concurrent writes", as
     });
 });
 
-test("BOT_LOG_LEVEL supports all five levels and defaults invalid values to info", () => {
-    assert.deepEqual(["all", "debug", "info", "warn", "error"].map((level) => parseLogLevel(level)), ["all", "debug", "info", "warn", "error"]);
-    assert.equal(loadAppConfig({ BOT_LOG_LEVEL: "all" }).logging.level, "all");
-    assert.equal(parseLogLevel("invalid"), "info");
+test("legacy BOT_LOG_LEVEL is ignored and absent from AppConfig, PublicConfig, and patches", () => {
+    const config = loadAppConfig({ BOT_LOG_LEVEL: "not-a-level" });
+    const store = createConfigStore({ envPath: join(tmpdir(), "tenbot-config-missing.env"), environment: { BOT_LOG_LEVEL: "invalid" } });
+    assert.equal(Object.hasOwn(config, "logging"), false);
+    assert.equal(Object.hasOwn(store.getPublicConfig(), "logLevel"), false);
+    assert.equal(parsePublicConfigPatch({ field: "logLevel", value: "debug" }), undefined);
 });
 
 test("meme send maximum edge defaults to 160, supports original size, and hot config patches validate bounds", async () => {
@@ -166,7 +169,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
         CODEX_REASONING_EFFORT: "low",
         CODEX_VERBOSITY: "medium",
         DEEPSEEK_API_KEY: "DEEP_SECRET",
-        BOT_LOG_LEVEL: "debug",
+        BOT_LOG_LEVEL: "invalid-but-ignored",
         BOT_LOOP_GUARD_MAX_CYCLES: "10",
         AUTOMATED_PEER_IDS: "A,B,A",
     });
@@ -187,7 +190,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
             REPLY_JUDGE_API_KEY: "JUDGE_SECRET",
             REPLY_JUDGE_TIMEOUT_MS: "15000",
             BOT_ADMIN_IDS: "4D53C611",
-            BOT_LOG_LEVEL: "debug",
+            BOT_LOG_LEVEL: "invalid-but-ignored",
             BOT_LOOP_GUARD_MAX_CYCLES: "10",
             AUTOMATED_PEER_IDS: "A,B,A",
         },
@@ -196,7 +199,7 @@ test("public config exposes only safe metadata and shared defaults parse provide
     assert.equal(publicConfig.gpt.configured, true);
     assert.equal(publicConfig.deepseek.configured, true);
     assert.equal(publicConfig.botLoopGuard.automatedPeerCount, 2);
-    assert.equal(publicConfig.logLevel, "debug");
+    assert.equal(Object.hasOwn(publicConfig, "logLevel"), false);
     assert.deepEqual(publicConfig.replyJudge, { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000, provider: "openai-compatible" });
     assert.doesNotMatch(JSON.stringify(publicConfig), /SECRET_API_KEY|PRIVATE_GITHUB_OAUTH_SECRET|DEEP_SECRET|JUDGE_SECRET|judge-secret\.example|4D53C611|botAdminIds/);
 });
@@ -277,14 +280,13 @@ test("ConfigStore reload parsing follows current disk values instead of stale do
     });
 });
 
-test("ConfigStore rejects unsafe model names and invalid guard, reasoning, verbosity, and log values", async () => {
+test("ConfigStore rejects unsafe model names and invalid guard, reasoning, and verbosity values", async () => {
     assert.throws(() => validatePublicConfigPatch({ field: "gpt.model", value: "   " }), /模型名称/);
     assert.throws(() => validatePublicConfigPatch({ field: "gpt.model", value: "bad\nname" }), /模型名称/);
     assert.throws(() => validatePublicConfigPatch({ field: "botLoopGuard.maxCycles", value: 0 }), />=|大于等于/);
     assert.throws(() => validatePublicConfigPatch({ field: "botLoopGuard.maxCycles", value: 1.5 }), />=|大于等于/);
     assert.throws(() => validatePublicConfigPatch({ field: "gpt.reasoningEffort", value: "turbo" as never }), /推理强度/);
     assert.throws(() => validatePublicConfigPatch({ field: "gpt.verbosity", value: "verbose" as never }), /输出详细度/);
-    assert.throws(() => validatePublicConfigPatch({ field: "logLevel", value: "warning" as never }), /日志级别/);
 });
 
 test("ConfigStore returns a safe failure and leaves the old file unchanged when writing fails", async () => {

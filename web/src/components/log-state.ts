@@ -3,6 +3,37 @@ import type { LogEntry } from "../api/types.js";
 export const MAX_WEB_LOG_ENTRIES = 5_000;
 export const MAX_RENDERED_LOG_ENTRIES = 500;
 export type LogLevelFilter = "all" | "all-level" | Exclude<LogEntry["level"], "all">;
+export const LOG_LEVEL_FILTER_STORAGE_KEY = "tenbot.logs.level-filter";
+
+const LOG_LEVEL_FILTERS: readonly LogLevelFilter[] = ["all", "all-level", "debug", "info", "warn", "error"];
+
+interface LogLevelFilterStorage {
+    getItem(key: string): string | null;
+    setItem(key: string, value: string): void;
+}
+
+function browserLogStorage(): LogLevelFilterStorage | undefined {
+    try { return typeof window === "undefined" ? undefined : window.localStorage; }
+    catch { return undefined; }
+}
+
+export function isLogLevelFilter(value: unknown): value is LogLevelFilter {
+    return typeof value === "string" && LOG_LEVEL_FILTERS.includes(value as LogLevelFilter);
+}
+
+export function loadLogLevelFilter(storage = browserLogStorage()): LogLevelFilter {
+    try {
+        const value = storage?.getItem(LOG_LEVEL_FILTER_STORAGE_KEY);
+        return isLogLevelFilter(value) ? value : "info";
+    } catch {
+        return "info";
+    }
+}
+
+export function saveLogLevelFilter(value: LogLevelFilter, storage = browserLogStorage()): void {
+    try { storage?.setItem(LOG_LEVEL_FILTER_STORAGE_KEY, value); }
+    catch { /* Log filtering remains usable when browser storage is unavailable. */ }
+}
 
 export interface LogViewState {
     /** Bounded canonical rows are mutated in place; rowsRevision drives list/filter recomputation. */

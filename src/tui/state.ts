@@ -15,7 +15,6 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     "deepseek.reasoningEffort",
     "replyJudge.model",
     "replyJudge.timeoutMs",
-    "logLevel",
     "botLoopGuard.maxCycles",
 ];
 
@@ -27,7 +26,7 @@ export function settingsRows(provider: ModelProviderId): SettingsRow[] {
     const modelFields: SettingsField[] = provider === "gpt"
         ? ["gpt.model", "gpt.reasoningEffort", "gpt.verbosity"]
         : ["deepseek.model", "deepseek.reasoningEffort"];
-    return ["provider", ...modelFields, "apply", "logLevel", "botLoopGuard.maxCycles", "replyJudge.model", "replyJudge.timeoutMs"];
+    return ["provider", ...modelFields, "apply", "botLoopGuard.maxCycles", "replyJudge.model", "replyJudge.timeoutMs"];
 }
 export interface ConfigOption {
     value: string;

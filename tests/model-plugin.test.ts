@@ -10,7 +10,7 @@ import { createGptPlugin } from "../src/ai/plugins/gpt/index.js";
 import { getPromptStore } from "../src/ai/prompt-store.js";
 import { isToolProtocolLeak } from "../src/ai/tool-protocol.js";
 import { parseQqReplyArguments } from "../src/skills/qq-reply/skill.js";
-import { getLogLevel, setConsoleLogOutputEnabled, setLogLevel, subscribeLogs } from "../src/shared/logger.js";
+import { setConsoleLogOutputEnabled, subscribeLogs } from "../src/shared/logger.js";
 
 const GPT_SYSTEM_PROMPT = readFileSync(new URL("../src/ai/plugins/gpt/prompt.md", import.meta.url), "utf8");
 const DEEPSEEK_SYSTEM_PROMPT = readFileSync(new URL("../src/ai/plugins/deepseek/prompt.md", import.meta.url), "utf8");
@@ -69,12 +69,10 @@ test("registry selects GPT, DeepSeek, and defaults to GPT without requiring cred
 });
 
 test("ALL keeps request and NVO diagnostics while stream events and completed response are compact", async () => {
-    const oldLevel = getLogLevel();
     const entries: Array<{ level: string; text: string }> = [];
     const unsubscribe = subscribeLogs((entry) => entries.push(entry));
     setConsoleLogOutputEnabled(false);
     try {
-        setLogLevel("all");
         const outputItemEvent = {
             type: "response.output_item.done",
             output_index: 0,
@@ -102,18 +100,15 @@ test("ALL keeps request and NVO diagnostics while stream events and completed re
         assert.match(all, /"normalizeTextReplyIsNull":true/);
     } finally {
         unsubscribe();
-        setLogLevel(oldLevel);
         setConsoleLogOutputEnabled(true);
     }
 });
 
 test("Responses batches stream diagnostics and retains final text and complete malformed tool arguments", async () => {
-    const oldLevel = getLogLevel();
     const entries: Array<{ level: string; text: string }> = [];
     const unsubscribe = subscribeLogs((entry) => entries.push(entry));
     setConsoleLogOutputEnabled(false);
     try {
-        setLogLevel("all");
         const malformedArguments = '{"messages":[{"content":"保留原始参数"}],"mentions":[]} }}';
         const streamEvents = [
             ...Array.from({ length: 350 }, () => ({ type: "response.reasoning_text.delta", delta: "r" })),
@@ -188,7 +183,6 @@ test("Responses batches stream diagnostics and retains final text and complete m
         assert.ok(all.some((entry) => entry.text.includes("[AI:deepseek] tool call") && entry.text.includes(escapedMalformedArguments)));
     } finally {
         unsubscribe();
-        setLogLevel(oldLevel);
         setConsoleLogOutputEnabled(true);
     }
 });
@@ -333,11 +327,9 @@ test("a real qq_reply function call with an empty messages array returns its mem
 });
 
 test("Responses reasoning plus the reported plain-text qq_reply reaches the real executor unchanged", async () => {
-    const oldLevel = getLogLevel();
     const entries: Array<{ level: string; text: string }> = [];
     const unsubscribe = subscribeLogs((entry) => entries.push(entry));
     setConsoleLogOutputEnabled(false);
-    setLogLevel("all");
     const argumentsJson = JSON.stringify({
         messages: [{ content: "这句我已经听第四遍了，额度不会因为喊得勤就变两张", quote: { mode: "auto", ref: null } }],
         mentions: [],
@@ -374,17 +366,14 @@ test("Responses reasoning plus the reported plain-text qq_reply reaches the real
         assert.ok(!entries.some((entry) => entry.text.includes("NVO diagnostics")));
     } finally {
         unsubscribe();
-        setLogLevel(oldLevel);
         setConsoleLogOutputEnabled(true);
     }
 });
 
 test("rejected qq_reply logs bounded invisible-character diagnostics, ignore, and unchanged NVO", async () => {
-    const oldLevel = getLogLevel();
     const entries: Array<{ level: string; text: string }> = [];
     const unsubscribe = subscribeLogs((entry) => entries.push(entry));
     setConsoleLogOutputEnabled(false);
-    setLogLevel("all");
     const validArguments = JSON.stringify({ messages: [{ content: "hi", quote: { mode: "auto", ref: null } }], mentions: [], meme: null });
     const rejectedCases = [
         { argumentsJson: `\uFEFF${validArguments}`, flag: '"hasBom":true', codePoint: "U+FEFF" },
@@ -420,7 +409,6 @@ test("rejected qq_reply logs bounded invisible-character diagnostics, ignore, an
         assert.match(diagnostics, /NVO diagnostics/);
     } finally {
         unsubscribe();
-        setLogLevel(oldLevel);
         setConsoleLogOutputEnabled(true);
     }
 });

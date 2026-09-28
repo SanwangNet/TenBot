@@ -24,7 +24,7 @@ import { getMemeRuntimeSnapshot, loadMemeRuntime, reloadMemes as reloadMemeData 
 import { sampleRecentMemeNames } from "./skills/meme/store.js";
 import { memeStore } from "./skills/meme/store.js";
 import { memeSendImageService } from "./skills/meme/send-image.js";
-import { closeLogFileSink, configureLogFileSink, logger, setConsoleLogOutputEnabled, setLogLevel, shortId, truncateLogText } from "./shared/logger.js";
+import { closeLogFileSink, configureLogFileSink, logger, refreshLogSecrets, setConsoleLogOutputEnabled, shortId, truncateLogText } from "./shared/logger.js";
 import type { NormalizedQqMessage } from "./qq/message/normalize-message.js";
 import { FileChangeWatcher } from "./shared/file-change-watcher.js";
 import { RuntimeConfigSnapshotStore, type RuntimeConfigSnapshot } from "./runtime-config-snapshot.js";
@@ -53,6 +53,7 @@ function absolutePath(path: URL | string): string {
 }
 
 export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = {}): Promise<TenBotRuntime> {
+    refreshLogSecrets();
     setConsoleLogOutputEnabled(options.consoleLogs ?? true);
     configureLogFileSink(options.logDirectory ?? resolve(process.cwd(), "logs"));
     const logs = new LogBuffer();
@@ -70,7 +71,6 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         if (model.id !== "gpt" && model.id !== "deepseek") throw new Error(`Unsupported model id: ${model.id}`);
         automatedPeerLoopGuard.replacePeers(appConfig.botLoopGuard.automatedPeerIds);
         automatedPeerLoopGuard.setMaxCycles(appConfig.botLoopGuard.maxCycles);
-        setLogLevel(appConfig.logging.level);
         await promptStore.load(model.id);
         await replyJudgePromptStore.load();
         await loadMemeRuntime();
@@ -158,13 +158,13 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         const operation = configReloadQueue.then(async () => {
             try {
                 const nextConfig = configStore.getAppConfig();
+                refreshLogSecrets();
                 promptStore.get(nextConfig.ai.provider);
                 const nextSnapshot = runtimeSnapshots.replace(nextConfig);
                 const nextModel = nextSnapshot.model;
                 qqRestartRequired = nextConfig.qq.appId !== qqConnectionAtStart.appId ||
                     nextConfig.qq.appSecret !== qqConnectionAtStart.appSecret;
                 runtimeSnapshot = nextSnapshot;
-                setLogLevel(nextConfig.logging.level);
                 automatedPeerLoopGuard.replacePeers(nextConfig.botLoopGuard.automatedPeerIds);
                 automatedPeerLoopGuard.setMaxCycles(nextConfig.botLoopGuard.maxCycles);
                 lastReloadFailure = undefined;
@@ -242,7 +242,6 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
             activeCycles: getActiveReplyCycleCount(),
             contextConversations: getRecentContextConversationCount(),
             runtimeConfig: {
-                logLevel: activeConfig.logging.level,
                 botLoopGuardMaxCycles: activeConfig.botLoopGuard.maxCycles,
             },
             hotReload: {

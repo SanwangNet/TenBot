@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import OpenAI from "openai";
 import { mergeMemeCandidatesWithinLimit, serializeMemes, writeMemeJson } from "./meme-update-core.js";
-import { MemeResponseError, parseMemeResearchResponse, responseDiagnostics } from "./meme-response.js";
+import { MemeResponseError, parseMemeResearchResponse } from "./meme-response.js";
 import { validateMemeFile } from "../src/skills/meme/validation.js";
 
 const dataUrl = new URL("../src/skills/meme/data/memes.json", import.meta.url);
@@ -90,10 +90,6 @@ async function main(): Promise<void> {
         rawResponse = await httpResponse.json();
     } catch {
         throw new MemeResponseError("invalid Responses payload: HTTP JSON parse failed");
-    }
-    if (process.env.BOT_LOG_LEVEL === "debug") {
-        if (typeof rawResponse === "string") console.log("[Meme:debug] response normalized from string");
-        console.log("[Meme:debug] " + responseDiagnostics(rawResponse));
     }
     const { memes: candidates } = parseMemeResearchResponse(rawResponse);
     console.log("[Meme] web research completed");

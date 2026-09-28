@@ -4,7 +4,7 @@ import { createTenBotControl } from "../src/control/tenbot-control.js";
 import type { RuntimeStatus } from "../src/control/runtime-status.js";
 import { LogBuffer } from "../src/control/log-buffer.js";
 import { MAX_LOG_BUFFER_ENTRIES } from "../src/control/tenbot-control.js";
-import { getLogLevel, logger, setConsoleLogOutputEnabled, setLogLevel, subscribeLogs } from "../src/shared/logger.js";
+import { logger, setConsoleLogOutputEnabled, subscribeLogs } from "../src/shared/logger.js";
 import type { PublicConfig } from "../src/config/config-types.js";
 import { ConversationTimelineStore, createIncomingConversationEvent } from "../src/control/conversation-timeline.js";
 import { toConversationIdentity } from "../src/control/conversation-identity.js";
@@ -28,7 +28,6 @@ const config: PublicConfig = {
     replyJudge: { model: "judge-test", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
     gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: false },
     deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
-    logLevel: "info",
     botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
 };
 
@@ -117,22 +116,30 @@ test("plain logger mode continues to write to console", () => {
     assert.match(output, /plain sink check/);
 });
 
-test("logger level can change at runtime and affects plain and subscribed logs", () => {
-    const previousLevel = getLogLevel();
+test("every logger level reaches subscribers without a global threshold", () => {
     const previousConsole = console.error;
     const entries: string[] = [];
     const unsubscribe = subscribeLogs((entry) => entries.push(entry.text));
     console.error = () => undefined;
+    const previousLog = console.log;
+    const previousWarn = console.warn;
+    console.log = () => undefined;
+    console.warn = () => undefined;
     try {
-        setLogLevel("error");
-        logger.info("hidden after hot reload");
-        logger.error("visible after hot reload");
-        assert.deepEqual(entries, ["visible after hot reload"]);
-        assert.equal(logger.level, "error");
+        logger.all("all without threshold");
+        logger.debug("debug without threshold");
+        logger.info("info without threshold");
+        logger.warn("warn without threshold");
+        logger.error("error without threshold");
+        assert.deepEqual(entries, [
+            "all without threshold", "debug without threshold", "info without threshold",
+            "warn without threshold", "error without threshold",
+        ]);
     } finally {
         unsubscribe();
-        setLogLevel(previousLevel);
         console.error = previousConsole;
+        console.log = previousLog;
+        console.warn = previousWarn;
     }
 });
 

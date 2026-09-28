@@ -1,7 +1,7 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { LogEntry } from "../api/types.js";
 import { useLogs } from "../runtime/runtime-context.js";
-import { filterLogs, MAX_RENDERED_LOG_ENTRIES, type LogLevelFilter } from "./log-state.js";
+import { filterLogs, isLogLevelFilter, loadLogLevelFilter, MAX_RENDERED_LOG_ENTRIES, saveLogLevelFilter, type LogLevelFilter } from "./log-state.js";
 
 const levelFilters: Array<{ value: LogLevelFilter; label: string }> = [
     { value: "all", label: "所有级别" },
@@ -14,7 +14,7 @@ const levelFilters: Array<{ value: LogLevelFilter; label: string }> = [
 
 export function LogsPage() {
     const { state, dispatch } = useLogs();
-    const [level, setLevel] = useState<LogLevelFilter>("all");
+    const [level, setLevel] = useState<LogLevelFilter>(() => loadLogLevelFilter());
     const [query, setQuery] = useState("");
     const viewportRef = useRef<HTMLDivElement>(null);
     const visibleEntries = useMemo(() => filterLogs(state.entries, level, query), [state.rowsRevision, level, query]);
@@ -41,7 +41,12 @@ export function LogsPage() {
             <div className="logs-toolbar">
                 <label className="log-filter-field">
                     <span>等级</span>
-                    <select value={level} onChange={(event) => setLevel(event.currentTarget.value as LogLevelFilter)}>
+                    <select value={level} onChange={(event) => {
+                        const value = event.currentTarget.value;
+                        if (!isLogLevelFilter(value)) return;
+                        setLevel(value);
+                        saveLogLevelFilter(value);
+                    }}>
                         {levelFilters.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}
                     </select>
                 </label>

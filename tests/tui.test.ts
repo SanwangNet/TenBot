@@ -193,7 +193,6 @@ function fakeControl(calls: string[], result: ReloadResult = { ok: true, message
         replyJudge: { model: "judge-test", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "test", reasoningEffort: "high", verbosity: "high", configured: false },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: false },
-        logLevel: "info",
         botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
     };
     return {
@@ -402,7 +401,6 @@ test("settings select and text editors create safe patches without touching a re
         replyJudge: { model: "Qwen/Qwen3.5-4B", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: false },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: false },
-        logLevel: "info",
         botLoopGuard: { maxCycles: 4, automatedPeerCount: 2 },
     };
     const provider = openConfigModal("aiProvider", config);
@@ -435,7 +433,6 @@ test("settings render Reply Judge as an equal-width settings column with keyboar
         replyJudge: { model: "Qwen/Qwen3.5-4B", timeoutMs: 15_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: true },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
-        logLevel: "info",
         botLoopGuard: { maxCycles: 4, automatedPeerCount: 2 },
     };
     const status: RuntimeStatus = {
@@ -444,7 +441,7 @@ test("settings render Reply Judge as an equal-width settings column with keyboar
         provider: { id: "gpt", model: "gpt-6-sol", webSearch: true, configured: true },
         activeCycles: 0,
         contextConversations: 0,
-        runtimeConfig: { logLevel: "info", botLoopGuardMaxCycles: 4 },
+        runtimeConfig: { botLoopGuardMaxCycles: 4 },
         hotReload: { enabled: true, revision: 3, loadedAt: "now", lastSuccessAt: "now", requiresRestart: false },
         memes: { count: 0, revision: 1, loadedAt: "now" },
         prompt: { provider: "gpt", revision: 1, loadedAt: "now" },
@@ -462,6 +459,7 @@ test("settings render Reply Judge as an equal-width settings column with keyboar
     assert.match(text, /Qwen\/Qwen3\.5-4B/);
     assert.match(text, /15000 ms/);
     assert.doesNotMatch(text, /API_KEY|BASE_URL|openai-compatible|FRONT_MODE/);
+    assert.doesNotMatch(text, /日志级别/);
 
     const outerRow = props.find((item) => item.flexDirection === "row" && item.width === "100%" && item.flexGrow === 1);
     assert.ok(outerRow);
@@ -475,6 +473,7 @@ test("settings render Reply Judge as an equal-width settings column with keyboar
     assert.deepEqual(edited, ["replyJudge.model", "replyJudge.timeoutMs"]);
 
     const rows = settingsRows("gpt");
+    assert.equal(rows.some((row) => String(row) === "logLevel"), false);
     const modelIndex = rows.indexOf("replyJudge.model");
     const timeoutIndex = rows.indexOf("replyJudge.timeoutMs");
     assert.equal(rows[modelIndex], "replyJudge.model");
@@ -496,7 +495,7 @@ test("settings shows pending restart only when Runtime marks a non-hot-reloadabl
         provider: { id: "gpt", model: "gpt-6-sol", webSearch: true, configured: true, reasoningEffort: "high", verbosity: "high" },
         activeCycles: 0,
         contextConversations: 0,
-        runtimeConfig: { logLevel: "info", botLoopGuardMaxCycles: 4 },
+        runtimeConfig: { botLoopGuardMaxCycles: 4 },
         hotReload: { enabled: true, revision: 2, loadedAt: "now", lastSuccessAt: "now", requiresRestart: true },
         memes: { count: 0, revision: 1, loadedAt: "now" },
         prompt: { provider: "gpt", revision: 1, loadedAt: "now" },
@@ -508,7 +507,6 @@ test("settings shows pending restart only when Runtime marks a non-hot-reloadabl
         replyJudge: { model: "judge-test", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
         gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: true },
         deepseek: { model: "deepseek-flash", reasoningEffort: "high", configured: true },
-        logLevel: "info",
         botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
     };
     assert.equal(hasPendingRestart(status, config), true);

@@ -1,6 +1,5 @@
 import type { ReasoningEffort, ModelVerbosity } from "../ai/model-plugin.js";
 import type { PromptProvider } from "../ai/prompt-store.js";
-import type { LogLevel } from "../shared/logger.js";
 
 export type QqConnectionState = "connecting" | "connected" | "disconnected" | "error";
 
@@ -18,7 +17,6 @@ export interface RuntimeStatus {
     activeCycles: number;
     contextConversations: number;
     runtimeConfig?: {
-        logLevel: LogLevel;
         botLoopGuardMaxCycles: number;
     };
     hotReload?: {

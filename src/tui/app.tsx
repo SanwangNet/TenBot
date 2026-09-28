@@ -24,7 +24,7 @@ import { OverviewView } from "./views/overview-view.js";
 import { PromptView } from "./views/prompt-view.js";
 import { SettingsView } from "./views/settings-view.js";
 import { AutomatedPeersView } from "./views/automated-peers-view.js";
-import { logLevelLabel, PAGE_LABELS, PAGES, providerLabel, reasoningLabel, settingsFieldLabel, verbosityLabel } from "./i18n.js";
+import { PAGE_LABELS, PAGES, providerLabel, reasoningLabel, settingsFieldLabel, verbosityLabel } from "./i18n.js";
 import { activateSidebarPage, handleLogsNavigation, initialTuiState, moveAutomatedPeerSelection, moveSettingsSelection, quitConfirmationAction, requestQuitConfirmation, settingsRows, toggleTuiFocus, type ConfigOption, type ConfigSelectField, type ConfigTextField, type ModalState, type SettingsField, type TuiState } from "./state.js";
 import type { TuiPage } from "./types.js";
 import type { AutomatedPeerSummary } from "../control/automated-peers.js";
@@ -664,14 +664,6 @@ const verbosityOptions: readonly ConfigOption[] = [
     { value: "high", label: "详细" },
 ];
 const providerOptions: readonly ConfigOption[] = MODEL_PROVIDERS.map(({ id, label }) => ({ value: id, label }));
-const logLevelOptions: readonly ConfigOption[] = [
-    { value: "all", label: "全部" },
-    { value: "debug", label: "调试" },
-    { value: "info", label: "信息" },
-    { value: "warn", label: "警告" },
-    { value: "error", label: "错误" },
-];
-
 function settingsRowIndex(field: SettingsField, provider: ModelProviderId): number {
     return settingsRows(provider).indexOf(field);
 }
@@ -688,7 +680,6 @@ function configValue(config: PublicConfig, field: SettingsField): string {
         case "replyJudge.timeoutMs": return String(config.replyJudge.timeoutMs);
         case "replyJudge.fallbackToMainOnInvalidOutput": return config.replyJudge.fallbackToMainOnInvalidOutput ? "开启" : "关闭";
         case "replyJudge.turnWaitMs": return String(config.replyJudge.turnWaitMs);
-        case "logLevel": return logLevelLabel(config.logLevel);
         case "botLoopGuard.maxCycles": return String(config.botLoopGuard.maxCycles);
     }
 }
@@ -699,7 +690,6 @@ function displayPatchValue(patch: PublicConfigPatch): string {
         case "gpt.reasoningEffort":
         case "deepseek.reasoningEffort": return reasoningLabel(patch.value);
         case "gpt.verbosity": return verbosityLabel(patch.value);
-        case "logLevel": return logLevelLabel(patch.value);
         case "replyJudge.fallbackToMainOnInvalidOutput": return patch.value ? "开启" : "关闭";
         default: return String(patch.value);
     }
@@ -711,7 +701,6 @@ function optionPatch(field: ConfigSelectField, value: string): PublicConfigPatch
         case "gpt.reasoningEffort": return { field, value: value as "none" | "low" | "medium" | "high" | "xhigh" };
         case "gpt.verbosity": return { field, value: value as "low" | "medium" | "high" };
         case "deepseek.reasoningEffort": return { field, value: value as "none" | "low" | "medium" | "high" | "xhigh" };
-        case "logLevel": return { field, value: value as "all" | "debug" | "info" | "warn" | "error" };
     }
 }
 
@@ -742,7 +731,6 @@ export function openConfigModal(field: SettingsField, config: PublicConfig): Mod
     if (field === "gpt.reasoningEffort") return selectConfigModal(field, reasoningOptions, config.gpt.reasoningEffort);
     if (field === "deepseek.reasoningEffort") return selectConfigModal(field, reasoningOptions, config.deepseek.reasoningEffort);
     if (field === "gpt.verbosity") return selectConfigModal(field, verbosityOptions, config.gpt.verbosity);
-    if (field === "logLevel") return selectConfigModal(field, logLevelOptions, config.logLevel);
     if (field === "gpt.model") return textConfigModal(field, config.gpt.model);
     if (field === "deepseek.model") return textConfigModal(field, config.deepseek.model);
     if (field === "replyJudge.model") return textConfigModal(field, config.replyJudge.model);

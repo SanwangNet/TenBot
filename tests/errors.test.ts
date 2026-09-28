@@ -7,7 +7,7 @@ import { findExplicitHttpStatus, mapConfirmedRemoteHttpError } from "../src/erro
 import { TenBotError } from "../src/errors/tenbot-error.js";
 import { createProviderErrorNotice } from "../src/control/provider-error.js";
 import { createQqSendError } from "../src/qq/reply/error-adapter.js";
-import { getLogLevel, logger, setLogLevel } from "../src/shared/logger.js";
+import { logger } from "../src/shared/logger.js";
 
 test("the catalog is the single valid source for code grammar and stage IDs", () => {
     const codes = Object.keys(ERROR_CATALOG);
@@ -53,16 +53,13 @@ test("safe diagnostic context is allowlisted and appended after the standard err
 });
 
 test("logger prints a TenBotError as the exact standard line without stringifying cause or context", () => {
-    const previousLevel = getLogLevel();
     const originalError = console.error;
     const output: string[] = [];
     try {
-        setLogLevel("error");
         console.error = (...values: unknown[]) => output.push(values.map(String).join(" "));
         logger.error("context with secret", new TenBotError("B:A_OP_TPL", { cause: new Error("raw secret") }));
     } finally {
         console.error = originalError;
-        setLogLevel(previousLevel);
     }
     assert.deepEqual(output, ["[ERROR] B:A_OP_TPL Tool Protocol Leakage / 工具协议泄漏"]);
 });

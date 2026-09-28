@@ -1,5 +1,4 @@
 import type { ModelVerbosity, ReasoningEffort } from "../ai/model-plugin.js";
-import type { LogLevel } from "../shared/logger.js";
 import type { FrontMode } from "../front/wake-level.js";
 
 export type ModelProviderId = "gpt" | "deepseek";
@@ -37,9 +36,6 @@ export interface AppConfig {
         fallbackToMainOnInvalidOutput: boolean;
         turnWaitMs: number;
     };
-    logging: {
-        level: LogLevel;
-    };
     web: {
         host: string;
         port: number;
@@ -71,7 +67,6 @@ export interface PublicConfig {
         reasoningEffort: ReasoningEffort;
         configured: boolean;
     };
-    logLevel: LogLevel;
     botLoopGuard: {
         maxCycles: number;
         automatedPeerCount: number;
@@ -90,7 +85,6 @@ export type PublicConfigPatch =
     | { field: "replyJudge.timeoutMs"; value: number }
     | { field: "replyJudge.fallbackToMainOnInvalidOutput"; value: boolean }
     | { field: "replyJudge.turnWaitMs"; value: number }
-    | { field: "logLevel"; value: LogLevel }
     | { field: "botLoopGuard.maxCycles"; value: number };
 
 export type ConfigUpdateResult =

@@ -17,7 +17,7 @@ import {
     settingsFormReducer,
     settingsPatches,
 } from "../web/src/settings/settings-state.js";
-import { filterLogs, initialLogViewState, logViewReducer, MAX_WEB_LOG_ENTRIES } from "../web/src/components/log-state.js";
+import { filterLogs, initialLogViewState, isLogLevelFilter, loadLogLevelFilter, logViewReducer, LOG_LEVEL_FILTER_STORAGE_KEY, MAX_WEB_LOG_ENTRIES, saveLogLevelFilter } from "../web/src/components/log-state.js";
 import { LogRows } from "../web/src/components/logs-page.js";
 import type { LogEntry } from "../web/src/api/types.js";
 import { conversationReducer, initialConversationViewState } from "../web/src/conversations/conversation-state.js";
@@ -50,7 +50,6 @@ const config: PublicConfig = {
     replyJudge: { model: "judge", timeoutMs: 5000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
     gpt: { model: "gpt-test", reasoningEffort: "high", verbosity: "high", configured: true },
     deepseek: { model: "deepseek-test", reasoningEffort: "high", configured: false },
-    logLevel: "info",
     botLoopGuard: { maxCycles: 4, automatedPeerCount: 0 },
 };
 
@@ -136,6 +135,7 @@ test("Runtime reducer preserves live status over bootstrap and tracks connection
 
 test("settings form calculates dirty fields and serializable patches with numeric conversion", () => {
     let form = createSettingsForm(config);
+    assert.equal(Object.hasOwn(form.values, "logLevel"), false);
     form = settingsFormReducer(form, { type: "edit", field: "replyJudge.timeoutMs", value: "15000" })!;
     form = settingsFormReducer(form, { type: "edit", field: "aiProvider", value: "deepseek" })!;
     assert.deepEqual(dirtySettingsFields(form), ["aiProvider", "replyJudge.timeoutMs"]);
@@ -283,6 +283,59 @@ test("log filtering matches level and case-insensitive text; follow state counts
     state = logViewReducer(state, { type: "scroll-position", atBottom: true });
     assert.equal(state.follow, true);
     assert.equal(state.unseenCount, 0);
+});
+
+test("log level preference defaults to info, validates localStorage values, and survives remount", () => {
+    const values = new Map<string, string>();
+    const storage = {
+        getItem(key: string) { return values.get(key) ?? null; },
+        setItem(key: string, value: string) { values.set(key, value); },
+    };
+    assert.equal(LOG_LEVEL_FILTER_STORAGE_KEY, "tenbot.logs.level-filter");
+    assert.equal(loadLogLevelFilter(), "info", "server/test environments without browser storage default to info");
+    assert.equal(loadLogLevelFilter(storage), "info", "first visit defaults to info");
+
+    values.set(LOG_LEVEL_FILTER_STORAGE_KEY, "debug");
+    assert.equal(loadLogLevelFilter(storage), "debug");
+    values.set(LOG_LEVEL_FILTER_STORAGE_KEY, "all-level");
+    assert.equal(loadLogLevelFilter(storage), "all-level");
+    for (const invalid of ["", "old", "warning", "ALL"]) {
+        values.set(LOG_LEVEL_FILTER_STORAGE_KEY, invalid);
+        assert.equal(loadLogLevelFilter(storage), "info");
+    }
+
+    saveLogLevelFilter("error", storage);
+    assert.equal(values.get(LOG_LEVEL_FILTER_STORAGE_KEY), "error");
+    assert.equal(loadLogLevelFilter(storage), "error", "a remounted page restores the saved filter");
+});
+
+test("log preference storage exceptions fall back safely without blocking selection", () => {
+    const deniedRead = { getItem() { throw new DOMException("blocked", "SecurityError"); }, setItem() {} };
+    assert.equal(loadLogLevelFilter(deniedRead), "info");
+    assert.equal(loadLogLevelFilter({ getItem() { throw new Error("storage unavailable"); }, setItem() {} }), "info");
+
+    const deniedWrite = { getItem() { return null; }, setItem() { throw new Error("quota exceeded"); } };
+    let selection: "info" | "error" = "info";
+    selection = "error";
+    assert.doesNotThrow(() => saveLogLevelFilter(selection, deniedWrite));
+    assert.equal(selection, "error", "React's selected value remains active when persistence fails");
+    assert.equal(isLogLevelFilter("all-level"), true);
+    assert.equal(isLogLevelFilter("broken"), false);
+});
+
+test("display filtering does not remove other levels from the browser log buffer", () => {
+    const entries: LogEntry[] = [
+        { timestamp: "1", level: "all", text: "complete" },
+        { timestamp: "2", level: "debug", text: "debug" },
+        { timestamp: "3", level: "info", text: "info" },
+        { timestamp: "4", level: "warn", text: "warning" },
+        { timestamp: "5", level: "error", text: "error" },
+    ];
+    let state = { ...initialLogViewState, entries: [] as LogEntry[] };
+    state = logViewReducer(state, { type: "append-batch", entries });
+    assert.equal(state.entries.length, 5);
+    assert.deepEqual(filterLogs(state.entries, "info", ""), [entries[2]]);
+    assert.deepEqual(filterLogs(state.entries, "all", "").map((entry) => entry.level), ["all", "debug", "info", "warn", "error"]);
 });
 
 test("log rows render only the newest 500 matches from the complete 5,000-row cache", () => {

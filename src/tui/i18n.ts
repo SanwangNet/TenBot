@@ -1,7 +1,6 @@
 import type { LogEntry } from "../shared/logger.js";
 import type { QqConnectionState } from "../control/runtime-status.js";
 import type { ModelVerbosity, ReasoningEffort } from "../ai/model-plugin.js";
-import type { LogLevel } from "../shared/logger.js";
 import type { SettingsField } from "./state.js";
 
 export const PAGE_LABELS = {
@@ -65,10 +64,6 @@ export function configuredLabel(configured: boolean): string {
     return configured ? "已配置" : "未配置";
 }
 
-export function logLevelLabel(level: LogLevel): string {
-    return ({ all: "全部", debug: "调试", info: "信息", warn: "警告", error: "错误" } satisfies Record<LogLevel, string>)[level];
-}
-
 export function settingsFieldLabel(field: SettingsField): string {
     return ({
         aiProvider: "模型提供商",
@@ -81,7 +76,6 @@ export function settingsFieldLabel(field: SettingsField): string {
         "replyJudge.timeoutMs": "超时时间",
         "replyJudge.fallbackToMainOnInvalidOutput": "Judge IPO 回退",
         "replyJudge.turnWaitMs": "未完成发言等待时间",
-        logLevel: "日志级别",
         "botLoopGuard.maxCycles": "自动互聊上限",
     } satisfies Record<SettingsField, string>)[field];
 }
