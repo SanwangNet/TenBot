@@ -1,11 +1,22 @@
 import type { GroupMember, GroupSettings, KnownMember, MemberBotState, MemberRepository } from "./repository.js";
+import {
+    MEMBER_BOT_DETECTION_EVIDENCE_TTL_MS,
+    type AddMemberBotDetectionEvidence,
+    type MemberBotDetectionEvidence,
+    type MemberBotDetectionObservation,
+} from "./detection-evidence.js";
 
 /** Ephemeral fallback and test adapter; production Node configures SQLite at startup. */
 export class MemoryMemberRepository implements MemberRepository {
     private readonly members = new Map<string, Map<string, KnownMember>>();
     private readonly groups = new Map<string, GroupSettings>();
     private readonly botStates = new Map<string, MemberBotState>();
+    private readonly detectionEvidence = new Map<string, MemberBotDetectionEvidence[]>();
+    private readonly detectionObservations = new Map<string, Map<string, MemberBotDetectionObservation>>();
+    private nextDetectionEvidenceId = 1;
     private legacyImportCompleted = false;
+
+    constructor(private readonly now: () => number = Date.now) {}
 
     async upsertMember(member: KnownMember): Promise<void> {
         let group = this.members.get(member.groupOpenid);
@@ -42,7 +53,15 @@ export class MemoryMemberRepository implements MemberRepository {
     }
 
     async getMemberBotState(groupOpenid: string, memberOpenid: string): Promise<MemberBotState> {
-        return { ...(this.botStates.get(botStateKey(groupOpenid, memberOpenid)) ?? defaultBotState(groupOpenid, memberOpenid)) };
+        const state = this.botStates.get(botStateKey(groupOpenid, memberOpenid)) ?? defaultBotState(groupOpenid, memberOpenid);
+        const events = await this.listActiveDetectionEvidence(groupOpenid, memberOpenid);
+        return {
+            ...state,
+            autoBot: false,
+            detectionMarks: events.length,
+            lastDetectionAt: events.reduce<number | null>((latest, event) =>
+                latest === null || event.createdAt > latest ? event.createdAt : latest, null),
+        };
     }
 
     async setPlatformBot(groupOpenid: string, memberOpenid: string, enabled: boolean, at: number): Promise<MemberBotState> {
@@ -59,29 +78,94 @@ export class MemoryMemberRepository implements MemberRepository {
         return { ...state };
     }
 
-    async incrementDetectionMark(groupOpenid: string, memberOpenid: string, at: number, threshold: number): Promise<MemberBotState> {
-        const state = this.mutableBotState(groupOpenid, memberOpenid, at);
-        state.detectionMarks++;
-        state.lastDetectionAt = at;
-        state.updatedAt = at;
-        if (state.detectionMarks >= threshold) state.autoBot = true;
-        return { ...state };
+    async addDetectionEvidence(evidence: AddMemberBotDetectionEvidence): Promise<MemberBotDetectionEvidence> {
+        const createdAt = evidence.createdAt ?? this.now();
+        const event: MemberBotDetectionEvidence = {
+            id: this.nextDetectionEvidenceId++,
+            groupOpenid: evidence.groupOpenid,
+            memberOpenid: evidence.memberOpenid,
+            signalType: evidence.signalType,
+            createdAt,
+            expiresAt: evidence.expiresAt ?? createdAt + MEMBER_BOT_DETECTION_EVIDENCE_TTL_MS,
+        };
+        const key = botStateKey(event.groupOpenid, event.memberOpenid);
+        const events = this.detectionEvidence.get(key) ?? [];
+        events.push(event);
+        this.detectionEvidence.set(key, events);
+        return { ...event };
     }
 
-    async resetDetectionMarks(groupOpenid: string, memberOpenid: string, at: number): Promise<MemberBotState> {
-        const state = this.mutableBotState(groupOpenid, memberOpenid, at);
-        state.detectionMarks = 0;
-        state.lastDetectionAt = null;
-        state.autoBot = false;
-        state.updatedAt = at;
-        return { ...state };
+    async addDetectionEvidenceIfCooldownElapsed(
+        evidence: AddMemberBotDetectionEvidence,
+        cooldownMs: number,
+    ): Promise<MemberBotDetectionEvidence | null> {
+        const createdAt = evidence.createdAt ?? this.now();
+        const events = this.detectionEvidence.get(botStateKey(evidence.groupOpenid, evidence.memberOpenid)) ?? [];
+        if (events.some((event) => event.signalType === evidence.signalType && event.createdAt > createdAt - cooldownMs)) return null;
+        return this.addDetectionEvidence({ ...evidence, createdAt });
+    }
+
+    async listActiveDetectionEvidence(groupOpenid: string, memberOpenid: string, at = this.now()): Promise<MemberBotDetectionEvidence[]> {
+        return (this.detectionEvidence.get(botStateKey(groupOpenid, memberOpenid)) ?? [])
+            .filter((event) => event.expiresAt > at)
+            .map((event) => ({ ...event }));
+    }
+
+    async getActiveDetectionCount(groupOpenid: string, memberOpenid: string, at = this.now()): Promise<number> {
+        return (this.detectionEvidence.get(botStateKey(groupOpenid, memberOpenid)) ?? [])
+            .filter((event) => event.expiresAt > at).length;
+    }
+
+    async clearDetectionEvidence(groupOpenid: string, memberOpenid: string): Promise<MemberBotState> {
+        this.detectionEvidence.delete(botStateKey(groupOpenid, memberOpenid));
+        this.detectionObservations.delete(botStateKey(groupOpenid, memberOpenid));
+        return this.getMemberBotState(groupOpenid, memberOpenid);
+    }
+
+    async recordDetectionObservation(observation: MemberBotDetectionObservation): Promise<boolean> {
+        const key = botStateKey(observation.groupOpenid, observation.memberOpenid);
+        let messages = this.detectionObservations.get(key);
+        if (!messages) {
+            messages = new Map();
+            this.detectionObservations.set(key, messages);
+        }
+        if (messages.has(observation.messageId)) return false;
+        messages.set(observation.messageId, { ...observation });
+        return true;
+    }
+
+    async listRecentDetectionObservations(
+        groupOpenid: string,
+        memberOpenid: string,
+        since: number,
+        through: number,
+        at = this.now(),
+    ): Promise<MemberBotDetectionObservation[]> {
+        return [...(this.detectionObservations.get(botStateKey(groupOpenid, memberOpenid))?.values() ?? [])]
+            .filter((observation) => observation.observedAt >= since && observation.observedAt <= through && observation.expiresAt > at)
+            .sort((left, right) => left.observedAt - right.observedAt || left.messageId.localeCompare(right.messageId))
+            .map((observation) => ({ ...observation }));
+    }
+
+    async pruneExpiredDetectionEvidence(at = this.now()): Promise<void> {
+        for (const [key, events] of this.detectionEvidence) {
+            const active = events.filter((event) => event.expiresAt > at);
+            if (active.length) this.detectionEvidence.set(key, active);
+            else this.detectionEvidence.delete(key);
+        }
+        for (const [key, messages] of this.detectionObservations) {
+            for (const [messageId, observation] of messages) {
+                if (observation.expiresAt <= at) messages.delete(messageId);
+            }
+            if (!messages.size) this.detectionObservations.delete(key);
+        }
     }
 
     async listMarkedBots(): Promise<GroupMember[]> {
         const output: GroupMember[] = [];
         for (const member of await this.listAll()) {
             const state = await this.getMemberBotState(member.groupOpenid, member.memberOpenid);
-            if (state.platformBot || state.manualBot || state.autoBot) output.push({ ...member, ...state });
+            if (state.platformBot || state.manualBot) output.push({ ...member, ...state });
         }
         return output;
     }
@@ -96,7 +180,8 @@ export class MemoryMemberRepository implements MemberRepository {
 
     async findGroupMember(groupOpenid: string, memberOpenid: string): Promise<GroupMember | null> {
         const member = this.members.get(groupOpenid)?.get(memberOpenid);
-        return member ? { ...member, ...await this.getMemberBotState(groupOpenid, memberOpenid) } : null;
+        return member ? { ...member, ...await this.getMemberBotState(groupOpenid, memberOpenid),
+            activeDetectionEvidence: await this.listActiveDetectionEvidence(groupOpenid, memberOpenid) } : null;
     }
 
     async wasLegacyAutomatedPeerImportCompleted(): Promise<boolean> { return this.legacyImportCompleted; }

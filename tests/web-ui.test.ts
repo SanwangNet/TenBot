@@ -19,7 +19,7 @@ import {
 } from "../web/src/settings/settings-state.js";
 import { filterLogs, initialLogViewState, isLogLevelFilter, loadLogLevelFilter, logViewReducer, LOG_LEVEL_FILTER_STORAGE_KEY, MAX_WEB_LOG_ENTRIES, saveLogLevelFilter } from "../web/src/components/log-state.js";
 import { LogRows } from "../web/src/components/logs-page.js";
-import { MemberRow, MEMBERS_PAGE_TITLE, MEMBERS_ROOT_SECTION_TITLES } from "../web/src/components/members-page.js";
+import { MemberRow, MEMBERS_EVIDENCE_REFRESH_INTERVAL_MS, MEMBERS_PAGE_TITLE, MEMBERS_ROOT_SECTION_TITLES } from "../web/src/components/members-page.js";
 import type { GroupMemberSummary, LogEntry } from "../web/src/api/types.js";
 import { conversationReducer, initialConversationViewState } from "../web/src/conversations/conversation-state.js";
 import { addNotice, isProminentProviderError } from "../web/src/ui/feedback-state.js";
@@ -155,6 +155,7 @@ test("Members root replaces legacy peer categories and exposes full group-scoped
     assert.equal(MEMBERS_ROOT_SECTION_TITLES.markedBots, "已标记的机器人账号");
     assert.equal(MEMBERS_ROOT_SECTION_TITLES.groups, "群聊");
     assert.equal("recent" in MEMBERS_ROOT_SECTION_TITLES, false);
+    assert.equal(MEMBERS_EVIDENCE_REFRESH_INTERVAL_MS, 60_000);
 
     const member: GroupMemberSummary = {
         groupOpenid: "group-test", memberOpenid: "complete-member-openid", username: "Winter",
@@ -164,7 +165,21 @@ test("Members root replaces legacy peer categories and exposes full group-scoped
     const row = renderToStaticMarkup(createElement(MemberRow, { member, groupLabel: "测试群", onDetails() {} }));
     assert.match(row, /complete-member-openid/);
     assert.match(row, /手动标记/);
-    assert.match(row, /已标记 2 次/);
+    assert.match(row, /疑似行为 2 次/);
+    assert.doesNotMatch(row, /自动识别/);
+
+    for (const [marks, expected, tone] of [
+        [0, /普通成员/, "ordinary"],
+        [1, /疑似行为 1 次/, "yellow"],
+        [3, /疑似行为 3 次/, "orange"],
+        [5, /建议人工确认/, "orange"],
+    ] as const) {
+        const markup = renderToStaticMarkup(createElement(MemberRow, {
+            member: { ...member, manualBot: false, detectionMarks: marks }, groupLabel: "群聊", onDetails() {},
+        }));
+        assert.match(markup, expected);
+        assert.match(markup, new RegExp(`member-detection-count ${tone}`));
+    }
 });
 
 test("meme send size setting supports original size and custom values", () => {

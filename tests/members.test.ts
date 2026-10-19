@@ -136,24 +136,20 @@ test("group setting load or observation failures fail closed even when the globa
     assert.equal(control.getGroupRepliesEnabledForGroup("group-a"), false);
 });
 
-test("manual, platform, automatic Bot state and detector marks persist independently per group", async () => {
+test("manual and platform Bot identity stay separate from expiring detection evidence", async () => {
     const groupA = `bot-group-a-${randomUUID()}`;
     const groupB = `bot-group-b-${randomUUID()}`;
     const memberOpenid = `same-member-${randomUUID()}`;
-    const at = 1_700_001_000_000;
+    const at = Date.now();
     await sqlite.upsertMember(member(groupA, memberOpenid, "Bot 甲"));
     await sqlite.upsertMember(member(groupB, memberOpenid, "Bot 乙"));
 
     await sqlite.setManualBot(groupA, memberOpenid, true, at);
     await sqlite.setPlatformBot(groupB, memberOpenid, true, at);
-    for (let mark = 1; mark <= 4; mark++) {
-        const state = await sqlite.incrementDetectionMark(groupA, memberOpenid, at + mark, 5);
-        assert.equal(state.detectionMarks, mark);
-        assert.equal(state.autoBot, false, "four marks do not yet mark an account as automated");
-    }
-    const fifth = await sqlite.incrementDetectionMark(groupA, memberOpenid, at + 5, 5);
-    assert.equal(fifth.autoBot, true, "threshold crossing persists auto_bot atomically with the fifth mark");
+    await sqlite.addDetectionEvidence({ groupOpenid: groupA, memberOpenid, signalType: "test", createdAt: at });
+    await sqlite.addDetectionEvidence({ groupOpenid: groupA, memberOpenid, signalType: "test", createdAt: at + 1 });
     assert.equal((await sqlite.getMemberBotState(groupA, memberOpenid)).manualBot, true);
+    assert.equal((await sqlite.getMemberBotState(groupA, memberOpenid)).detectionMarks, 2);
     assert.deepEqual(await sqlite.getMemberBotState(groupB, memberOpenid), {
         groupOpenid: groupB, memberOpenid, platformBot: true, manualBot: false, autoBot: false,
         detectionMarks: 0, lastDetectionAt: null, createdAt: at, updatedAt: at,
@@ -162,13 +158,13 @@ test("manual, platform, automatic Bot state and detector marks persist independe
     const reopened = new SqliteMemberRepository(join(directory, "members.db"));
     try {
         const reopenedA = await reopened.getMemberBotState(groupA, memberOpenid);
-        assert.equal(reopenedA.detectionMarks, 5);
-        assert.equal(reopenedA.autoBot, true);
+        assert.equal(reopenedA.detectionMarks, 2);
+        assert.equal(reopenedA.autoBot, false);
         assert.equal(reopenedA.manualBot, true);
         assert.equal((await reopened.findGroupMember(groupA, memberOpenid))?.username, "Bot 甲");
         assert.equal((await reopened.findGroupMember(groupB, memberOpenid))?.platformBot, true);
 
-        const cleared = await reopened.resetDetectionMarks(groupA, memberOpenid, at + 6);
+        const cleared = await reopened.clearDetectionEvidence(groupA, memberOpenid);
         assert.equal(cleared.detectionMarks, 0);
         assert.equal(cleared.autoBot, false);
         assert.equal(cleared.manualBot, true, "clearing detections does not remove a manual Bot flag");
@@ -292,7 +288,7 @@ test("group member names and full IDs survive reopening SQLite and are available
             async getGroupMembers(groupOpenid) { return reopened.listGroupMembers(groupOpenid); },
             async getGroupMember(groupOpenid, memberOpenid) { return reopened.findGroupMember(groupOpenid, memberOpenid); },
             async setMemberManualBot(groupOpenid, memberOpenid, enabled) { return reopened.setManualBot(groupOpenid, memberOpenid, enabled, Date.now()); },
-            async clearMemberDetection(groupOpenid, memberOpenid) { return reopened.resetDetectionMarks(groupOpenid, memberOpenid, Date.now()); },
+            async clearMemberDetection(groupOpenid, memberOpenid) { return reopened.clearDetectionEvidence(groupOpenid, memberOpenid); },
             async reloadPrompt() { return { ok: true, message: "", loadedAt: "now" }; },
             async reloadReplyJudgePrompt() { return { ok: true, message: "", loadedAt: "now" }; },
             async reloadMemes() { return { ok: true, message: "", loadedAt: "now" }; },

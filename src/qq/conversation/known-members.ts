@@ -66,7 +66,7 @@ export async function getKnownMembers(message: NormalizedQqMessage): Promise<Kno
     if (message.kind !== "group" || !message.groupId) return [];
     try {
         return (await repository.listGroupMembers(message.groupId))
-            .filter((member) => !member.platformBot && !member.manualBot && !member.autoBot);
+            .filter((member) => !member.platformBot && !member.manualBot);
     } catch (error) {
         logger.error("[Members] list error", error);
         return [];
@@ -98,7 +98,7 @@ export async function findMembersByName(groupOpenid: string | undefined, usernam
         const humans: KnownMember[] = [];
         for (const member of matches) {
             const state = await repository.getMemberBotState(groupOpenid, member.memberOpenid);
-            if (!state.platformBot && !state.manualBot && !state.autoBot) humans.push(member);
+            if (!state.platformBot && !state.manualBot) humans.push(member);
         }
         return humans;
     } catch (error) {

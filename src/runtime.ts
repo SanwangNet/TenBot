@@ -186,6 +186,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         async setGroupRepliesEnabled() { throw new Error("SQLite state repository is unavailable"); },
     };
     let memberDatabaseAvailable = false;
+    let detectionEvidencePruneTimer: ReturnType<typeof setInterval> | undefined;
     try {
         sqliteMemberRepository = new SqliteMemberRepository();
         memberRepository = sqliteMemberRepository;
@@ -202,6 +203,14 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     } catch (error) {
         logger.error("[Members] legacy automated peer import failed; group bot state remains unchanged", error);
     }
+    const pruneDetectionEvidence = () => {
+        void memberRepository.pruneExpiredDetectionEvidence().catch((error) => {
+            logger.error("[BotDetector] expired detection evidence cleanup failed", error);
+        });
+    };
+    pruneDetectionEvidence();
+    detectionEvidencePruneTimer = setInterval(pruneDetectionEvidence, 60 * 60 * 1000);
+    detectionEvidencePruneTimer.unref();
     groupReplyControl = new GroupReplyControl(stateRepository, memberRepository, (enabled) => {
         if (!enabled) cancelGroupReplyCycles();
         control?.publishStatus();
@@ -343,7 +352,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         async clearMemberDetection(groupOpenid, memberOpenid) {
             if (!memberDatabaseAvailable) throw new Error("Bot state requires SQLite persistence");
             if (!await memberRepository.findByOpenid(groupOpenid, memberOpenid)) return null;
-            const state = await memberRepository.resetDetectionMarks(groupOpenid, memberOpenid, Date.now());
+            const state = await memberRepository.clearDetectionEvidence(groupOpenid, memberOpenid);
             control?.publishEvent({ type: "members-updated" });
             return state;
         },
@@ -415,6 +424,7 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                     clearInterval(statusTimer);
                     unsubscribeProviderErrors();
                     unsubscribeReplyLifecycle();
+                    if (detectionEvidencePruneTimer) clearInterval(detectionEvidencePruneTimer);
                     fileWatchers.forEach((watcher) => watcher.close());
                     logs.dispose();
                     setConsoleLogOutputEnabled(true);

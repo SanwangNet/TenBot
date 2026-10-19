@@ -358,7 +358,7 @@ export function registerMessageHandler(
             normalized.author?.is_you !== true && normalized.author?.isYou !== true &&
             !rawText.includes("<faceType=") && !/<@[^>]+>/.test(rawText);
         let detectedState: MemberBotState | null = null;
-        if (normalized.kind === "group" && normalized.groupId && normalized.authorId && botDetector) {
+        if (normalized.kind === "group" && normalized.groupId && normalized.authorId && botDetector && eligibleDetectorText) {
             try {
                 detectedState = (await botDetector.observe({
                     groupOpenid: normalized.groupId,
@@ -366,6 +366,8 @@ export function registerMessageHandler(
                     text: rawText,
                     eligibleText: eligibleDetectorText,
                     platformBot: normalized.authorIsBot,
+                    messageId: normalized.id,
+                    messageTimestamp: normalized.timestamp,
                 })).state;
             } catch (error) {
                 logger.error("[BotDetector] observation failed", error);
@@ -374,8 +376,7 @@ export function registerMessageHandler(
         const botState = detectedState ?? (normalized.kind === "group" && normalized.groupId && normalized.authorId
             ? await getKnownMemberBotState(normalized.groupId, normalized.authorId)
             : null);
-        const botMessage = normalized.authorIsBot || Boolean(botState?.platformBot || botState?.manualBot || botState?.autoBot) ||
-            (normalized.kind === "group" && Boolean(normalized.groupId && normalized.authorId) && botState === null);
+        const botMessage = normalized.authorIsBot || Boolean(botState?.platformBot || botState?.manualBot);
         const conversationKey = getConversationKey(normalized);
         if (botMessage) loopGuard.observeBotMessage(conversationKey);
         else loopGuard.resetByHumanMessage(conversationKey, normalized.authorName);

@@ -5,6 +5,7 @@ import { useMemberRevision, useRuntime } from "../runtime/runtime-context.js";
 import { useFeedback } from "../ui/feedback.js";
 
 type MembersLocation = { type: "root" } | { type: "group"; groupOpenid: string } | { type: "member"; groupOpenid: string; memberOpenid: string };
+export const MEMBERS_EVIDENCE_REFRESH_INTERVAL_MS = 60_000;
 export const MEMBERS_PAGE_TITLE = "成员";
 export const MEMBERS_ROOT_SECTION_TITLES = { markedBots: "已标记的机器人账号", groups: "群聊" } as const;
 
@@ -56,6 +57,20 @@ export function MembersPage() {
 
     function refresh(): void { setRefreshKey((key) => key + 1); }
 
+    useEffect(() => {
+        const timer = window.setInterval(() => {
+            if (document.visibilityState === "visible") refresh();
+        }, MEMBERS_EVIDENCE_REFRESH_INTERVAL_MS);
+        const refreshWhenVisible = () => {
+            if (document.visibilityState === "visible") refresh();
+        };
+        window.addEventListener("focus", refreshWhenVisible);
+        return () => {
+            window.clearInterval(timer);
+            window.removeEventListener("focus", refreshWhenVisible);
+        };
+    }, [location]);
+
     async function setGroupReplies(enabled: boolean): Promise<void> {
         if (!selectedGroup || mutating) return;
         setMutating(true);
@@ -73,7 +88,7 @@ export function MembersPage() {
         if (!enabled) {
             const approved = await confirm({
                 title: "取消人工 Bot 标记",
-                message: `确定取消 ${member.username}（${member.memberOpenid}）的人工 Bot 标记？自动识别状态不会被清除。`,
+                message: `确定取消 ${member.username}（${member.memberOpenid}）的人工 Bot 标记？检测记录保持不变。`,
                 confirmLabel: "取消标记",
                 danger: true,
             });
@@ -93,7 +108,7 @@ export function MembersPage() {
         if (!member || location.type !== "member" || mutating) return;
         const approved = await confirm({
             title: "清除自动识别记录",
-            message: `确定清除 ${member.username} 在此群的识别次数，并取消 auto_bot 状态？人工和平台 Bot 标记会保留。`,
+            message: `确定清除该成员在当前群的有效观察记录？人工和平台 Bot 标记会保留。`,
             confirmLabel: "清除记录",
             danger: true,
         });
@@ -187,16 +202,27 @@ export function MembersPage() {
                     <dt>群角色</dt><dd>{member.role || "未知"}</dd>
                     <dt>平台 Bot</dt><dd>{member.platformBot ? "是" : "否"}</dd>
                     <dt>人工 Bot</dt><dd>{member.manualBot ? "是" : "否"}</dd>
-                    <dt>自动 Bot</dt><dd>{member.autoBot ? "是" : "否"}</dd>
-                    <dt>自动识别次数</dt><dd>{member.detectionMarks}</dd>
-                    <dt>最近识别</dt><dd>{member.lastDetectionAt === null ? "—" : formatDate(member.lastDetectionAt)}</dd>
+                    <dt>自动行为观察</dt><dd><span className={`member-detection-count ${markTone(member.detectionMarks)}`}>{detectionLabel(member.detectionMarks, member)}</span></dd>
+                    <dt>有效检测次数</dt><dd>{member.detectionMarks}</dd>
+                    <dt>最近检测时间</dt><dd>{member.lastDetectionAt === null ? "暂无有效证据" : formatDate(member.lastDetectionAt)}</dd>
+                    <dt>最近一条证据过期时间</dt><dd>{latestEvidence(member) ? formatDate(latestEvidence(member)!.expiresAt) : "暂无有效证据"}</dd>
+                    <dt>证据类型</dt><dd>{latestEvidence(member) ? evidenceTypeLabel(latestEvidence(member)!.signalType) : "暂无有效证据"}</dd>
+                    <dt>自动过期</dt><dd>每条证据自产生起 7 天独立失效。</dd>
                 </dl>
+                {member.activeDetectionEvidence && member.activeDetectionEvidence.length > 0 && <section className="member-evidence-list" aria-label="当前有效证据">
+                    <h3>当前有效证据</h3>
+                    {member.activeDetectionEvidence.map((evidence) => <div className="member-evidence-item" key={evidence.id}>
+                        <strong>{evidenceTypeLabel(evidence.signalType)}</strong>
+                        <span>检测时间 {formatDate(evidence.createdAt)}</span>
+                        <span>过期时间 {formatDate(evidence.expiresAt)}</span>
+                    </div>)}
+                </section>}
                 <div className="member-actions">
                     <button className={`button ${member.manualBot ? "button-danger" : "button-primary"}`} type="button" disabled={mutating}
                         onClick={() => void setManualBot(!member.manualBot)}>{member.manualBot ? "取消 Bot 标记" : "标记为 Bot"}</button>
-                    <button className="button button-secondary" type="button" disabled={mutating || (member.detectionMarks === 0 && !member.autoBot)}
-                        onClick={() => void clearDetections()}>清除识别次数</button>
-                    <span>清除后 auto_bot 与识别次数归零，manual_bot 和平台 Bot 标记不变。</span>
+                    <button className="button button-secondary" type="button" disabled={mutating || member.detectionMarks === 0}
+                        onClick={() => void clearDetections()}>清除检测记录</button>
+                    <span>清除操作只删除当前群该成员的检测证据，人工和平台 Bot 标记不变。</span>
                 </div>
             </>}
         </section>}
@@ -207,7 +233,7 @@ export function MemberRow({ member, groupLabel, onDetails }: { member: GroupMemb
     return <div className="member-row">
         <div className="member-row-identity"><strong>{member.username}</strong><code>{member.memberOpenid}</code><span>{groupLabel}</span></div>
         <div className="member-row-state"><BotBadges member={member} />
-            {member.detectionMarks > 0 && <span className={`member-detection-count ${markTone(member.detectionMarks)}`}>已标记 {member.detectionMarks} 次</span>}
+            <span className={`member-detection-count ${markTone(member.detectionMarks)}`}>{detectionLabel(member.detectionMarks, member)}</span>
             <span className="member-last-seen">最后出现 {formatDate(member.lastSeenAt)}</span>
         </div>
         <button className="member-detail-button" type="button" onClick={onDetails}>详情</button>
@@ -218,11 +244,26 @@ function BotBadges({ member }: { member: GroupMemberSummary }) {
     return <span className="member-badges">
         {member.platformBot && <span className="member-badge platform">平台 Bot</span>}
         {member.manualBot && <span className="member-badge manual">手动标记</span>}
-        {member.autoBot && <span className="member-badge automatic">Bot · 自动识别</span>}
     </span>;
 }
 
-function markTone(marks: number): string { return marks >= 3 ? "orange" : "yellow"; }
+function markTone(marks: number): string { return marks === 0 ? "ordinary" : marks >= 3 ? "orange" : "yellow"; }
+function detectionLabel(marks: number, member?: GroupMemberSummary): string {
+    if (marks <= 0) return member?.platformBot || member?.manualBot ? "无疑似行为" : "普通成员";
+    if (marks >= 5) return `建议人工确认（疑似行为 ${marks} 次）`;
+    return `疑似行为 ${marks} 次`;
+}
+function latestEvidence(member: GroupMemberSummary): NonNullable<GroupMemberSummary["activeDetectionEvidence"]>[number] | undefined {
+    let latest: NonNullable<GroupMemberSummary["activeDetectionEvidence"]>[number] | undefined;
+    for (const current of member.activeDetectionEvidence ?? []) {
+        if (!latest || current.createdAt > latest.createdAt ||
+            (current.createdAt === latest.createdAt && current.id > latest.id)) latest = current;
+    }
+    return latest;
+}
+function evidenceTypeLabel(signalType: string): string {
+    return signalType === "repeated_text" ? "重复发送相同长文本" : signalType;
+}
 function formatGroupLabel(group: GroupSummary | undefined, fallbackId?: string): string {
     const name = group?.displayName?.trim();
     return name || `群聊 · ${group?.groupOpenid ?? fallbackId ?? "未知群聊"}`;

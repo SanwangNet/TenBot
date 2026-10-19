@@ -11,6 +11,9 @@ import {
     parseBotLoopGuardMaxCycles,
 } from "../src/qq/conversation/bot-loop-guard.js";
 import { parseLegacyAutomatedPeerIds } from "../src/members/legacy-peer-import.js";
+import { BotDetector } from "../src/members/bot-detector.js";
+import { MemoryMemberRepository } from "../src/members/memory-repository.js";
+import { configureMemberRepository } from "../src/qq/conversation/known-members.js";
 import { buildChatInput, getMessageRevision, recordIncomingMessageRevision, rememberIncomingMessage } from "../src/qq/conversation/recent-context.js";
 import { registerMessageHandler } from "../src/qq/handlers/message-handler.js";
 import { normalizeQqMessage, type NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
@@ -348,4 +351,59 @@ test("human QQ face and image reset the guard before context filtering; commands
     const normalizedUnknown = await normalizeQqMessage({}, unknownBot);
     await fake.onMessage({}, unknownBot);
     assert.equal(getMessageRevision(normalizedUnknown), 1);
+});
+
+test("a day of human chatter and high suspicion evidence never blocks a human hard mention", async () => {
+    const groupId = "loop-group-detection-is-observation-only";
+    const memberId = "human-with-observations";
+    let now = Date.UTC(2026, 9, 1);
+    const repository = new MemoryMemberRepository(() => now);
+    configureMemberRepository(repository);
+    await repository.upsertMember({ groupOpenid: groupId, memberOpenid: memberId, username: "Human",
+        firstSeenAt: now, lastSeenAt: now, updatedAt: now });
+    for (let index = 0; index < 6; index++) {
+        await repository.addDetectionEvidence({ groupOpenid: groupId, memberOpenid: memberId, signalType: "old-short-message-rule" });
+    }
+    const detector = new BotDetector(repository, () => now);
+    const ordinaryChatter = ["草", "哈哈", "真的假的", "笑死", "我靠"];
+    for (let hour = 0; hour < 24; hour++) {
+        now = Date.UTC(2026, 9, 1) + hour * 60 * 60 * 1000;
+        for (let index = 0; index < ordinaryChatter.length; index++) {
+            await detector.observe({ groupOpenid: groupId, memberOpenid: memberId,
+                text: ordinaryChatter[index]!, eligibleText: true, platformBot: false,
+                messageId: `day-${hour}-${index}`, messageTimestamp: now + index * 1_000 });
+        }
+    }
+    now = Date.UTC(2026, 9, 2);
+    assert.equal(await repository.getActiveDetectionCount(groupId, memberId), 6,
+        "ordinary activity across a day does not add to or clear the active suspicion evidence");
+
+    const botFlags: boolean[] = [];
+    const guard = {
+        setMaxCycles() {},
+        observeBotMessage() {},
+        resetByHumanMessage() {},
+        beforeNewCycle(_key: string, botMessage: boolean) {
+            botFlags.push(botMessage);
+            return { botMessage, allowed: true };
+        },
+    };
+    const fake = fakeBot();
+    let aiCalls = 0;
+    const dispose = registerMessageHandler(fake.bot, guard, undefined, undefined, undefined,
+        { executeAi: async () => { aiCalls++; return resultThreeMessages(); } }, undefined, undefined, undefined, undefined,
+        undefined, undefined, detector);
+    try {
+        const mention = inboundMessage(groupId, memberId, "hello bot");
+        mention.rawEventType = "GROUP_AT_MESSAGE_CREATE";
+        assert.ok(fake.onMessage);
+        await fake.onMessage({}, mention);
+        assert.deepEqual(botFlags, [false], "the hard @ mention enters the reply cycle as a human message");
+        assert.equal(aiCalls, 1, "high suspicion evidence does not prevent the ordinary human @ reply pipeline");
+        assert.equal(fake.sent.length, 3, "the bot actually sends the admitted reply cycle");
+        assert.equal((await repository.getMemberBotState(groupId, memberId)).autoBot, false);
+    } finally {
+        dispose();
+        configureMemberRepository(new MemoryMemberRepository());
+    }
 });

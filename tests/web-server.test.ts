@@ -87,7 +87,7 @@ function createFakeControl() {
     const groupReplyCalls: Array<[string, boolean]> = [];
     let fakeBotState: MemberBotState = {
         groupOpenid: "group-openid-a", memberOpenid: "full-member-openid", platformBot: false,
-        manualBot: false, autoBot: true, detectionMarks: 5, lastDetectionAt: 3, createdAt: 1, updatedAt: 3,
+        manualBot: false, autoBot: false, detectionMarks: 5, lastDetectionAt: 3, createdAt: 1, updatedAt: 3,
     };
     const statusListeners = new Set<(value: RuntimeStatus) => void>();
     const logListeners = new Set<(value: LogEntry) => void>();
@@ -116,7 +116,7 @@ function createFakeControl() {
             if (index >= 0) groups[index] = { ...groups[index]!, repliesEnabled: enabled };
             return { ok: true, changed };
         },
-        async getMarkedBots() { return fakeBotState.platformBot || fakeBotState.manualBot || fakeBotState.autoBot
+        async getMarkedBots() { return fakeBotState.platformBot || fakeBotState.manualBot
             ? [{
                 groupOpenid: fakeBotState.groupOpenid, memberOpenid: fakeBotState.memberOpenid, username: "群友",
                 firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2, platformBot: fakeBotState.platformBot,
@@ -343,8 +343,7 @@ test("HTTP API reads through TenBotControl and keeps config secrets out of respo
 
         const markedBots = await fetch(`${baseUrl}/api/members/marked-bots`);
         const markedBotRows = await markedBots.json() as Array<{ memberOpenid: string; autoBot: boolean }>;
-        assert.equal(markedBotRows[0]?.memberOpenid, "full-member-openid");
-        assert.equal(markedBotRows[0]?.autoBot, true);
+        assert.deepEqual(markedBotRows, [], "observation evidence is not a formal Bot identity or marked Bot entry");
         const groupMembers = await fetch(`${baseUrl}/api/groups/group-openid-a/members`);
         assert.equal(((await groupMembers.json()) as Array<{ memberOpenid: string }>)[0]?.memberOpenid, "full-member-openid");
         const memberDetail = await fetch(`${baseUrl}/api/groups/group-openid-a/members/full-member-openid`);

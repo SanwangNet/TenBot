@@ -109,6 +109,16 @@ export interface GroupMemberSummary {
     autoBot: boolean;
     detectionMarks: number;
     lastDetectionAt: number | null;
+    activeDetectionEvidence?: MemberBotDetectionEvidence[];
+}
+
+export interface MemberBotDetectionEvidence {
+    id: number;
+    groupOpenid: string;
+    memberOpenid: string;
+    signalType: string;
+    createdAt: number;
+    expiresAt: number;
 }
 
 export interface MemberBotState {
