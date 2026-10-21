@@ -17,7 +17,7 @@ import { toPublicErrorMessage } from "../../errors/format.js";
 import { createQqSendError } from "./error-adapter.js";
 import { logger, shortId, truncateLogText } from "../../shared/logger.js";
 import { DEFAULT_MEME_SEND_MAX_EDGE } from "../../config/config-validation.js";
-import { memeSendImageService, type MemeSendImagePreparer } from "../../skills/meme/send-image.js";
+import { InvalidMemeImageError, memeSendImageService, type MemeSendImagePreparer } from "../../skills/meme/send-image.js";
 import {
     botLoopGuard,
     BOT_LOOP_GUARD_NOTICE,
@@ -861,25 +861,37 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
                 // The cycle was stopped while respecting the normal inter-message delay.
             } else if (attempt.status === "sending" && !cycle.cancelled && isGroupReplyAllowed(request)) {
                 let prepared: Awaited<ReturnType<MemeSendImagePreparer["prepare"]>> | undefined;
+                let allowOriginalFallback = true;
                 try {
                     const maxEdge = cycle.deps.getMemeSendMaxEdge
                         ? cycle.deps.getMemeSendMaxEdge()
                         : DEFAULT_MEME_SEND_MAX_EDGE;
                     try {
                         prepared = await (cycle.deps.memeSendImagePreparer ?? memeSendImageService).prepare(memeFile, maxEdge);
-                        logger.debug(`[Meme] send name=${JSON.stringify(memeFile.filename)}` +
-                            ` original=${prepared.original.width}x${prepared.original.height}` +
-                            ` target=${prepared.target.width}x${prepared.target.height} resized=${prepared.resized}`);
+                        if (prepared.original && prepared.target) {
+                            logger.debug(`[Meme] send name=${JSON.stringify(memeFile.filename)}` +
+                                ` original=${prepared.original.width}x${prepared.original.height}` +
+                                ` target=${prepared.target.width}x${prepared.target.height} resized=${prepared.resized}`);
+                        } else {
+                            logger.debug(`[Meme] send name=${JSON.stringify(memeFile.filename)} original GIF bypassed image processing`);
+                        }
                     } catch (error) {
-                        const kind = error instanceof Error ? error.name : "unknown";
-                        logger.error(`[Meme] resize failed; falling back to original image (${kind})`);
+                        if (error instanceof InvalidMemeImageError) {
+                            allowOriginalFallback = false;
+                            logger.error("[Meme] invalid GIF rejected before send");
+                        } else {
+                            const kind = error instanceof Error ? error.name : "unknown";
+                            logger.error(`[Meme] resize failed; falling back to original image (${kind})`);
+                        }
                     }
-                    const response = await sendAiMeme(request.bot, request.message, prepared?.localPath ?? memeFile.path,
-                        () => attempt.status === "sending" && !cycle.cancelled && isGroupReplyAllowed(request));
-                    if (response.sent) {
-                        memeSent = true;
-                        rememberBotReply(request.message, `[表情包 ${memeFile.filename}]`, response);
-                        logger.info("[Meme] sent " + truncateLogText(memeFile.filename, 120));
+                    if (allowOriginalFallback) {
+                        const response = await sendAiMeme(request.bot, request.message, prepared?.localPath ?? memeFile.path,
+                            () => attempt.status === "sending" && !cycle.cancelled && isGroupReplyAllowed(request));
+                        if (response.sent) {
+                            memeSent = true;
+                            rememberBotReply(request.message, `[表情包 ${memeFile.filename}]`, response);
+                            logger.info("[Meme] sent " + truncateLogText(memeFile.filename, 120));
+                        }
                     }
                 } catch {
                     logger.error("[Meme] image upload or send failed");

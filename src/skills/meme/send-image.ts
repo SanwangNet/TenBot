@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { extname, join, resolve } from "node:path";
 import sharp from "sharp";
-import type { MemeFile } from "./library-service.js";
+import { detectMemeImageFormat, type MemeFile } from "./library-service.js";
 import type { Metadata } from "sharp";
 
 export interface MemeSendDimensions {
@@ -12,10 +12,17 @@ export interface MemeSendDimensions {
 
 export interface PreparedMemeImage {
     localPath: string;
-    original: MemeSendDimensions;
-    target: MemeSendDimensions;
+    original: MemeSendDimensions | null;
+    target: MemeSendDimensions | null;
     resized: boolean;
     cleanup(): Promise<void>;
+}
+
+export class InvalidMemeImageError extends Error {
+    constructor(cause?: unknown) {
+        super("invalid meme image", cause === undefined ? undefined : { cause });
+        this.name = "InvalidMemeImageError";
+    }
 }
 
 export interface MemeSendImagePreparer {
@@ -77,8 +84,17 @@ export class MemeSendImageService {
     }
 
     async prepare(file: MemeFile, maxEdge: number | null): Promise<PreparedMemeImage> {
-        const animatedInput = file.format === "gif" || file.format === "webp";
         const input = await readFile(file.path);
+        if (extname(file.path).toLowerCase() === ".gif") {
+            if (detectMemeImageFormat(input) !== "gif") throw new InvalidMemeImageError();
+            let metadata: Metadata;
+            try { metadata = await readMetadata(input, true); }
+            catch (error) { throw new InvalidMemeImageError(error); }
+            if (metadata.format !== "gif" || !metadata.width || !metadata.height) throw new InvalidMemeImageError();
+            return { localPath: file.path, original: null, target: null, resized: false, cleanup: async () => undefined };
+        }
+
+        const animatedInput = file.format === "gif" || file.format === "webp";
         const metadata = await readMetadata(input, animatedInput);
         const original = frameDimensions(metadata);
         const target = computeMemeSendDimensions(original.width, original.height, maxEdge);

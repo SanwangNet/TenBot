@@ -10,7 +10,7 @@ import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 import type { ModelPlugin } from "../src/ai/model-plugin.js";
 import { createConfigStore } from "../src/config/config-store.js";
 import { MemeLibraryService } from "../src/skills/meme/library-service.js";
-import { MemeSendImageService, type MemeSendImagePreparer } from "../src/skills/meme/send-image.js";
+import { InvalidMemeImageError, MemeSendImageService, type MemeSendImagePreparer } from "../src/skills/meme/send-image.js";
 import { recordIncomingMessageRevision, rememberIncomingMessage } from "../src/qq/conversation/recent-context.js";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
 import { coordinateAiReply } from "../src/qq/reply/coordinator.js";
@@ -58,11 +58,13 @@ interface ImageCall {
 function imageBot(options: { failImage?: boolean } = {}) {
     const calls: Array<{ method: string; content?: string; path?: string }> = [];
     const images: ImageCall[] = [];
+    const uploadedImageBytes: Buffer[] = [];
     const bot = {
         async sendText(_target: unknown, content: string) { calls.push({ method: "text", content }); },
         async sendMarkdown(_target: unknown, content: string) { calls.push({ method: "markdown", content }); },
         async sendImage(_target: unknown, payload: { localPath: string }) {
             calls.push({ method: "image", path: payload.localPath });
+            uploadedImageBytes.push(await readFile(payload.localPath));
             if (options.failImage) throw new Error("simulated QQ upload failure");
             const image = sharp(await readFile(payload.localPath));
             let metadata;
@@ -73,7 +75,7 @@ function imageBot(options: { failImage?: boolean } = {}) {
         },
         async send(_payload: unknown) { calls.push({ method: "send" }); },
     } as unknown as QQBot;
-    return { bot, calls, images };
+    return { bot, calls, images, uploadedImageBytes };
 }
 
 async function sendMeme(
@@ -202,6 +204,75 @@ test("original-size setting sends the library file directly", async () => {
         await sendMeme(bot, library, file.filename, { getMemeSendMaxEdge: () => null });
         assert.equal(images[0]?.path, file.path);
         assert.deepEqual([images[0]?.width, images[0]?.height], [240, 160]);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test("GIF meme upload sends the unchanged source and never converts after a QQ send failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tenbot-meme-send-gif-integration-"));
+    const cacheDirectory = join(root, "cache");
+    try {
+        const library = new MemeLibraryService(join(root, "memes"));
+        const width = 240;
+        const frameHeight = 240;
+        const frameCount = 2;
+        const pixels = Buffer.alloc(width * frameHeight * frameCount * 4);
+        pixels.fill(255);
+        const animation = sharp(pixels, {
+            raw: { width, height: frameHeight * frameCount, channels: 4, pageHeight: frameHeight },
+        });
+        let gifBytes: Buffer;
+        try { gifBytes = await animation.gif({ delay: [80, 120], loop: 0 }).toBuffer(); }
+        finally { animation.destroy(); }
+        const file = await library.add("animated", gifBytes);
+        const preparer = new MemeSendImageService(cacheDirectory);
+
+        const success = imageBot();
+        await sendMeme(success.bot, library, file.filename, {
+            getMemeSendMaxEdge: () => 64,
+            memeSendImagePreparer: preparer,
+        });
+        assert.deepEqual(success.calls.map((call) => call.method), ["image"]);
+        assert.equal(success.calls[0]?.path, file.path);
+        assert.deepEqual(success.uploadedImageBytes[0], gifBytes);
+        assert.equal(success.images[0]?.format, "gif");
+        assert.deepEqual(await readFile(file.path), gifBytes);
+
+        const failed = imageBot({ failImage: true });
+        await sendMeme(failed.bot, library, file.filename, {
+            getMemeSendMaxEdge: () => 64,
+            memeSendImagePreparer: preparer,
+        });
+        assert.deepEqual(failed.calls.map((call) => call.method), ["image"]);
+        assert.equal(failed.calls[0]?.path, file.path);
+        assert.deepEqual(failed.uploadedImageBytes[0], gifBytes);
+        assert.deepEqual(await readFile(file.path), gifBytes, "failed QQ sends leave the original Meme untouched");
+        await assert.rejects(access(cacheDirectory));
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test("invalid GIF validation does not use the generic original-image fallback", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tenbot-meme-send-invalid-gif-integration-"));
+    try {
+        const library = new MemeLibraryService(join(root, "memes"));
+        const bytes = await sharp({
+            create: { width: 80, height: 80, channels: 4, background: { r: 30, g: 80, b: 220, alpha: 1 } },
+        }).png().toBuffer();
+        const file = await library.add("safe-image", bytes);
+        const { bot, calls } = imageBot();
+        const invalidPreparer: MemeSendImagePreparer = {
+            async prepare() { throw new InvalidMemeImageError(); },
+        };
+
+        await sendMeme(bot, library, file.filename, {
+            getMemeSendMaxEdge: () => 32,
+            memeSendImagePreparer: invalidPreparer,
+        });
+
+        assert.deepEqual(calls, [], "invalid-image failures must not bypass validation by sending the source");
     } finally {
         await rm(root, { recursive: true, force: true });
     }

@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import sharp from "sharp";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 import type { AiResult } from "../src/ai/reply-result.js";
 import type { ModelPlugin } from "../src/ai/model-plugin.js";
@@ -20,6 +21,12 @@ import { buildReplyCycleMemeQuery, cancelGroupReplyCycles, coordinateAiReply, su
 
 const MODEL_TIMEOUT_CODE = "M:A_MG_MTO";
 const MODEL_TIMEOUT_MESSAGE = `ERROR: ${MODEL_TIMEOUT_CODE}`;
+
+async function validTestGif(): Promise<Buffer> {
+    const image = sharp({ create: { width: 2, height: 2, channels: 4, background: { r: 30, g: 80, b: 220, alpha: 1 } } });
+    try { return await image.gif().toBuffer(); }
+    finally { image.destroy(); }
+}
 
 type RecordedAttempt = { input: string; signal: AbortSignal; resolve: (result: AiResult) => void };
 function message(groupId: string = randomUUID(), content = "A"): NormalizedQqMessage {
@@ -51,7 +58,7 @@ test("meme sends as one separate image after up to three text messages", async (
     const directory = await mkdtemp(join(tmpdir(), "tenbot-reply-memes-"));
     try {
         const library = new MemeLibraryService(directory);
-        const gif = Buffer.from("GIF89a\x01\x00\x01\x00\x00\x00\x00", "binary");
+        const gif = await validTestGif();
         await library.add("reaction", gif);
         const value = message();
         commit(value);
@@ -74,7 +81,7 @@ test("meme-only replies send an image; missing or failed memes do not discard te
     const directory = await mkdtemp(join(tmpdir(), "tenbot-reply-meme-failure-"));
     try {
         const library = new MemeLibraryService(directory);
-        const gif = Buffer.from("GIF89a\x01\x00\x01\x00\x00\x00\x00", "binary");
+        const gif = await validTestGif();
         await library.add("reaction", gif);
 
         const ordinary = message();

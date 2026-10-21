@@ -9,7 +9,7 @@ import { routeCommand } from "../src/commands/router.js";
 import { MemeCandidateTracker } from "../src/skills/meme/candidate-tracker.js";
 import { buildAvailableMemeContext, detectMemeImageFormat, MemeLibraryError, MemeLibraryService } from "../src/skills/meme/library-service.js";
 import { normalizeQQReplyAction } from "../src/skills/qq-reply/skill.js";
-import { computeResizeDimensions, shouldPreserveOriginalForAnimation } from "../web/src/components/meme-image.js";
+import { computeResizeDimensions, prepareMemeImage, shouldPreserveOriginalForAnimation } from "../web/src/components/meme-image.js";
 
 const gif = Buffer.from("GIF89a\x01\x00\x01\x00\x00\x00\x00", "binary");
 const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
@@ -368,9 +368,14 @@ test("AI meme protocol accepts three texts plus one meme and meme-only; availabl
     assert.match(context, /猫猫震惊\.gif/);
 });
 
-test("WebUI resize uses longest edge, never enlarges, and conservatively preserves GIF animation", () => {
+test("WebUI upload keeps GIF source bytes unchanged instead of passing through canvas", async () => {
     assert.deepEqual(computeResizeDimensions(1200, 800, 300), { width: 300, height: 200 });
     assert.deepEqual(computeResizeDimensions(400, 1000, 300), { width: 120, height: 300 });
     assert.deepEqual(computeResizeDimensions(92, 92, 300), { width: 92, height: 92 });
     assert.equal(shouldPreserveOriginalForAnimation(gif), true);
+
+    const prepared = await prepareMemeImage(new Blob([Uint8Array.from(gif)], { type: "image/gif" }), 300);
+    assert.deepEqual(Buffer.from(prepared.bytes), gif);
+    assert.equal(prepared.resized, false);
+    assert.equal(prepared.preservedOriginal, true);
 });

@@ -140,31 +140,72 @@ test("startup cleanup removes leftover temporary send files", async () => {
     }
 });
 
-test("resized GIF and animated WebP keep every frame, dimensions, delays, and loop metadata", async () => {
+test("GIFs bypass resizing and keep their original bytes while animated WebP keeps every frame", async () => {
     const root = await mkdtemp(join(tmpdir(), "tenbot-meme-send-animation-"));
     const service = new MemeSendImageService(join(root, "cache"));
     try {
-        for (const format of ["gif", "webp"] as const) {
-            const source = join(root, `animation.${format}`);
-            await makeAnimatedPages(source, format);
-            const input = await readMetadata(source, true);
-            assert.equal(input.pages, 3, `${format} fixture should contain multiple frames`);
-            const prepared = await service.prepare(memeFile(source, format, `misleading.jpg`), 160);
+        const gifPath = join(root, "animation.gif");
+        await makeAnimatedPages(gifPath, "gif");
+        const gifBytes = await readFile(gifPath);
+        const gifMetadata = await readMetadata(gifPath, true);
+        assert.equal(gifMetadata.pages, 3, "GIF fixture should contain multiple frames");
+
+        for (const source of [gifPath, join(root, "animation-uppercase.GIF")]) {
+            if (source !== gifPath) await writeFile(source, gifBytes);
+            const prepared = await service.prepare(memeFile(source, "gif"), 160);
             try {
+                assert.equal(prepared.localPath, source);
+                assert.equal(prepared.resized, false);
+                assert.equal(prepared.original, null);
+                assert.equal(prepared.target, null);
+                assert.deepEqual(await readFile(prepared.localPath), gifBytes);
                 const output = await readMetadata(prepared.localPath, true);
-                assert.equal(output.format, format);
-                assert.equal(output.width, 160);
-                assert.equal(output.pageHeight, 160);
-                assert.equal(output.pages, input.pages);
-                assert.equal(output.loop, input.loop);
-                assert.deepEqual(output.delay, input.delay);
+                assert.equal(output.format, "gif");
+                assert.equal(output.pages, gifMetadata.pages);
+                assert.equal(output.loop, gifMetadata.loop);
+                assert.deepEqual(output.delay, gifMetadata.delay);
             } finally {
                 await prepared.cleanup();
             }
+            assert.deepEqual(await readFile(source), gifBytes, "cleanup must not remove or modify the original GIF");
+        }
+
+        const webpPath = join(root, "animation.webp");
+        await makeAnimatedPages(webpPath, "webp");
+        const webpMetadata = await readMetadata(webpPath, true);
+        assert.equal(webpMetadata.pages, 3, "WebP fixture should contain multiple frames");
+        const preparedWebp = await service.prepare(memeFile(webpPath, "webp"), 160);
+        try {
+            const output = await readMetadata(preparedWebp.localPath, true);
+            assert.equal(output.format, "webp");
+            assert.equal(output.width, 160);
+            assert.equal(output.pageHeight, 160);
+            assert.equal(output.pages, webpMetadata.pages);
+            assert.equal(output.loop, webpMetadata.loop);
+            assert.deepEqual(output.delay, webpMetadata.delay);
+        } finally {
+            await preparedWebp.cleanup();
         }
     } finally {
         const leftovers = await readdir(join(root, "cache")).catch(() => []);
         assert.deepEqual(leftovers, []);
+        await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+});
+
+test("a .gif suffix with invalid content is rejected before image processing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tenbot-meme-send-invalid-gif-"));
+    const cache = join(root, "cache");
+    const source = join(root, "spoofed.GIF");
+    try {
+        await writeFile(source, Buffer.from("not a GIF image"));
+        await assert.rejects(
+            new MemeSendImageService(cache).prepare(memeFile(source, "gif"), 160),
+            { name: "InvalidMemeImageError" },
+        );
+        await assert.rejects(access(cache));
+        assert.deepEqual(await readFile(source), Buffer.from("not a GIF image"));
+    } finally {
         await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
 });
