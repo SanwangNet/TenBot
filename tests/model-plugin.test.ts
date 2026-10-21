@@ -7,6 +7,7 @@ import { createModelPlugin } from "../src/ai/model-registry.js";
 import { ModelAbortedError, type ModelRequest } from "../src/ai/model-plugin.js";
 import { createDeepSeekPlugin } from "../src/ai/plugins/deepseek/index.js";
 import { createGptPlugin } from "../src/ai/plugins/gpt/index.js";
+import { listGptModelIds } from "../src/ai/plugins/gpt/model-catalog.js";
 import { getPromptStore } from "../src/ai/prompt-store.js";
 import { isToolProtocolLeak } from "../src/ai/tool-protocol.js";
 import { parseQqReplyArguments } from "../src/skills/qq-reply/skill.js";
@@ -66,6 +67,34 @@ test("registry selects GPT, DeepSeek, and defaults to GPT without requiring cred
     const configuredDeepSeek = createModelPlugin({ AI_PROVIDER: "deepseek", DEEPSEEK_REASONING_EFFORT: "low" });
     assert.equal(configuredDeepSeek.reasoningEffort, "low");
     assert.throws(() => createModelPlugin({ AI_PROVIDER: "other" }), /不支持的 AI_PROVIDER/);
+});
+
+test("GPT model catalog fetches and exposes only sorted unique upstream model IDs", async () => {
+    const originalFetch = globalThis.fetch;
+    let requestedUrl = "";
+    let authorization = "";
+    globalThis.fetch = async (input, init) => {
+        requestedUrl = String(input);
+        authorization = new Headers(init?.headers).get("authorization") ?? "";
+        return new Response(JSON.stringify({
+            object: "list",
+            data: [
+                { id: "gpt-z", object: "model", created: 1, owned_by: "private-owner" },
+                { id: "gpt-a", object: "model", created: 1, owned_by: "private-owner" },
+                { id: "gpt-z", object: "model", created: 1, owned_by: "private-owner" },
+                { id: "bad\nmodel", object: "model", created: 1, owned_by: "private-owner" },
+            ],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+    try {
+        const models = await listGptModelIds({ apiKey: "private-key", baseURL: "https://models.example/v1" });
+        assert.deepEqual(models, ["gpt-a", "gpt-z"]);
+        assert.match(requestedUrl, /models\.example\/v1\/models$/);
+        assert.equal(authorization, "Bearer private-key");
+        await assert.rejects(listGptModelIds({ apiKey: "private-key" }), /credentials are not configured/);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
 });
 
 test("ALL keeps request and NVO diagnostics while stream events and completed response are compact", async () => {

@@ -74,6 +74,10 @@ export interface ConfigPatchResponse {
     config: PublicConfig;
 }
 
+export interface GptModelsResponse {
+    models: string[];
+}
+
 export interface ConversationSummary {
     conversationId: string;
     kind: "group" | "private";

@@ -160,11 +160,26 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         if (next) setSelectedConversationId(next.conversationId);
         setConversationAnchor(null);
     };
-    const editSetting = (field: SettingsField) => setUi((current) => ({
-        ...current,
-        settingsIndex: settingsRowIndex(field, viewedProvider),
-        modal: openConfigModal(field, config),
-    }));
+    const gptModelRequestId = useRef(0);
+    const editSetting = (field: SettingsField) => {
+        const settingsIndex = settingsRowIndex(field, viewedProvider);
+        if (field !== "gpt.model") {
+            setUi((current) => ({ ...current, settingsIndex, modal: openConfigModal(field, config) }));
+            return;
+        }
+        const requestId = ++gptModelRequestId.current;
+        setUi((current) => ({ ...current, settingsIndex, modal: { type: "config-loading", requestId, title: "读取 GPT 模型列表" } }));
+        void control.getGptModels().then((models) => {
+            const choices = [...new Set(models)].filter((model) => typeof model === "string" && model.length > 0);
+            setUi((current) => current.modal.type === "config-loading" && current.modal.requestId === requestId
+                ? { ...current, modal: openConfigModal("gpt.model", config, choices) }
+                : current);
+        }).catch(() => {
+            setUi((current) => current.modal.type === "config-loading" && current.modal.requestId === requestId
+                ? { ...current, modal: { type: "config-invalid", message: "无法读取 GPT 模型列表；现有模型配置已保留，请检查 GPT 配置后重试。" } }
+                : current);
+        });
+    };
 
     const viewProvider = (delta: number) => {
         setViewedProvider(cycleModelProvider(viewedProvider, delta));
@@ -604,6 +619,7 @@ function displayPatchValue(patch: PublicConfigPatch): string {
 function optionPatch(field: ConfigSelectField, value: string): PublicConfigPatch {
     switch (field) {
         case "aiProvider": return { field, value: value as "gpt" | "deepseek" };
+        case "gpt.model": return { field, value };
         case "gpt.reasoningEffort": return { field, value: value as "none" | "low" | "medium" | "high" | "xhigh" };
         case "gpt.verbosity": return { field, value: value as "low" | "medium" | "high" };
         case "deepseek.reasoningEffort": return { field, value: value as "none" | "low" | "medium" | "high" | "xhigh" };
@@ -617,9 +633,7 @@ export function textPatch(field: ConfigTextField, value: string): { value: Publi
     if (field === "replyJudge.timeoutMs" && !/^\d+$/.test(value.trim())) {
         return { error: "Reply Judge 超时时间必须是 1000 到 30000 毫秒之间的整数" };
     }
-    const patch: PublicConfigPatch = field === "gpt.model"
-        ? { field, value }
-        : field === "deepseek.model"
+    const patch: PublicConfigPatch = field === "deepseek.model"
             ? { field, value }
             : field === "replyJudge.model"
                 ? { field, value }
@@ -632,12 +646,18 @@ export function textPatch(field: ConfigTextField, value: string): { value: Publi
     }
 }
 
-export function openConfigModal(field: SettingsField, config: PublicConfig): ModalState {
+export function openConfigModal(field: SettingsField, config: PublicConfig, gptModels: readonly string[] = []): ModalState {
     if (field === "aiProvider") return selectConfigModal(field, providerOptions, config.aiProvider);
     if (field === "gpt.reasoningEffort") return selectConfigModal(field, reasoningOptions, config.gpt.reasoningEffort);
     if (field === "deepseek.reasoningEffort") return selectConfigModal(field, reasoningOptions, config.deepseek.reasoningEffort);
     if (field === "gpt.verbosity") return selectConfigModal(field, verbosityOptions, config.gpt.verbosity);
-    if (field === "gpt.model") return textConfigModal(field, config.gpt.model);
+    if (field === "gpt.model") {
+        const options = [...new Set(gptModels)].map((model) => ({ value: model, label: model }));
+        if (!options.some((option) => option.value === config.gpt.model)) {
+            options.unshift({ value: config.gpt.model, label: `${config.gpt.model}（当前配置不在上游列表中）` });
+        }
+        return selectConfigModal(field, options, config.gpt.model);
+    }
     if (field === "deepseek.model") return textConfigModal(field, config.deepseek.model);
     if (field === "replyJudge.model") return textConfigModal(field, config.replyJudge.model);
     if (field === "replyJudge.timeoutMs") return textConfigModal(field, String(config.replyJudge.timeoutMs));

@@ -17,8 +17,8 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     "botLoopGuard.maxCycles",
 ];
 
-export type ConfigSelectField = Exclude<SettingsField, "gpt.model" | "deepseek.model" | "replyJudge.model" | "replyJudge.timeoutMs" | "replyJudge.fallbackToMainOnInvalidOutput" | "replyJudge.turnWaitMs" | "botLoopGuard.maxCycles">;
-export type ConfigTextField = "gpt.model" | "deepseek.model" | "replyJudge.model" | "replyJudge.timeoutMs" | "botLoopGuard.maxCycles";
+export type ConfigSelectField = Exclude<SettingsField, "deepseek.model" | "replyJudge.model" | "replyJudge.timeoutMs" | "replyJudge.fallbackToMainOnInvalidOutput" | "replyJudge.turnWaitMs" | "botLoopGuard.maxCycles">;
+export type ConfigTextField = "deepseek.model" | "replyJudge.model" | "replyJudge.timeoutMs" | "botLoopGuard.maxCycles";
 export type SettingsRow = SettingsField | "provider" | "apply";
 
 export function settingsRows(provider: ModelProviderId): SettingsRow[] {
@@ -37,6 +37,7 @@ export type ModalState =
     | { type: "help" }
     | { type: "reload-confirm" }
     | { type: "reload-result"; target: "all" | "prompt" | "memes"; promptOk: boolean; memesOk: boolean; promptRevision?: number; memeRevision?: number; memeCount?: number; message?: string }
+    | { type: "config-loading"; requestId: number; title: string }
     | { type: "config-select"; field: ConfigSelectField; title: string; options: readonly ConfigOption[]; index: number }
     | { type: "config-text"; field: ConfigTextField; title: string; value: string; cursor: number }
     | { type: "config-confirm"; patch: PublicConfigPatch; label: string; from: string; to: string }

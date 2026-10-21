@@ -97,7 +97,7 @@ WebUI 开发时，在另一个终端运行 Vite：
 
 构建后，浏览器访问 `http://127.0.0.1:3000/` 即可打开 WebUI；Runtime 仍默认只监听本机。未登录时显示 GitHub 登录页，所有管理 API 和 SSE 均要求有效 TenBot Session。
 
-WebUI 提供总览、模型、提示词、梗数据、对话、成员、实时日志和设置。成员页按“已标记的机器人账号 → 群聊 → 群成员”查看和管理 group-scoped Bot 状态及群回复开关。提示词与 Meme 数据可在 Monaco 编辑器中保存并热重载；保存会检查文件版本，Meme JSON 会先验证。编辑 API 只允许 TenBot 的四个固定资源 ID，不接受任意服务器路径。
+WebUI 提供总览、模型、提示词、梗数据、对话、成员、实时日志和设置。设置页的 GPT 模型从当前配置的上游服务拉取并以下拉菜单呈现，可手动刷新；拉取失败或已保存模型不在上游列表时会保留现有值。GPT 推理强度与输出详细度使用枚举下拉。成员页按“已标记的机器人账号 → 群聊 → 群成员”查看和管理 group-scoped Bot 状态及群回复开关。提示词与 Meme 数据可在 Monaco 编辑器中保存并热重载；保存会检查文件版本，Meme JSON 会先验证。编辑 API 只允许 TenBot 的四个固定资源 ID，不接受任意服务器路径。
 
 终端控制界面：
 
@@ -108,14 +108,14 @@ TUI 是中文全屏控制台，支持 PowerShell 和 WebStorm Terminal。进入�
 进入“设置”页后可以编辑：
 
 - 模型提供商：GPT 或 DeepSeek
-- GPT / DeepSeek 模型名称
+- GPT 模型从上游列表选择；DeepSeek 模型名称仍可手动填写
 - GPT / DeepSeek 推理强度
 - GPT 输出详细度
 - Bot 连续交互上限
 
 修改会先经过确认，再只更新 `.env` 中对应的变量；未知变量、secret、注释、空行和原有换行风格会保留。Provider、模型参数和连续 Bot 交互上限会立即热重载；进行中的模型 Attempt 保留启动时的模型和 Prompt 快照，新 Attempt 使用最新配置。Bot 的手动标记、自动识别状态和群回复开关由 WebUI 管理并存入 SQLite。当前不支持自动重启。QQ App ID 或密钥变化需要重启 QQ Runtime。
 
-设置页使用 Provider 卡片浏览 GPT 与 DeepSeek 配置。左右方向键只切换正在查看的卡片；选择“设为当前模型提供商”并确认后才会保存和热切换运行 Provider。密钥和 Base URL 不会显示在 TUI。
+设置页使用 Provider 卡片浏览 GPT 与 DeepSeek 配置。GPT 模型从当前上游获取为选项；列表不可用时会保留已有模型配置。左右方向键只切换正在查看的卡片；选择“设为当前模型提供商”并确认后才会保存和热切换运行 Provider。密钥和 Base URL 不会显示在 TUI。
 
 TUI 快捷键：
 

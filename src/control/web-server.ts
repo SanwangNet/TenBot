@@ -546,6 +546,14 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
             json(response, 200, control.getConfig());
             return;
         }
+        if (pathname === "/api/models/gpt") {
+            try {
+                json(response, 200, { models: await control.getGptModels() });
+            } catch {
+                error(response, 502, "无法读取 GPT 上游模型列表；请检查 GPT 配置或稍后重试");
+            }
+            return;
+        }
         if (pathname === "/api/conversations") {
             json(response, 200, control.getConversations());
             return;

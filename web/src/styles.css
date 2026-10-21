@@ -182,6 +182,9 @@ button:focus-visible {
 .configured-text { color: var(--green); }
 .unconfigured-text { color: #b0a17f; }
 .setting-field { display: grid; min-width: 0; gap: 6px; }
+.model-picker-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.model-picker-actions .field-hint { min-width: 0; }
+.model-picker-actions .button { flex: 0 0 auto; }
 .setting-field label, .log-filter-field > span, .log-search-field > span { color: #aab3bf; font-size: 11px; }
 .setting-field input, .setting-field select, .logs-toolbar input, .logs-toolbar select {
     width: 100%; min-width: 0; height: 35px; padding: 0 10px; border: 1px solid #343e4a; border-radius: 5px;

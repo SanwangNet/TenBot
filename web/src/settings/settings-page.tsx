@@ -30,14 +30,41 @@ export function SettingsPage() {
     const [form, dispatch] = useReducer(settingsFormReducer, config, (initial) => initial ? createSettingsForm(initial) : null);
     const [saving, setSaving] = useState(false);
     const [feedback, setFeedback] = useState<Feedback>(null);
+    const [gptModels, setGptModels] = useState<string[]>([]);
+    const [modelsLoading, setModelsLoading] = useState(false);
+    const [modelsError, setModelsError] = useState<string | null>(null);
+    const [modelsRefresh, setModelsRefresh] = useState(0);
 
     useEffect(() => {
         if (config) dispatch({ type: "server-refresh", config });
     }, [config]);
 
+    useEffect(() => {
+        if (form?.values.aiProvider !== "gpt") return;
+        const controller = new AbortController();
+        setModelsLoading(true);
+        setModelsError(null);
+        void apiClient.getGptModels(controller.signal)
+            .then(({ models }) => setGptModels([...new Set(models.filter((model) => typeof model === "string" && model.length > 0))]))
+            .catch((cause: unknown) => {
+                if (!controller.signal.aborted) {
+                    setModelsError(cause instanceof ApiError ? cause.message : "无法读取 GPT 模型列表");
+                }
+            })
+            .finally(() => {
+                if (!controller.signal.aborted) setModelsLoading(false);
+            });
+        return () => controller.abort();
+    }, [form?.values.aiProvider, modelsRefresh]);
+
     const dirtyFields = form ? visibleDirtySettingsFields(form) : [];
     const hiddenDirtyCount = form ? dirtySettingsFields(form).length - dirtyFields.length : 0;
     const invalidFields = form ? dirtyFields.filter((field) => settingsFieldError(field, form.values)) : [];
+    const selectedGptModel = form?.values["gpt.model"] ?? "";
+    const selectedGptModelUnavailable = !gptModels.includes(selectedGptModel);
+    const selectedGptModelLabel = modelsLoading ? "（当前值，列表读取中）"
+        : modelsError ? "（当前值，列表不可用）"
+            : "（当前值不在上游列表中）";
 
     async function save(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -108,8 +135,24 @@ export function SettingsPage() {
                 </div>
                 <div className="preset-fields" key={form.values.aiProvider}>
                     {form.values.aiProvider === "gpt" ? <div className="settings-grid settings-grid-preset">
-                        <SettingField label="模型" id="setting-gpt-model" error={fieldError("gpt.model")}>
-                            <input id="setting-gpt-model" type="text" value={form.values["gpt.model"]} disabled={saving} aria-invalid={Boolean(fieldError("gpt.model"))} onChange={(event) => edit("gpt.model", event.currentTarget.value)} />
+                        <SettingField label="模型" id="setting-gpt-model">
+                            <select id="setting-gpt-model" value={form.values["gpt.model"]} disabled={saving || modelsLoading} onChange={(event) => edit("gpt.model", event.currentTarget.value)}>
+                                {selectedGptModelUnavailable && <option value={selectedGptModel}>{selectedGptModel}{selectedGptModelLabel}</option>}
+                                {gptModels.map((model) => <option key={model} value={model}>{model}</option>)}
+                            </select>
+                            <div className="model-picker-actions">
+                                <span className="field-hint" role="status" aria-live="polite">
+                                    {modelsLoading ? "正在读取上游模型列表…" : modelsError
+                                        ? gptModels.length ? `刷新失败，仍显示上次列表：${modelsError}` : `模型列表读取失败：${modelsError}`
+                                        : gptModels.length ? `已获取 ${gptModels.length} 个模型` : "上游暂未返回可用模型"}
+                                </span>
+                                <button type="button" className="button button-secondary" disabled={saving || modelsLoading} onClick={() => setModelsRefresh((value) => value + 1)}>
+                                    {modelsLoading ? "读取中…" : "刷新列表"}
+                                </button>
+                            </div>
+                            {!modelsLoading && selectedGptModelUnavailable && !modelsError && (
+                                <span className="field-hint" role="status">当前值会保留；选择上游列表中的模型即可替换。</span>
+                            )}
                         </SettingField>
                         <SettingField label="推理强度" id="setting-gpt-reasoning">
                             <select id="setting-gpt-reasoning" value={form.values["gpt.reasoningEffort"]} disabled={saving} onChange={(event) => edit("gpt.reasoningEffort", event.currentTarget.value as SettingsValues["gpt.reasoningEffort"])}>

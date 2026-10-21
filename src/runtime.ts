@@ -3,6 +3,7 @@ import "dotenv/config";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { getPromptStore, type PromptProvider } from "./ai/prompt-store.js";
+import { listGptModelIds } from "./ai/plugins/gpt/model-catalog.js";
 import { createConfigStore } from "./config/config-store.js";
 import { toPublicConfig } from "./config/config-validation.js";
 import { createTenBotControl, type ReloadResult, type TenBotControl } from "./control/tenbot-control.js";
@@ -320,6 +321,10 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         getConfig: () => {
             try { return configStore.getPublicConfig(); }
             catch { return toPublicConfig(runtimeSnapshot.appConfig); }
+        },
+        getGptModels: async () => {
+            const gpt = configStore.getAppConfig().ai.gpt;
+            return listGptModelIds({ apiKey: gpt.apiKey, baseURL: gpt.baseURL });
         },
         async updateConfig(patch) {
             const saved = await configStore.updatePublicConfig(patch);

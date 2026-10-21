@@ -112,6 +112,9 @@ function ModalContent({
             const allOk = modal.promptOk && modal.memesOk;
             title = allOk ? "重载完成" : "重载失败";
             summary = allOk ? "提示词与梗数据已重载" : "部分重载失败，继续使用旧版本";
+        } else if (modal.type === "config-loading") {
+            title = modal.title;
+            summary = "正在向 GPT 上游读取模型选项…";
         } else if (modal.type === "config-select") {
             title = modal.title;
             summary = `${modal.options[modal.index]?.label ?? ""}  ${modal.index + 1}/${modal.options.length}`;
@@ -185,6 +188,12 @@ function ModalContent({
             {!modal.promptOk || !modal.memesOk ? <Text dimColor>已继续使用旧版本。</Text> : null}
             <Text> </Text>
             <ModalActions registry={registry} onConfirm={onClose} confirmLabel="关闭" />
+        </ModalFrame>;
+    }
+    if (modal.type === "config-loading") {
+        return <ModalFrame title={modal.title} width={width} maxHeight={maxHeight}>
+            <Text>正在向 GPT 上游读取模型选项…</Text>
+            <Text dimColor>现有模型配置会保留。</Text>
         </ModalFrame>;
     }
     if (modal.type === "config-select") {

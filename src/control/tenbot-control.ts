@@ -19,6 +19,7 @@ export type StatusListener = (status: RuntimeStatus) => void;
 export interface TenBotControl {
     getStatus(): RuntimeStatus;
     getConfig(): PublicConfig;
+    getGptModels(): Promise<string[]>;
     updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
     getGroups(): Promise<GroupSettings[]>;
     setGroupRepliesEnabledForGroup(groupOpenid: string, enabled: boolean): Promise<GroupReplyChangeResult>;
@@ -43,6 +44,7 @@ export interface TenBotControl {
 export interface TenBotControlOperations {
     getStatus(): RuntimeStatus;
     getConfig(): PublicConfig;
+    getGptModels(): Promise<string[]>;
     updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
     getGroups(): Promise<GroupSettings[]>;
     setGroupRepliesEnabledForGroup(groupOpenid: string, enabled: boolean): Promise<GroupReplyChangeResult>;
@@ -73,6 +75,7 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
     return {
         getStatus,
         getConfig: () => structuredClone(operations.getConfig()),
+        getGptModels: async () => [...await operations.getGptModels()],
         updateConfig: (patch) => operations.updateConfig(patch),
         getGroups: async () => structuredClone(await operations.getGroups()),
         setGroupRepliesEnabledForGroup: (groupOpenid, enabled) => operations.setGroupRepliesEnabledForGroup(groupOpenid, enabled),

@@ -197,6 +197,7 @@ function fakeControl(calls: string[], result: ReloadResult = { ok: true, message
     return {
         getStatus: () => status,
         getConfig: () => config,
+        async getGptModels() { return ["gpt-6-sol", "gpt-6-astra"]; },
         async updateConfig() { return { ok: true, requiresRestart: true, changedFields: [], message: "saved" }; },
         getGroups: async () => [],
         setGroupRepliesEnabledForGroup: async () => ({ ok: true, changed: false }),
@@ -410,9 +411,13 @@ test("settings select and text editors create safe patches without touching a re
         assert.deepEqual(provider.options.map((option) => option.value), ["gpt", "deepseek"]);
         assert.equal(provider.index, 0);
     }
-    const text = openConfigModal("gpt.model", config);
-    assert.equal(text.type, "config-text");
-    assert.equal(textPatch("gpt.model", "gpt-next").value?.field, "gpt.model");
+    const model = openConfigModal("gpt.model", config, ["gpt-next"]);
+    assert.equal(model.type, "config-select");
+    if (model.type === "config-select") {
+        assert.deepEqual(model.options.map((option) => option.value), ["gpt-6-sol", "gpt-next"]);
+        assert.match(model.options[0]?.label ?? "", /当前配置不在上游列表中/);
+        assert.equal(model.index, 0);
+    }
     const judgeModel = openConfigModal("replyJudge.model", config);
     assert.equal(judgeModel.type, "config-text");
     if (judgeModel.type === "config-text") assert.equal(judgeModel.value, "Qwen/Qwen3.5-4B");

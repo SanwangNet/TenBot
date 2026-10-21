@@ -5,6 +5,7 @@ import type {
     ConversationSummary,
     GroupMemberSummary,
     GroupSummary,
+    GptModelsResponse,
     MemberBotState,
     EditorResource,
     EditorResourceId,
@@ -89,6 +90,7 @@ export const apiClient = {
     logout: () => sendJson<{ ok: true }>("/api/auth/logout", "POST"),
     getStatus: (signal?: AbortSignal) => getJson<RuntimeStatus>("/api/status", signal),
     getConfig: (signal?: AbortSignal) => getJson<PublicConfig>("/api/config", signal),
+    getGptModels: (signal?: AbortSignal) => getJson<GptModelsResponse>("/api/models/gpt", signal),
     getConversations: (signal?: AbortSignal) => getJson<ConversationSummary[]>("/api/conversations", signal),
     getConversation: (id: string, signal?: AbortSignal) =>
         getJson<ConversationItem[]>(`/api/conversations/${encodeURIComponent(id)}`, signal),

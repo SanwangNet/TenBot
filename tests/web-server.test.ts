@@ -95,11 +95,17 @@ function createFakeControl() {
     let logReplay: LogEntry[] = [];
     const patchCalls: PublicConfigPatch[] = [];
     const resourceCalls: string[] = [];
+    let gptModels = ["gpt-test", "gpt-new"];
+    let gptModelsFailure = false;
     let updateResult: ConfigUpdateResult = { ok: true, requiresRestart: false, changedFields: [], message: "saved" };
 
     const control = {
         getStatus: () => structuredClone(status),
         getConfig: () => structuredClone(publicConfig),
+        async getGptModels() {
+            if (gptModelsFailure) throw new Error("upstream error contained private-main-model-key");
+            return [...gptModels];
+        },
         async updateConfig(patch: PublicConfigPatch) {
             patchCalls.push(patch);
             return updateResult;
@@ -189,6 +195,8 @@ function createFakeControl() {
         get groups() { return structuredClone(groups); },
         resourceCalls,
         setUpdateResult(result: ConfigUpdateResult) { updateResult = result; },
+        setGptModels(models: string[]) { gptModels = [...models]; },
+        setGptModelsFailure(value: boolean) { gptModelsFailure = value; },
     };
 }
 
@@ -364,6 +372,24 @@ test("HTTP API reads through TenBotControl and keeps config secrets out of respo
         const methodNotAllowed = await fetch(`${baseUrl}/api/status`, { method: "POST" });
         assert.equal(methodNotAllowed.status, 405);
         assert.deepEqual(await methodNotAllowed.json(), { error: { message: "Method not allowed" } });
+    } finally {
+        await server.close();
+    }
+});
+
+test("GET /api/models/gpt returns only model IDs and sanitizes upstream failures", async () => {
+    const fake = createFakeControl();
+    const { server, baseUrl } = await startServer(fake.control);
+    try {
+        const response = await fetch(`${baseUrl}/api/models/gpt`);
+        assert.equal(response.status, 200);
+        assert.deepEqual(await response.json(), { models: ["gpt-test", "gpt-new"] });
+        fake.setGptModelsFailure(true);
+        const failed = await fetch(`${baseUrl}/api/models/gpt`);
+        assert.equal(failed.status, 502);
+        const body = await failed.text();
+        assert.match(body, /无法读取 GPT 上游模型列表/);
+        assert.doesNotMatch(body, /private-main-model-key|upstream error/);
     } finally {
         await server.close();
     }
@@ -691,6 +717,7 @@ test("anonymous requests are locked out before API work or SSE subscription whil
     try {
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/status`)).status, 401);
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/config`)).status, 401);
+        assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/models/gpt`)).status, 401);
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/groups`)).status, 401);
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/members/marked-bots`)).status, 401);
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/groups/group-openid-a/replies`, {

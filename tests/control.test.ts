@@ -37,6 +37,7 @@ test("Control exposes only serializable Runtime status and supports subscription
     const control = createTenBotControl({
         getStatus: () => current,
         getConfig: () => config,
+        async getGptModels() { return ["gpt-6-sol", "gpt-6-astra"]; },
         async updateConfig() { return { ok: true, requiresRestart: true, changedFields: ["aiProvider"], message: "saved" }; },
         async getGroups() { return [{ groupOpenid: "group-secret", repliesEnabled: true, firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2, memberCount: 1 }]; },
         async setGroupRepliesEnabledForGroup() { return { ok: true, changed: false }; },
@@ -79,6 +80,7 @@ test("Control exposes only serializable Runtime status and supports subscription
     assert.deepEqual(events, ["deepseek"]);
     const groups = await control.getGroups();
     assert.equal(groups[0]?.repliesEnabled, true);
+    assert.deepEqual(await control.getGptModels(), ["gpt-6-sol", "gpt-6-astra"]);
     const markedBots = await control.getMarkedBots();
     assert.equal(markedBots[0]?.memberOpenid, "member-secret", "authenticated member administration receives the full ID");
     await control.shutdown();

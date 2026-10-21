@@ -281,6 +281,7 @@ test("group member names and full IDs survive reopening SQLite and are available
                 prompt: { provider: "gpt", revision: 0, loadedAt: "now" }, shuttingDown: false,
             } satisfies RuntimeStatus),
             getConfig: () => ({} as PublicConfig),
+            async getGptModels() { return []; },
             async updateConfig() { return { ok: true, requiresRestart: false, changedFields: [], message: "" }; },
             async getGroups() { return await reopened.listGroups(); },
             async setGroupRepliesEnabledForGroup() { return { ok: true, changed: false }; },
