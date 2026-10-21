@@ -13,6 +13,10 @@ import {
 } from "./detection-evidence.js";
 import type { GroupMember, GroupSettings, KnownMember, MemberBotState, MemberRepository } from "./repository.js";
 import type { GroupReplyStateRepository } from "../runtime/group-reply-control.js";
+import type {
+    ImageGenerationArtifact, ImageGenerationRequestRecord, ImageGenerationRequestStatus, ImageGenerationSendStatus, ImageGenerationUsage,
+    ImageGenerationUsageQuery, ReserveImageGenerationRequest, ReserveImageGenerationResult,
+} from "./repository.js";
 
 export const DEFAULT_MEMBER_DATABASE_PATH = resolve(process.cwd(), "data", "bot.db");
 export const LEGACY_BOT_DETECTION_RESET_MIGRATION_VERSION = 7;
@@ -30,6 +34,8 @@ export class SqliteMemberRepository implements MemberRepository, GroupReplyState
             this.database.exec(readFileSync(resolve(process.cwd(), "migrations", "0005_member_bot_state.sql"), "utf8"));
             this.database.exec(readFileSync(resolve(process.cwd(), "migrations", "0006_member_bot_detection_events.sql"), "utf8"));
             this.database.exec(readFileSync(resolve(process.cwd(), "migrations", "0008_member_bot_detection_observations.sql"), "utf8"));
+            this.database.exec(readFileSync(resolve(process.cwd(), "migrations", "0009_image_generation_requests.sql"), "utf8"));
+            this.database.exec(readFileSync(resolve(process.cwd(), "migrations", "0010_image_generation_artifacts.sql"), "utf8"));
             this.applyLegacyBotDetectionResetMigration();
         } catch (error) {
             this.database.close();
@@ -99,6 +105,104 @@ export class SqliteMemberRepository implements MemberRepository, GroupReplyState
             `SELECT ${MEMBER_COLUMNS} FROM group_members ORDER BY last_seen_at DESC, member_openid, group_openid`,
         ).all() as unknown as MemberRow[];
         return rows.map(rowToMember);
+    }
+
+    async reserveImageGenerationRequest(request: ReserveImageGenerationRequest): Promise<ReserveImageGenerationResult> {
+        const inserted = this.database.prepare(`
+            INSERT INTO image_generation_requests
+                (request_key, group_openid, member_openid, message_id, day_key, status, model, size, quality,
+                    output_format, requested_at)
+            SELECT ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM image_generation_requests WHERE request_key = ?)
+                AND NOT EXISTS (SELECT 1 FROM image_generation_requests
+                    WHERE group_openid = ? AND member_openid = ? AND status IN ('reserved', 'submitted', 'generated'))
+                AND (SELECT COUNT(*) FROM image_generation_requests WHERE status IN ('reserved', 'submitted')) < ?
+                AND (SELECT COUNT(*) FROM image_generation_requests
+                    WHERE group_openid = ? AND member_openid = ? AND day_key = ? AND submitted_at IS NOT NULL) < ?
+        `).run(request.requestKey, request.groupOpenid, request.memberOpenid, request.messageId, request.dayKey,
+            request.model, request.size, request.quality, request.outputFormat, request.requestedAt,
+            request.requestKey, request.groupOpenid, request.memberOpenid, request.globalConcurrency,
+            request.groupOpenid, request.memberOpenid, request.dayKey, request.dailyLimit);
+        if (Number(inserted.changes) > 0) return { kind: "reserved" };
+
+        if (this.database.prepare("SELECT 1 FROM image_generation_requests WHERE request_key = ?")
+            .get(request.requestKey)) return { kind: "duplicate" };
+        if (this.database.prepare(`SELECT 1 FROM image_generation_requests
+            WHERE group_openid = ? AND member_openid = ? AND status IN ('reserved', 'submitted', 'generated') LIMIT 1`)
+            .get(request.groupOpenid, request.memberOpenid)) return { kind: "member_busy" };
+        if (Number((this.database.prepare("SELECT COUNT(*) AS count FROM image_generation_requests WHERE status IN ('reserved', 'submitted')")
+            .get() as { count: number }).count) >= request.globalConcurrency) return { kind: "global_busy" };
+        return { kind: "daily_limit" };
+    }
+
+    async markImageGenerationSubmitted(requestKey: string, at: number): Promise<boolean> {
+        const result = this.database.prepare("UPDATE image_generation_requests SET status = 'submitted', submitted_at = ? WHERE request_key = ? AND status = 'reserved'")
+            .run(at, requestKey);
+        return Number(result.changes) > 0;
+    }
+
+    async recordImageGenerationResult(requestKey: string, status: "generated" | "failed" | "unknown", usage: ImageGenerationUsage | undefined, at: number, artifact?: ImageGenerationArtifact): Promise<void> {
+        this.database.exec("BEGIN IMMEDIATE");
+        try {
+            const updated = this.database.prepare(`UPDATE image_generation_requests SET status = ?, completed_at = ?, input_tokens = ?,
+                output_tokens = ?, total_tokens = ?, image_tokens = ?, text_tokens = ?
+                WHERE request_key = ? AND status IN ('reserved', 'submitted')`)
+                .run(status, at, usage?.inputTokens ?? null, usage?.outputTokens ?? null, usage?.totalTokens ?? null,
+                    usage?.imageTokens ?? null, usage?.textTokens ?? null, requestKey);
+            if (Number(updated.changes) > 0 && artifact) {
+                this.database.prepare(`INSERT INTO image_generation_artifacts
+                    (request_key, request_id, prompt, actual_size, actual_format, image_path, generation_status, send_status, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(request_key) DO UPDATE SET request_id = excluded.request_id, prompt = excluded.prompt,
+                        actual_size = excluded.actual_size, actual_format = excluded.actual_format, image_path = excluded.image_path,
+                        generation_status = excluded.generation_status, send_status = excluded.send_status, updated_at = excluded.updated_at`)
+                    .run(requestKey, artifact.requestId, artifact.prompt, artifact.actualSize, artifact.actualFormat,
+                        artifact.imagePath, artifact.generationStatus, artifact.sendStatus, artifact.updatedAt);
+            }
+            this.database.exec("COMMIT");
+        } catch (error) {
+            this.database.exec("ROLLBACK");
+            throw error;
+        }
+    }
+
+    async finishImageGenerationRequest(requestKey: string, status: "succeeded" | "send_failed", at: number, sendStatus?: ImageGenerationSendStatus): Promise<void> {
+        this.database.exec("BEGIN IMMEDIATE");
+        try {
+            this.database.prepare("UPDATE image_generation_requests SET status = ?, completed_at = ? WHERE request_key = ? AND status = 'generated'")
+                .run(status, at, requestKey);
+            if (sendStatus) {
+                this.database.prepare("UPDATE image_generation_artifacts SET send_status = ?, updated_at = ? WHERE request_key = ?")
+                    .run(sendStatus, at, requestKey);
+            }
+            this.database.exec("COMMIT");
+        } catch (error) {
+            this.database.exec("ROLLBACK");
+            throw error;
+        }
+    }
+
+    async recoverPendingImageGenerationRequests(at: number): Promise<void> {
+        this.database.prepare("UPDATE image_generation_requests SET status = 'failed', completed_at = ? WHERE status = 'reserved'").run(at);
+        this.database.prepare("UPDATE image_generation_requests SET status = 'unknown', completed_at = ? WHERE status = 'submitted'").run(at);
+        this.database.prepare("UPDATE image_generation_requests SET status = 'send_failed', completed_at = ? WHERE status = 'generated'").run(at);
+        this.database.prepare("UPDATE image_generation_artifacts SET send_status = 'unknown', updated_at = ? WHERE send_status = 'pending'").run(at);
+    }
+
+    async listImageGenerationUsage(query: ImageGenerationUsageQuery = {}): Promise<ImageGenerationRequestRecord[]> {
+        const clauses: string[] = [];
+        const values: Array<string | number> = [];
+        if (query.groupOpenid) { clauses.push("group_openid = ?"); values.push(query.groupOpenid); }
+        if (query.memberOpenid) { clauses.push("member_openid = ?"); values.push(query.memberOpenid); }
+        if (query.since !== undefined) { clauses.push("requested_at >= ?"); values.push(query.since); }
+        const limit = Math.max(1, Math.min(500, Math.trunc(query.limit ?? 100)));
+        const rows = this.database.prepare(`SELECT r.*, a.request_id AS artifact_request_id, a.prompt AS artifact_prompt,
+            a.actual_size AS artifact_actual_size, a.actual_format AS artifact_actual_format, a.image_path AS artifact_image_path,
+            a.generation_status AS artifact_generation_status, a.send_status AS artifact_send_status, a.updated_at AS artifact_updated_at
+            FROM image_generation_requests r LEFT JOIN image_generation_artifacts a ON a.request_key = r.request_key
+            ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY r.requested_at DESC LIMIT ?`)
+            .all(...values, limit) as unknown as ImageGenerationRequestRow[];
+        return rows.map(rowToImageGenerationRequest);
     }
 
     async getMemberBotState(groupOpenid: string, memberOpenid: string): Promise<MemberBotState> {
@@ -363,6 +467,58 @@ interface DetectionObservationRow {
     normalized_text: string;
     observed_at: number;
     expires_at: number;
+}
+
+interface ImageGenerationRequestRow {
+    request_key: string;
+    group_openid: string;
+    member_openid: string;
+    message_id: string;
+    day_key: string;
+    status: ImageGenerationRequestStatus;
+    model: string;
+    size: string;
+    quality: string;
+    output_format: string;
+    requested_at: number;
+    submitted_at: number | null;
+    completed_at: number | null;
+    input_tokens: number | null;
+    output_tokens: number | null;
+    total_tokens: number | null;
+    image_tokens: number | null;
+    text_tokens: number | null;
+    artifact_request_id: string | null;
+    artifact_prompt: string | null;
+    artifact_actual_size: string | null;
+    artifact_actual_format: string | null;
+    artifact_image_path: string | null;
+    artifact_generation_status: ImageGenerationRequestRecord["generationStatus"] | null;
+    artifact_send_status: ImageGenerationSendStatus | null;
+    artifact_updated_at: number | null;
+}
+
+function rowToImageGenerationRequest(row: ImageGenerationRequestRow): ImageGenerationRequestRecord {
+    return {
+        requestKey: row.request_key, groupOpenid: row.group_openid, memberOpenid: row.member_openid,
+        messageId: row.message_id, dayKey: row.day_key, status: row.status, model: row.model, size: row.size,
+        quality: row.quality, outputFormat: row.output_format, requestedAt: row.requested_at,
+        ...(row.submitted_at === null ? {} : { submittedAt: row.submitted_at }),
+        ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
+        ...(row.input_tokens === null ? {} : { inputTokens: row.input_tokens }),
+        ...(row.output_tokens === null ? {} : { outputTokens: row.output_tokens }),
+        ...(row.total_tokens === null ? {} : { totalTokens: row.total_tokens }),
+        ...(row.image_tokens === null ? {} : { imageTokens: row.image_tokens }),
+        ...(row.text_tokens === null ? {} : { textTokens: row.text_tokens }),
+        ...(row.artifact_request_id === null ? {} : { requestId: row.artifact_request_id }),
+        ...(row.artifact_prompt === null ? {} : { prompt: row.artifact_prompt }),
+        ...(row.artifact_actual_size === null ? {} : { actualSize: row.artifact_actual_size }),
+        ...(row.artifact_actual_format === null ? {} : { actualFormat: row.artifact_actual_format }),
+        ...(row.artifact_image_path === null ? {} : { imagePath: row.artifact_image_path }),
+        ...(row.artifact_generation_status === null ? {} : { generationStatus: row.artifact_generation_status }),
+        ...(row.artifact_send_status === null ? {} : { sendStatus: row.artifact_send_status }),
+        ...(row.artifact_updated_at === null ? {} : { artifactUpdatedAt: row.artifact_updated_at }),
+    };
 }
 
 interface GroupMemberRow extends MemberRow, MemberBotStateRow {}

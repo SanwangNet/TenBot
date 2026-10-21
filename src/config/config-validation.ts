@@ -1,7 +1,17 @@
 import type { ModelVerbosity, ReasoningEffort } from "../ai/model-plugin.js";
-import type { AppConfig, ModelProviderId, PublicConfig, PublicConfigPatch } from "./config-types.js";
+import type {
+    AppConfig,
+    ImageGenerationConfig,
+    ImageGenerationQuality,
+    ImageGenerationSize,
+    ImageOutputFormat,
+    ModelProviderId,
+    PublicConfig,
+    PublicConfigPatch,
+} from "./config-types.js";
 import type { FrontMode } from "../front/wake-level.js";
 import { validateBotTimeZone } from "../ai/time-context.js";
+import { getImageModelCapabilities, imageSizeSupportedByCapabilities, parseImageDimensions } from "../ai/image-capabilities.js";
 import { isIP } from "node:net";
 
 export const DEFAULT_GPT_MODEL = "gpt-6-sol";
@@ -15,6 +25,14 @@ export const DEFAULT_REPLY_JUDGE_TIMEOUT_MS = 5_000;
 export const DEFAULT_REPLY_JUDGE_IPO_FALLBACK_TO_MAIN = true;
 export const DEFAULT_REPLY_JUDGE_TURN_WAIT_MS = 20_000;
 export const DEFAULT_MEME_SEND_MAX_EDGE = 160;
+export const DEFAULT_IMAGE_GENERATION_CONFIG: ImageGenerationConfig = {
+    enabled: false,
+    provider: "gpt",
+    model: "",
+    quality: "low",
+    size: "1024x1024",
+    outputFormat: "png",
+};
 export const DEFAULT_FRONT_MODE: FrontMode = "legacy";
 export const DEFAULT_WEB_HOST = "127.0.0.1";
 export const DEFAULT_WEB_PORT = 3000;
@@ -27,6 +45,8 @@ const MAX_MEME_SEND_MAX_EDGE = 1_024;
 
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh"];
 const VERBOSITIES: readonly ModelVerbosity[] = ["low", "medium", "high"];
+const IMAGE_QUALITIES: readonly ImageGenerationQuality[] = ["low", "medium", "high", "xhigh", "max", "auto", "standard", "hd"];
+const IMAGE_OUTPUT_FORMATS: readonly ImageOutputFormat[] = ["png", "jpeg", "webp"];
 
 export function parseBotAdminIds(value: string | undefined): readonly string[] {
     const normalized = (value ?? "").replace(/&#x20;/gi, " ");
@@ -198,6 +218,14 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
                 reasoningEffort: parseReasoningEffort(env.DEEPSEEK_REASONING_EFFORT, DEFAULT_DEEPSEEK_REASONING_EFFORT),
             },
         },
+        image: {
+            enabled: parseImageGenerationEnabled(env.IMAGE_GENERATION_ENABLED),
+            provider: parseImageGenerationProvider(env.IMAGE_GENERATION_PROVIDER),
+            model: parseModelName(env.IMAGE_GENERATION_MODEL, DEFAULT_IMAGE_GENERATION_CONFIG.model),
+            quality: parseImageGenerationQuality(env.IMAGE_GENERATION_QUALITY),
+            size: parseImageGenerationSize(env.IMAGE_GENERATION_SIZE),
+            outputFormat: parseImageOutputFormat(env.IMAGE_GENERATION_OUTPUT_FORMAT),
+        },
         replyJudge,
         web: { host: parseWebHost(env.WEB_HOST), port: parseWebPort(env.WEB_PORT) },
         botLoopGuard: {
@@ -209,6 +237,7 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 export function toPublicConfig(config: AppConfig): PublicConfig {
     return {
         aiProvider: config.ai.provider,
+        image: { ...config.image },
         memeSendMaxEdge: config.memeSendMaxEdge,
         replyJudge: {
             model: config.replyJudge.model ?? "",
@@ -244,6 +273,9 @@ export function validatePublicConfigPatch(patch: PublicConfigPatch): string {
                 throw new Error("表情包发送最大边长必须选择原始尺寸或 32 到 1024 之间的整数");
             }
             return "MEME_SEND_MAX_EDGE";
+        case "image":
+            validateImageGenerationConfig(patch.value);
+            return "IMAGE_GENERATION_ENABLED";
         case "gpt.model":
         case "deepseek.model":
         case "replyJudge.model": {
@@ -328,6 +360,8 @@ export function parsePublicConfigPatch(value: unknown): PublicConfigPatch | unde
             return typeof patchValue === "boolean" ? { field, value: patchValue } : undefined;
         case "memeSendMaxEdge":
             return patchValue === null || typeof patchValue === "number" ? { field, value: patchValue } : undefined;
+        case "image":
+            return parseImageGenerationConfigPatch(patchValue);
         case "replyJudge.turnWaitMs":
             return typeof patchValue === "number" ? { field, value: patchValue } : undefined;
         default:
@@ -336,6 +370,108 @@ export function parsePublicConfigPatch(value: unknown): PublicConfigPatch | unde
 }
 
 export function patchValueAsString(patch: PublicConfigPatch): string {
+    if (patch.field === "image") throw new Error("Image configuration is stored as multiple environment values");
     if (patch.field === "memeSendMaxEdge" && patch.value === null) return "original";
     return String(patch.value).trim();
+}
+
+/** Converts a validated public patch into the managed .env values it writes. */
+export function publicConfigPatchEnvValues(
+    patch: PublicConfigPatch,
+    validateImageConfig: (config: ImageGenerationConfig) => void = validateImageGenerationConfig,
+): Record<string, string> {
+    if (patch.field === "image") {
+        validateImageConfig(patch.value);
+        return {
+            IMAGE_GENERATION_ENABLED: String(patch.value.enabled),
+            IMAGE_GENERATION_PROVIDER: patch.value.provider,
+            IMAGE_GENERATION_MODEL: patch.value.model,
+            IMAGE_GENERATION_QUALITY: patch.value.quality,
+            IMAGE_GENERATION_SIZE: patch.value.size,
+            IMAGE_GENERATION_OUTPUT_FORMAT: patch.value.outputFormat,
+        };
+    }
+    const key = validatePublicConfigPatch(patch);
+    return { [key]: patchValueAsString(patch) };
+}
+
+export function validateImageGenerationConfigShape(config: ImageGenerationConfig): void {
+    if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("AI 绘图配置无效");
+    if (typeof config.enabled !== "boolean") throw new Error("AI 绘图开关必须是布尔值");
+    if (config.provider !== "gpt") throw new Error("AI 绘图目前只支持复用 GPT 上游");
+    if (typeof config.model !== "string" || config.model.length > 128 || /[\u0000-\u001f\u007f]/.test(config.model)) {
+        throw new Error("绘图模型 ID 不能包含控制字符且长度不能超过 128 个字符");
+    }
+    if (config.enabled && !config.model.trim()) throw new Error("启用 AI 绘图前必须选择绘图模型");
+    if (!IMAGE_QUALITIES.includes(config.quality)) throw new Error("AI 绘图质量配置无效");
+    if (typeof config.size !== "string" || config.size.length > 11 ||
+        (config.size !== "auto" && !parseImageDimensions(config.size))) {
+        throw new Error("AI 绘图尺寸配置无效");
+    }
+    if (!IMAGE_OUTPUT_FORMATS.includes(config.outputFormat)) throw new Error("AI 绘图格式配置无效");
+}
+
+export function validateImageGenerationConfig(
+    config: ImageGenerationConfig,
+    capabilities?: ReturnType<typeof getImageModelCapabilities>,
+): void {
+    validateImageGenerationConfigShape(config);
+    if (!config.enabled) return;
+
+    const profile = capabilities ?? getImageModelCapabilities(config.model);
+    if (!profile.quality.includes(config.quality)) {
+        throw new Error(`模型 ${config.model} 的参数档案不支持质量 ${config.quality}`);
+    }
+    if (!imageSizeSupportedByCapabilities(config.size, profile)) {
+        throw new Error(`模型 ${config.model} 的参数档案不支持尺寸 ${config.size}`);
+    }
+    if (!profile.outputFormats.includes(config.outputFormat)) {
+        throw new Error(`模型 ${config.model} 的参数档案不支持输出格式 ${config.outputFormat}`);
+    }
+}
+
+function parseImageGenerationEnabled(value: string | undefined): boolean {
+    const normalized = value?.trim().toLowerCase();
+    if (!normalized) return DEFAULT_IMAGE_GENERATION_CONFIG.enabled;
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+    throw new Error("IMAGE_GENERATION_ENABLED must be true or false");
+}
+
+function parseImageGenerationProvider(value: string | undefined): "gpt" {
+    const normalized = value?.trim().toLowerCase();
+    if (!normalized || normalized === "gpt") return "gpt";
+    throw new Error("IMAGE_GENERATION_PROVIDER currently supports only gpt");
+}
+
+function parseImageGenerationQuality(value: string | undefined): ImageGenerationQuality {
+    const normalized = value?.trim().toLowerCase();
+    return IMAGE_QUALITIES.includes(normalized as ImageGenerationQuality)
+        ? normalized as ImageGenerationQuality
+        : DEFAULT_IMAGE_GENERATION_CONFIG.quality;
+}
+
+function parseImageGenerationSize(value: string | undefined): ImageGenerationSize {
+    const normalized = value?.trim().toLowerCase();
+    return normalized === "auto" || (normalized && parseImageDimensions(normalized))
+        ? normalized as ImageGenerationSize
+        : DEFAULT_IMAGE_GENERATION_CONFIG.size;
+}
+
+function parseImageOutputFormat(value: string | undefined): ImageOutputFormat {
+    const normalized = value?.trim().toLowerCase();
+    return IMAGE_OUTPUT_FORMATS.includes(normalized as ImageOutputFormat)
+        ? normalized as ImageOutputFormat
+        : DEFAULT_IMAGE_GENERATION_CONFIG.outputFormat;
+}
+
+function parseImageGenerationConfigPatch(value: unknown): PublicConfigPatch | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    const fields = ["enabled", "provider", "model", "quality", "size", "outputFormat"];
+    if (Object.keys(record).length !== fields.length || fields.some((field) => !Object.hasOwn(record, field))) return undefined;
+    if (typeof record.enabled !== "boolean" || typeof record.provider !== "string" ||
+        typeof record.model !== "string" || typeof record.quality !== "string" ||
+        typeof record.size !== "string" || typeof record.outputFormat !== "string") return undefined;
+    return { field: "image", value: record as unknown as ImageGenerationConfig };
 }

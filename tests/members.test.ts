@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import type { QQBot } from "@tencent-connect/qqbot-nodejs";
 import type { NormalizedQqMessage } from "../src/qq/message/normalize-message.js";
+import { getConservativeImageModelCapabilities } from "../src/ai/image-capabilities.js";
 
 import { routeCommand } from "../src/commands/router.js";
 import { D1MemberRepository, type D1MemberDatabase } from "../src/members/d1-repository.js";
@@ -281,7 +282,7 @@ test("group member names and full IDs survive reopening SQLite and are available
                 prompt: { provider: "gpt", revision: 0, loadedAt: "now" }, shuttingDown: false,
             } satisfies RuntimeStatus),
             getConfig: () => ({} as PublicConfig),
-            async getGptModels() { return []; },
+            async getGptModels() { return { models: [], entries: [], imageCandidates: [], defaultImageCapabilities: getConservativeImageModelCapabilities() }; },
             async updateConfig() { return { ok: true, requiresRestart: false, changedFields: [], message: "" }; },
             async getGroups() { return await reopened.listGroups(); },
             async setGroupRepliesEnabledForGroup() { return { ok: true, changed: false }; },

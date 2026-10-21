@@ -1,3 +1,5 @@
+import type { GptModelSummary } from "../../../src/ai/model-classification.js";
+
 export type QqConnectionState = "connecting" | "connected" | "disconnected" | "error";
 
 export interface AuthMeResponse {
@@ -40,10 +42,32 @@ export interface RuntimeStatus {
 
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
 export type ModelVerbosity = "low" | "medium" | "high";
+export type ImageGenerationQuality = "low" | "medium" | "high" | "xhigh" | "max" | "auto" | "standard" | "hd";
+export type ImageGenerationSize = "256x256" | "512x512" | "1024x1024" | "1536x1024" | "1024x1536" | "1792x1024" | "1024x1792" | "2048x2048" | "2048x1152" | "auto" | (string & {});
+export type ImageOutputFormat = "png" | "jpeg" | "webp";
+
+export interface ImageGenerationConfig {
+    enabled: boolean;
+    provider: "gpt";
+    model: string;
+    quality: ImageGenerationQuality;
+    size: ImageGenerationSize;
+    outputFormat: ImageOutputFormat;
+}
+
+export interface ImageModelCapabilities {
+    quality: readonly ImageGenerationQuality[];
+    sizes: readonly ImageGenerationSize[];
+    outputFormats: readonly ImageOutputFormat[];
+    supportsAutoSize: boolean;
+    supportsCustomSize: boolean;
+    source: "upstream" | "openai-sdk-profile" | "conservative";
+}
 export type LogLevel = "all" | "debug" | "info" | "warn" | "error";
 
 export interface PublicConfig {
     aiProvider: "gpt" | "deepseek";
+    image: ImageGenerationConfig;
     memeSendMaxEdge: number | null;
     replyJudge: { model: string; timeoutMs: number; fallbackToMainOnInvalidOutput: boolean; turnWaitMs: number; provider?: string };
     gpt: { model: string; reasoningEffort: ReasoningEffort; verbosity: ModelVerbosity; configured: boolean };
@@ -53,6 +77,7 @@ export interface PublicConfig {
 
 export type PublicConfigPatch =
     | { field: "aiProvider"; value: "gpt" | "deepseek" }
+    | { field: "image"; value: ImageGenerationConfig }
     | { field: "memeSendMaxEdge"; value: number | null }
     | { field: "gpt.model"; value: string }
     | { field: "gpt.reasoningEffort"; value: ReasoningEffort }
@@ -76,6 +101,13 @@ export interface ConfigPatchResponse {
 
 export interface GptModelsResponse {
     models: string[];
+    entries: GptModelSummary[];
+    imageCandidates: Array<{
+        id: string;
+        evidence: "upstream" | "name";
+        capabilities: ImageModelCapabilities;
+    }>;
+    defaultImageCapabilities: ImageModelCapabilities;
 }
 
 export interface ConversationSummary {

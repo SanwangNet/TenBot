@@ -1,5 +1,6 @@
 import type { PromptProvider } from "../ai/prompt-store.js";
 import type { ConfigUpdateResult, PublicConfig, PublicConfigPatch } from "../config/config-types.js";
+import type { GptModelCatalog } from "../ai/plugins/gpt/model-catalog.js";
 import type { LogEntry, LogListener } from "../shared/logger.js";
 import type { RuntimeEvent, RuntimeEventListener } from "./runtime-event.js";
 import type { RuntimeStatus } from "./runtime-status.js";
@@ -19,7 +20,7 @@ export type StatusListener = (status: RuntimeStatus) => void;
 export interface TenBotControl {
     getStatus(): RuntimeStatus;
     getConfig(): PublicConfig;
-    getGptModels(): Promise<string[]>;
+    getGptModels(): Promise<GptModelCatalog>;
     updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
     getGroups(): Promise<GroupSettings[]>;
     setGroupRepliesEnabledForGroup(groupOpenid: string, enabled: boolean): Promise<GroupReplyChangeResult>;
@@ -44,7 +45,7 @@ export interface TenBotControl {
 export interface TenBotControlOperations {
     getStatus(): RuntimeStatus;
     getConfig(): PublicConfig;
-    getGptModels(): Promise<string[]>;
+    getGptModels(): Promise<GptModelCatalog>;
     updateConfig(patch: PublicConfigPatch): Promise<ConfigUpdateResult>;
     getGroups(): Promise<GroupSettings[]>;
     setGroupRepliesEnabledForGroup(groupOpenid: string, enabled: boolean): Promise<GroupReplyChangeResult>;
@@ -75,7 +76,7 @@ export function createTenBotControl(operations: TenBotControlOperations): TenBot
     return {
         getStatus,
         getConfig: () => structuredClone(operations.getConfig()),
-        getGptModels: async () => [...await operations.getGptModels()],
+        getGptModels: async () => structuredClone(await operations.getGptModels()),
         updateConfig: (patch) => operations.updateConfig(patch),
         getGroups: async () => structuredClone(await operations.getGroups()),
         setGroupRepliesEnabledForGroup: (groupOpenid, enabled) => operations.setGroupRepliesEnabledForGroup(groupOpenid, enabled),

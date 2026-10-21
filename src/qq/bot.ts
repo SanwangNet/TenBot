@@ -8,6 +8,7 @@ import type { ReplyJudge } from "../front/reply-judge.js";
 import type { FrontMode } from "../front/wake-level.js";
 import type { GroupReplyControl } from "../runtime/group-reply-control.js";
 import type { BotDetector } from "../members/bot-detector.js";
+import type { ImageGenerationService } from "../ai/image-generation-service.js";
 
 export type QqConnectionState = "connecting" | "connected" | "disconnected" | "error";
 const messageHandlerCleanup = new WeakMap<QQBot, () => void>();
@@ -32,6 +33,7 @@ export function createQqBot(
     getMemeSendMaxEdge?: () => number | null,
     getBotTimeZone?: () => string,
     botDetector?: BotDetector,
+    imageGenerationService?: ImageGenerationService,
 ): QQBot {
     const appId = connectionConfig ? connectionConfig.appId : process.env.QQBOT_APP_ID;
     const appSecret = connectionConfig ? connectionConfig.appSecret : process.env.QQBOT_APP_SECRET;
@@ -69,7 +71,7 @@ export function createQqBot(
 
     messageHandlerCleanup.set(bot, registerMessageHandler(bot, undefined, observeMemberUpdate, observeConversationMessage,
         replyJudge, { getMemeSendMaxEdge, getBotTimeZone }, getFrontMode, getReplyJudgeIpoFallbackToMain, getReplyJudgeTurnWaitMs,
-        undefined, groupReplyControl, getBotAdminIds, botDetector));
+        undefined, groupReplyControl, getBotAdminIds, botDetector, imageGenerationService));
     registerInteractionHandler(bot);
 
     return bot;

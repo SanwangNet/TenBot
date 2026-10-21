@@ -27,6 +27,80 @@ export interface GroupSettingsRepository {
     listGroups(): Promise<GroupSettings[]>;
 }
 
+export type ImageGenerationRequestStatus =
+    | "reserved" | "submitted" | "generated" | "succeeded" | "send_failed" | "failed" | "unknown";
+export type ImageGenerationStatus = "succeeded" | "size_mismatch";
+export type ImageGenerationSendStatus = "pending" | "quoted" | "unquoted" | "failed" | "unknown" | "not_attempted";
+
+export interface ImageGenerationUsage {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    imageTokens?: number;
+    textTokens?: number;
+}
+
+export interface ImageGenerationRequestRecord extends ImageGenerationUsage {
+    requestKey: string;
+    groupOpenid: string;
+    memberOpenid: string;
+    messageId: string;
+    dayKey: string;
+    status: ImageGenerationRequestStatus;
+    model: string;
+    size: string;
+    quality: string;
+    outputFormat: string;
+    requestedAt: number;
+    submittedAt?: number;
+    completedAt?: number;
+    requestId?: string;
+    prompt?: string;
+    actualSize?: string;
+    actualFormat?: string;
+    imagePath?: string;
+    generationStatus?: ImageGenerationStatus;
+    sendStatus?: ImageGenerationSendStatus;
+    artifactUpdatedAt?: number;
+}
+
+export interface ImageGenerationArtifact {
+    requestId: string;
+    prompt: string;
+    actualSize: string;
+    actualFormat: string;
+    imagePath: string;
+    generationStatus: ImageGenerationStatus;
+    sendStatus: ImageGenerationSendStatus;
+    updatedAt: number;
+}
+
+export interface ReserveImageGenerationRequest {
+    requestKey: string;
+    groupOpenid: string;
+    memberOpenid: string;
+    messageId: string;
+    dayKey: string;
+    model: string;
+    size: string;
+    quality: string;
+    outputFormat: string;
+    requestedAt: number;
+    dailyLimit: number;
+    globalConcurrency: number;
+}
+
+export type ReserveImageGenerationResult =
+    | { kind: "reserved" }
+    | { kind: "duplicate" | "member_busy" | "global_busy" | "daily_limit" };
+
+export interface ImageGenerationUsageQuery {
+    groupOpenid?: string;
+    memberOpenid?: string;
+    since?: number;
+    limit?: number;
+}
+
 export interface MemberBotState {
     groupOpenid: string;
     memberOpenid: string;
@@ -73,4 +147,10 @@ export interface MemberRepository extends GroupSettingsRepository {
     findByUsername(groupOpenid: string, username: string): Promise<KnownMember[]>;
     listByGroup(groupOpenid: string): Promise<KnownMember[]>;
     listAll(): Promise<KnownMember[]>;
+    reserveImageGenerationRequest(request: ReserveImageGenerationRequest): Promise<ReserveImageGenerationResult>;
+    markImageGenerationSubmitted(requestKey: string, at: number): Promise<boolean>;
+    recordImageGenerationResult(requestKey: string, status: "generated" | "failed" | "unknown", usage: ImageGenerationUsage | undefined, at: number, artifact?: ImageGenerationArtifact): Promise<void>;
+    finishImageGenerationRequest(requestKey: string, status: "succeeded" | "send_failed", at: number, sendStatus?: ImageGenerationSendStatus): Promise<void>;
+    recoverPendingImageGenerationRequests(at: number): Promise<void>;
+    listImageGenerationUsage(query?: ImageGenerationUsageQuery): Promise<ImageGenerationRequestRecord[]>;
 }

@@ -4,7 +4,7 @@ import type { TuiPage } from "./types.js";
 
 export type TuiFocus = "sidebar" | "main";
 
-export type SettingsField = Exclude<PublicConfigPatch["field"], "memeSendMaxEdge">;
+export type SettingsField = Exclude<PublicConfigPatch["field"], "memeSendMaxEdge" | "image">;
 export const SETTINGS_FIELDS: readonly SettingsField[] = [
     "aiProvider",
     "gpt.model",

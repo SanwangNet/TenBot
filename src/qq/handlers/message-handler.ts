@@ -43,6 +43,7 @@ import { GroupReplyControl, isConfiguredBotAdmin } from "../../runtime/group-rep
 import { toOpaqueMemberDisplayId } from "../../members/opaque-member-id.js";
 import { createQqSendError } from "../reply/error-adapter.js";
 import type { MemberBotState } from "../../members/repository.js";
+import type { ImageGenerationService } from "../../ai/image-generation-service.js";
 
 const SEARCH_NOTICES = [
     "\u7a0d\u7b49\uff0c\u6211\u67e5\u4e00\u4e0b\u3002",
@@ -120,6 +121,7 @@ export function registerMessageHandler(
     groupReplyControl?: GroupReplyControl,
     getBotAdminIds: () => readonly string[] = () => [],
     botDetector?: BotDetector,
+    imageGenerationService?: ImageGenerationService,
 ): () => void {
     const judgeAdmissionStates = new Map<string, JudgeAdmissionState>();
     const groupRepeater = new GroupRepeater();
@@ -324,7 +326,7 @@ export function registerMessageHandler(
             eventType: normalized.eventType,
             isGroupEvent,
             isAtBot: commandTrigger.isAtBot,
-            command: parsedCommand,
+            command: parsedCommand ? { name: parsedCommand.name, argsLength: parsedCommand.args.length } : null,
         });
         const adminCommand = isGroupEvent && commandTrigger.isAtBot && parsedCommand?.args === ""
             ? parsedCommand.name === "停用" ? false : parsedCommand.name === "启用" ? true : undefined
@@ -348,6 +350,9 @@ export function registerMessageHandler(
             isOwner: (memberOpenid) => isConfiguredBotAdmin(memberOpenid, getBotAdminIds()),
             memeCandidates: memeCandidateTracker,
             memeLibrary,
+            imageGenerationService,
+            isGroupRepliesEnabled: (groupOpenid) => Boolean(groupReplyControl?.getGroupRepliesEnabled() !== false &&
+                groupReplyControl?.getGroupSettingEnabled(groupOpenid) !== false),
         })) return;
 
         const rawText = typeof normalized.source.content === "string" ? normalized.source.content : "";

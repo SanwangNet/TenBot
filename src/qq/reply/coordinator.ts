@@ -897,6 +897,7 @@ async function sendResult(cycle: Cycle, request: ReplyRequest, attempt: Attempt,
         if ((sent > 0 || memeSent) && request.isGroup && cycles.get(cycle.key) === cycle) markConversationActive(request.message);
     }
 }
+
 function finishCycle(cycle: Cycle): void {
     if (cycle.finalizing) return;
     cycle.finalizing = true;

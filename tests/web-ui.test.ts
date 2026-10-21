@@ -15,6 +15,7 @@ import {
     parseTimeoutInput,
     parseTurnWaitSecondsInput,
     settingsFormReducer,
+    settingsFieldError,
     settingsPatches,
 } from "../web/src/settings/settings-state.js";
 import { filterLogs, initialLogViewState, isLogLevelFilter, loadLogLevelFilter, logViewReducer, LOG_LEVEL_FILTER_STORAGE_KEY, MAX_WEB_LOG_ENTRIES, saveLogLevelFilter } from "../web/src/components/log-state.js";
@@ -26,6 +27,7 @@ import { addNotice, isProminentProviderError } from "../web/src/ui/feedback-stat
 import { createEditorDraft, editDraft, isEditorDirty } from "../web/src/editor/editor-state.js";
 import { nextPage } from "../web/src/navigation.js";
 import { AuthGateView, authGateReducer, initialAuthGateState, type AuthGateState } from "../web/src/auth/auth-view.js";
+import { classifyGptModel, getGptModelPickerEntries } from "../src/ai/model-classification.js";
 
 const status: RuntimeStatus = {
     qq: "connected",
@@ -47,6 +49,7 @@ const status: RuntimeStatus = {
 
 const config: PublicConfig = {
     aiProvider: "gpt",
+    image: { enabled: false, provider: "gpt", model: "", quality: "low", size: "1024x1024", outputFormat: "png" },
     memeSendMaxEdge: 160,
     replyJudge: { model: "judge", timeoutMs: 5000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
     gpt: { model: "gpt-test", reasoningEffort: "high", verbosity: "high", configured: true },
@@ -59,6 +62,25 @@ test("API JSON response parser returns successful payloads and reports safe HTTP
     assert.throws(() => parseJsonResponse(404, "{\"error\":{\"message\":\"Not found\"}}"), (error: unknown) =>
         error instanceof ApiError && error.status === 404 && error.message === "Not found");
     assert.throws(() => parseJsonResponse(200, "not json"), /无效 JSON/);
+});
+
+test("GPT and image pickers filter by category while retaining a saved filtered model", () => {
+    const catalog = [
+        classifyGptModel("gpt-6"),
+        classifyGptModel("gpt-image-2"),
+        classifyGptModel("gpt-context-compaction"),
+        classifyGptModel("vendor-new-model"),
+    ];
+    const chatPicker = getGptModelPickerEntries(catalog, "chat", "gpt-context-compaction");
+    assert.deepEqual(chatPicker.recommended.map(({ id }) => id), ["gpt-6"]);
+    assert.equal(chatPicker.preservedCurrent?.id, "gpt-context-compaction");
+    assert.equal(chatPicker.currentIsListed, true);
+
+    const imagePicker = getGptModelPickerEntries(catalog, "image", "gpt-6");
+    assert.deepEqual(imagePicker.recommended.map(({ id }) => id), ["gpt-image-2"]);
+    assert.equal(imagePicker.preservedCurrent?.id, "gpt-6");
+    assert.equal(getGptModelPickerEntries(catalog, "chat", "vendor-custom-model").currentIsListed, false);
+    assert.deepEqual(getGptModelPickerEntries(catalog, "chat", "gpt-context-compaction", true).recommended.map(({ id }) => id), catalog.map(({ id }) => id));
 });
 
 test("auth gate renders the GitHub login screen when unauthenticated and the existing app when authenticated", () => {
@@ -250,6 +272,37 @@ test("settings preset patches only selected provider while retaining hidden draf
     form = settingsFormReducer(form, { type: "edit", field: "aiProvider", value: "deepseek" })!;
     assert.deepEqual(visibleDirtySettingsFields(form), ["aiProvider", "deepseek.model"]);
     assert.deepEqual(settingsPatches(form), [{ field: "aiProvider", value: "deepseek" }, { field: "deepseek.model", value: "deepseek-custom" }]);
+});
+
+test("AI image settings edit independently and save all parameters as one validated patch", () => {
+    let form = createSettingsForm(config);
+    form = settingsFormReducer(form, { type: "edit", field: "image.enabled", value: true })!;
+    form = settingsFormReducer(form, { type: "edit", field: "image.model", value: "gpt-image-2" })!;
+    form = settingsFormReducer(form, { type: "edit", field: "image.quality", value: "high" })!;
+    form = settingsFormReducer(form, { type: "edit", field: "image.size", value: "1536x1024" })!;
+    form = settingsFormReducer(form, { type: "edit", field: "image.outputFormat", value: "webp" })!;
+
+    assert.deepEqual(settingsPatches(form), [{
+        field: "image",
+        value: { enabled: true, provider: "gpt", model: "gpt-image-2", quality: "high", size: "1536x1024", outputFormat: "webp" },
+    }]);
+    assert.equal(form.values["gpt.model"], config.gpt.model, "image model edits never change the GPT conversation model");
+
+    const profile = {
+        quality: ["low", "medium", "high"] as const,
+        sizes: ["1024x1024", "1536x1024", "1024x1536"] as const,
+        outputFormats: ["png", "jpeg", "webp"] as const,
+        supportsAutoSize: false,
+        supportsCustomSize: false,
+        source: "openai-sdk-profile" as const,
+    };
+    assert.equal(settingsFieldError("image.quality", form.values, profile), undefined);
+    assert.match(settingsFieldError("image.quality", { ...form.values, "image.quality": "xhigh" }, profile) ?? "", /不支持质量/);
+
+    const savedConfig: PublicConfig = { ...config, image: { ...config.image, enabled: true, model: "gpt-image-2", quality: "high", size: "1536x1024", outputFormat: "webp" } };
+    form = settingsFormReducer(form, { type: "saved", config: savedConfig, field: "image" })!;
+    assert.equal(form.values["image.model"], "gpt-image-2");
+    assert.deepEqual(dirtySettingsFields(form), []);
 });
 
 test("editor dirty state and navigation guard preserve unsaved content", () => {

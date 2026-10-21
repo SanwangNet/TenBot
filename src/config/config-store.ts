@@ -1,13 +1,14 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { AppConfig, ConfigStore, ConfigUpdateResult, PublicConfig, PublicConfigPatch } from "./config-types.js";
-import { loadAppConfig, patchValueAsString, toPublicConfig, validatePublicConfigPatch } from "./config-validation.js";
+import type { AppConfig, ConfigStore, ConfigUpdateResult, ImageGenerationConfig, PublicConfig, PublicConfigPatch } from "./config-types.js";
+import { loadAppConfig, publicConfigPatchEnvValues, toPublicConfig, validateImageGenerationConfig } from "./config-validation.js";
 import { isMissingFile, parseEnvDocument, patchEnvDocument, readEnvDocument, writeFileAtomically } from "./env-document.js";
 
 export interface CreateConfigStoreOptions {
     envPath?: string;
     environment?: NodeJS.ProcessEnv;
     writeFileAtomically?: (filePath: string, content: string) => Promise<void>;
+    validateImageConfig?: (config: ImageGenerationConfig, current: AppConfig) => void;
 }
 
 function readEnvSync(filePath: string): string {
@@ -61,9 +62,14 @@ export function createConfigStore(options: CreateConfigStoreOptions = {}): Confi
     };
 
     const update = async (patch: PublicConfigPatch): Promise<ConfigUpdateResult> => {
-        let key: string;
+        let envValues: Record<string, string>;
         try {
-            key = validatePublicConfigPatch(patch);
+            envValues = patch.field === "image"
+                ? publicConfigPatchEnvValues(patch, (config) => {
+                    if (options.validateImageConfig) options.validateImageConfig(config, getAppConfig());
+                    else validateImageGenerationConfig(config);
+                })
+                : publicConfigPatchEnvValues(patch);
         } catch (error) {
             return {
                 ok: false,
@@ -76,7 +82,7 @@ export function createConfigStore(options: CreateConfigStoreOptions = {}): Confi
 
         try {
             const document = await readEnvDocument(envPath);
-            const updated = patchEnvDocument(document, { [key]: patchValueAsString(patch) });
+            const updated = patchEnvDocument(document, envValues);
             await write(envPath, updated);
             return {
                 ok: true,

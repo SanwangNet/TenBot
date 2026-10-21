@@ -7,7 +7,8 @@ import { createModelPlugin } from "../src/ai/model-registry.js";
 import { ModelAbortedError, type ModelRequest } from "../src/ai/model-plugin.js";
 import { createDeepSeekPlugin } from "../src/ai/plugins/deepseek/index.js";
 import { createGptPlugin } from "../src/ai/plugins/gpt/index.js";
-import { listGptModelIds } from "../src/ai/plugins/gpt/model-catalog.js";
+import { listGptModelCatalog } from "../src/ai/plugins/gpt/model-catalog.js";
+import { classifyGptModel, filterGptModelsForPurpose } from "../src/ai/model-classification.js";
 import { getPromptStore } from "../src/ai/prompt-store.js";
 import { isToolProtocolLeak } from "../src/ai/tool-protocol.js";
 import { parseQqReplyArguments } from "../src/skills/qq-reply/skill.js";
@@ -69,7 +70,7 @@ test("registry selects GPT, DeepSeek, and defaults to GPT without requiring cred
     assert.throws(() => createModelPlugin({ AI_PROVIDER: "other" }), /不支持的 AI_PROVIDER/);
 });
 
-test("GPT model catalog fetches and exposes only sorted unique upstream model IDs", async () => {
+test("GPT model catalog returns dynamic IDs and only sanitized image capability metadata", async () => {
     const originalFetch = globalThis.fetch;
     let requestedUrl = "";
     let authorization = "";
@@ -83,18 +84,79 @@ test("GPT model catalog fetches and exposes only sorted unique upstream model ID
                 { id: "gpt-a", object: "model", created: 1, owned_by: "private-owner" },
                 { id: "gpt-z", object: "model", created: 1, owned_by: "private-owner" },
                 { id: "bad\nmodel", object: "model", created: 1, owned_by: "private-owner" },
+                { id: "gpt-image-2.5-flare", object: "model", created: 1, owned_by: "private-owner" },
+                { id: "custom-art", object: "model", created: 1, owned_by: "private-owner", capabilities: {
+                    image_generation: true,
+                    image_generation_parameters: { quality: ["medium", "not-a-quality"], sizes: ["1024x1024"], output_formats: ["jpeg"] },
+                } },
+                { id: "gpt-image-disabled", object: "model", created: 1, owned_by: "private-owner", capabilities: { image_generation: false } },
             ],
         }), { status: 200, headers: { "Content-Type": "application/json" } });
     };
     try {
-        const models = await listGptModelIds({ apiKey: "private-key", baseURL: "https://models.example/v1" });
-        assert.deepEqual(models, ["gpt-a", "gpt-z"]);
+        const catalog = await listGptModelCatalog({ apiKey: "private-key", baseURL: "https://models.example/v1" });
+        assert.deepEqual(catalog.models, ["custom-art", "gpt-a", "gpt-image-2.5-flare", "gpt-image-disabled", "gpt-z"]);
+        assert.deepEqual(catalog.imageCandidates, [
+            {
+                id: "custom-art",
+                evidence: "upstream",
+                capabilities: { quality: ["medium"], sizes: ["1024x1024"], outputFormats: ["jpeg"], supportsAutoSize: false, supportsCustomSize: false, source: "upstream" },
+            },
+            {
+                id: "gpt-image-2.5-flare",
+                evidence: "name",
+                capabilities: { quality: ["low", "medium", "high", "xhigh", "max"], sizes: ["1024x1024", "1536x1024", "1024x1536", "2048x2048", "2048x1152", "auto"], outputFormats: ["png", "jpeg", "webp"], supportsAutoSize: true, supportsCustomSize: true, source: "openai-sdk-profile" },
+            },
+        ]);
+        assert.deepEqual(catalog.entries.map(({ id, category, classificationSource }) => ({ id, category, classificationSource })), [
+            { id: "custom-art", category: "image", classificationSource: "provider" },
+            { id: "gpt-a", category: "chat", classificationSource: "known" },
+            { id: "gpt-image-2.5-flare", category: "image", classificationSource: "known" },
+            { id: "gpt-image-disabled", category: "unknown", classificationSource: "unknown" },
+            { id: "gpt-z", category: "chat", classificationSource: "known" },
+        ]);
+        assert.deepEqual(catalog.defaultImageCapabilities, { quality: ["low"], sizes: ["1024x1024"], outputFormats: ["png"], supportsAutoSize: false, supportsCustomSize: false, source: "conservative" });
+        assert.doesNotMatch(JSON.stringify(catalog), /private-owner|private-key|created/);
         assert.match(requestedUrl, /models\.example\/v1\/models$/);
         assert.equal(authorization, "Bearer private-key");
-        await assert.rejects(listGptModelIds({ apiKey: "private-key" }), /credentials are not configured/);
+        await assert.rejects(listGptModelCatalog({ apiKey: "private-key" }), /credentials are not configured/);
     } finally {
         globalThis.fetch = originalFetch;
     }
+});
+
+test("GPT model classification separates chat, image, specialized, other, and unknown families", () => {
+    assert.deepEqual(classifyGptModel("gpt-7-new").category, "chat", "new GPT family IDs remain discoverable as chat models");
+    assert.equal(classifyGptModel("Qwen/Qwen3-14B-Instruct").classificationSource, "inferred");
+    assert.deepEqual(classifyGptModel("gpt-6-codex").category, "chat", "coding models are valid chat candidates");
+    assert.deepEqual(classifyGptModel("gpt-6-codex-review").category, "specialized");
+    assert.deepEqual(classifyGptModel("gpt-context-compaction").category, "specialized");
+    assert.deepEqual(classifyGptModel("gpt-image-2.5-flare").category, "image");
+    assert.deepEqual(classifyGptModel("text-embedding-3-small").category, "other");
+    assert.deepEqual(classifyGptModel("gpt-4o-audio-preview").category, "other");
+    assert.deepEqual(classifyGptModel("omni-moderation-latest").category, "other");
+    assert.deepEqual(classifyGptModel("vendor/new-model").category, "unknown");
+
+    const providerModel = classifyGptModel("private-family-2026", {
+        modelType: "chat-completion",
+        capabilities: { chat: true, reasoning: true },
+    });
+    assert.equal(providerModel.category, "chat");
+    assert.equal(providerModel.classificationSource, "provider");
+    assert.ok(providerModel.capabilityTags.includes("chat"));
+    assert.equal(classifyGptModel("vendor/embedding-model", { modelType: "embedding" }).classificationSource, "provider");
+
+    const models = [
+        classifyGptModel("gpt-7-new"),
+        classifyGptModel("gpt-image-2"),
+        classifyGptModel("gpt-context-compaction"),
+        classifyGptModel("text-embedding-3-small"),
+        classifyGptModel("vendor/new-model"),
+    ];
+    assert.deepEqual(filterGptModelsForPurpose(models, "chat").map(({ id }) => id), ["gpt-7-new"]);
+    assert.deepEqual(filterGptModelsForPurpose(models, "image").map(({ id }) => id), ["gpt-image-2"]);
+    assert.deepEqual(filterGptModelsForPurpose(models, "chat", true).map(({ id }) => id), models.map(({ id }) => id));
+    assert.equal(models.find(({ id }) => id === "vendor/new-model")?.id, "vendor/new-model", "filtered unknown model records remain available for current-value compatibility");
 });
 
 test("ALL keeps request and NVO diagnostics while stream events and completed response are compact", async () => {
@@ -308,6 +370,8 @@ test("GPT and DeepSeek function calls normalize to the same TenBot qq_reply acti
             .map((tool: { name: string }) => tool.name);
         assert.deepEqual(names(bodies[0]), ["qq_reply", "meme_lookup"]);
         assert.deepEqual(names(bodies[1]), ["qq_reply", "meme_lookup"]);
+        assert.equal(names(bodies[0]).includes("generate_image"), false);
+        assert.equal(names(bodies[1]).includes("generate_image"), false);
     });
 });
 

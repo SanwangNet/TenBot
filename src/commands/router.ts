@@ -7,6 +7,8 @@ import { renderMentions } from "../qq/reply/mentions.js";
 import { sendMinecraftStatus } from "../qq/minecraft-status.js";
 import { MemeLibraryError, type MemeLibraryService } from "../skills/meme/library-service.js";
 import type { MemeCandidateTracker } from "../skills/meme/candidate-tracker.js";
+import type { ImageGenerationService } from "../ai/image-generation-service.js";
+import { runDirectImageCommand } from "../skills/image/skill.js";
 
 export interface CommandContext {
     bot: QQBot;
@@ -19,6 +21,8 @@ export interface CommandServices {
     isOwner(memberOpenid: string | undefined): boolean;
     memeCandidates: MemeCandidateTracker;
     memeLibrary: MemeLibraryService;
+    imageGenerationService?: ImageGenerationService;
+    isGroupRepliesEnabled?: (groupOpenid: string) => boolean;
 }
 
 export interface BotCommand {
@@ -79,6 +83,17 @@ const commands: BotCommand[] = [
         description: "查看 Minecraft 服务器状态",
         async execute({ bot, message }) {
             await sendMinecraftStatus(bot, message.replyTarget);
+        },
+    },
+    {
+        name: "绘图",
+        description: "生成一张 AI 图片",
+        async execute({ bot, message, args, services }) {
+            await runDirectImageCommand({
+                bot, message, prompt: args,
+                service: services?.imageGenerationService,
+                groupRepliesEnabled: services?.isGroupRepliesEnabled,
+            });
         },
     },
     {

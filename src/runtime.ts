@@ -1,11 +1,12 @@
 import "dotenv/config";
 
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { getPromptStore, type PromptProvider } from "./ai/prompt-store.js";
-import { listGptModelIds } from "./ai/plugins/gpt/model-catalog.js";
+import { listGptModelCatalog, type GptModelCatalog } from "./ai/plugins/gpt/model-catalog.js";
+import { toPublicConfig, validateImageGenerationConfig } from "./config/config-validation.js";
 import { createConfigStore } from "./config/config-store.js";
-import { toPublicConfig } from "./config/config-validation.js";
 import { createTenBotControl, type ReloadResult, type TenBotControl } from "./control/tenbot-control.js";
 import { createProviderErrorNotice } from "./control/provider-error.js";
 import type { RuntimeStatus } from "./control/runtime-status.js";
@@ -37,6 +38,7 @@ import { OpenAICompatibleReplyJudge } from "./front/openai-compatible-reply-judg
 import { GroupReplyControl } from "./runtime/group-reply-control.js";
 import { WebSessionRepository } from "./auth/web-session-repository.js";
 import { WebAuthService } from "./auth/web-auth-service.js";
+import { createImageGenerationService } from "./ai/image-generation-service.js";
 
 export interface TenBotRuntime {
     control: TenBotControl;
@@ -52,12 +54,25 @@ function absolutePath(path: URL | string): string {
     return resolve(path instanceof URL ? fileURLToPath(path) : path);
 }
 
+function gptCatalogSourceKey(apiKey?: string, baseURL?: string): string {
+    return createHash("sha256").update(`${apiKey ?? ""}\0${baseURL ?? ""}`).digest("hex");
+}
+
 export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = {}): Promise<TenBotRuntime> {
     refreshLogSecrets();
     setConsoleLogOutputEnabled(options.consoleLogs ?? true);
     configureLogFileSink(options.logDirectory ?? resolve(process.cwd(), "logs"));
     const logs = new LogBuffer();
-    const configStore = createConfigStore();
+    let gptModelCatalogCache: { sourceKey: string; catalog: GptModelCatalog } | undefined;
+    const configStore = createConfigStore({
+        validateImageConfig(imageConfig, current) {
+            const sourceKey = gptCatalogSourceKey(current.ai.gpt.apiKey, current.ai.gpt.baseURL);
+            const capabilities = gptModelCatalogCache?.sourceKey === sourceKey
+                ? gptModelCatalogCache.catalog.imageCandidates.find((candidate) => candidate.id === imageConfig.model)?.capabilities
+                : undefined;
+            validateImageGenerationConfig(imageConfig, capabilities);
+        },
+    });
     const promptStore = getPromptStore();
     const replyJudgePromptStore = new ReplyJudgePromptStore();
     let runtimeSnapshot!: RuntimeConfigSnapshot;
@@ -223,6 +238,20 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
     await groupReplyControl.initialize();
 
     const botDetector = new BotDetector(memberRepository, Date.now, () => control?.publishEvent({ type: "members-updated" }));
+    const imageGenerationService = createImageGenerationService({
+        getConfig: () => runtimeSnapshots.get().appConfig,
+        repository: memberRepository,
+        validateConfig(imageConfig) {
+            const gpt = runtimeSnapshots.get().appConfig.ai.gpt;
+            const sourceKey = gptCatalogSourceKey(gpt.apiKey, gpt.baseURL);
+            const capabilities = gptModelCatalogCache?.sourceKey === sourceKey
+                ? gptModelCatalogCache.catalog.imageCandidates.find((candidate) => candidate.id === imageConfig.model)?.capabilities
+                : undefined;
+            validateImageGenerationConfig(imageConfig, capabilities);
+        },
+    });
+    try { await imageGenerationService.recoverPendingRequests(); }
+    catch { logger.error("[Image] pending request recovery failed"); }
     let bot: ReturnType<typeof createQqBot>;
     try {
         bot = createQqBot((state) => {
@@ -238,7 +267,8 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         () => runtimeSnapshots.get().appConfig.botAdminIds,
         () => runtimeSnapshots.get().appConfig.memeSendMaxEdge,
         () => runtimeSnapshots.get().appConfig.botTimeZone,
-        botDetector);
+        botDetector,
+        imageGenerationService);
     } catch (error) {
         logs.dispose();
         setConsoleLogOutputEnabled(true);
@@ -324,7 +354,9 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
         },
         getGptModels: async () => {
             const gpt = configStore.getAppConfig().ai.gpt;
-            return listGptModelIds({ apiKey: gpt.apiKey, baseURL: gpt.baseURL });
+            const catalog = await listGptModelCatalog({ apiKey: gpt.apiKey, baseURL: gpt.baseURL });
+            gptModelCatalogCache = { sourceKey: gptCatalogSourceKey(gpt.apiKey, gpt.baseURL), catalog };
+            return catalog;
         },
         async updateConfig(patch) {
             const saved = await configStore.updatePublicConfig(patch);
@@ -415,10 +447,11 @@ export async function createTenBotRuntime(options: CreateTenBotRuntimeOptions = 
                 catch (error) { logger.error("[Web] stop failed", error); }
                 shutdownQqMessageHandler(bot);
                 const stopCycles = shutdownReplyCoordinator();
+                const stopImages = imageGenerationService.shutdown();
                 try { bot.stop(); }
                 catch (error) { logger.error("[QQ] stop error", error); }
                 try {
-                    await Promise.all([stopCycles, startPromise?.catch(() => undefined)]);
+                    await Promise.all([stopCycles, stopImages, startPromise?.catch(() => undefined)]);
                 } finally {
                     try { sqliteMemberRepository?.close(); }
                     catch (error) { logger.error("[Members] SQLite close failed", error); }

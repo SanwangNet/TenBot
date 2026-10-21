@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createConfigStore } from "../src/config/config-store.js";
-import { loadAppConfig, parseBotAdminIds, parsePublicConfigPatch, validatePublicConfigPatch } from "../src/config/config-validation.js";
+import { DEFAULT_IMAGE_GENERATION_CONFIG, loadAppConfig, parseBotAdminIds, parsePublicConfigPatch, validateImageGenerationConfig, validatePublicConfigPatch } from "../src/config/config-validation.js";
+import { getImageModelCapabilities } from "../src/ai/image-capabilities.js";
 import { parseLogLevel } from "../src/shared/logger.js";
 import { loadGitHubOAuthConfig } from "../src/auth/web-auth-service.js";
 
@@ -90,6 +91,54 @@ test("ConfigStore appends new managed keys and serializes concurrent writes", as
     });
 });
 
+test("AI image settings default safely, save atomically, survive reload, and stay separate from GPT chat config", async () => {
+    assert.deepEqual(loadAppConfig({}).image, DEFAULT_IMAGE_GENERATION_CONFIG);
+    await withTempEnv("CODEX_API_KEY=private-key\nCODEX_BASE_URL=https://gpt.example/v1\nCODEX_MODEL=chat-model\n", async (envPath) => {
+        const store = createConfigStore({ envPath, environment: {} });
+        const savedImage = {
+            enabled: true,
+            provider: "gpt" as const,
+            model: "gpt-image-2.5-flare",
+            quality: "low" as const,
+            size: "1024x1024" as const,
+            outputFormat: "png" as const,
+        };
+        const result = await store.updatePublicConfig({ field: "image", value: savedImage });
+        assert.equal(result.ok, true);
+        assert.deepEqual(store.getAppConfig().image, savedImage);
+        assert.deepEqual(store.getPublicConfig().image, savedImage);
+        assert.equal(store.getAppConfig().ai.gpt.model, "chat-model");
+        assert.doesNotMatch(JSON.stringify(store.getPublicConfig()), /private-key|gpt\.example/);
+
+        const savedEnv = await readFile(envPath, "utf8");
+        for (const [key, value] of Object.entries({
+            IMAGE_GENERATION_ENABLED: "true",
+            IMAGE_GENERATION_PROVIDER: "gpt",
+            IMAGE_GENERATION_MODEL: "gpt-image-2.5-flare",
+            IMAGE_GENERATION_QUALITY: "low",
+            IMAGE_GENERATION_SIZE: "1024x1024",
+            IMAGE_GENERATION_OUTPUT_FORMAT: "png",
+        })) assert.match(savedEnv, new RegExp(`${key}=${value.replaceAll(".", "\\.")}`));
+
+        const restarted = createConfigStore({ envPath, environment: {} });
+        assert.deepEqual(restarted.getAppConfig().image, savedImage);
+        assert.equal(restarted.getAppConfig().ai.gpt.model, "chat-model");
+    });
+});
+
+test("AI image config validates model-specific quality, size, and format combinations", () => {
+    const config = { ...DEFAULT_IMAGE_GENERATION_CONFIG, enabled: true, model: "gpt-image-2" };
+    assert.doesNotThrow(() => validateImageGenerationConfig({ ...config, quality: "high", size: "1536x1024", outputFormat: "webp" }));
+    assert.throws(() => validateImageGenerationConfig({ ...config, quality: "xhigh" }), /不支持质量/);
+    assert.doesNotThrow(() => validateImageGenerationConfig({ ...config, size: "1792x1024" }), "supported GPT Image 2 custom sizes remain exact values");
+    assert.throws(() => validateImageGenerationConfig({ ...config, size: "1792x1000" }), /不支持尺寸/);
+    assert.doesNotThrow(() => validateImageGenerationConfig({ ...config, enabled: false, quality: "xhigh" }));
+    assert.throws(() => validateImageGenerationConfig({ ...DEFAULT_IMAGE_GENERATION_CONFIG, enabled: true }), /必须选择绘图模型/);
+    assert.equal(parsePublicConfigPatch({ field: "image", value: config })?.field, "image");
+    assert.equal(parsePublicConfigPatch({ field: "image", value: { ...config, secret: "never-accept" } }), undefined);
+    assert.throws(() => validatePublicConfigPatch({ field: "image", value: { ...config, quality: "turbo" } as never }), /质量配置无效/);
+});
+
 test("BOT_LOG_LEVEL parsing is console-only and never enters AppConfig or PublicConfig", () => {
     assert.deepEqual(["all", "debug", "info", "warn", "error"].map((level) => parseLogLevel(level)), ["all", "debug", "info", "warn", "error"]);
     assert.equal(parseLogLevel(" DEBUG "), "debug");
@@ -170,6 +219,8 @@ test("public config exposes only safe metadata and shared defaults parse provide
         },
     }).getPublicConfig();
     assert.equal(config.ai.gpt.model, "gpt-test");
+    assert.deepEqual(config.image, DEFAULT_IMAGE_GENERATION_CONFIG);
+    assert.deepEqual(publicConfig.image, DEFAULT_IMAGE_GENERATION_CONFIG);
     assert.equal("automatedPeerIds" in config.botLoopGuard, false);
     assert.equal(publicConfig.gpt.configured, true);
     assert.equal(publicConfig.deepseek.configured, true);
@@ -253,6 +304,42 @@ test("ConfigStore reload parsing follows current disk values instead of stale do
         assert.equal(config.ai.provider, "deepseek");
         assert.equal(config.ai.deepseek.model, "deepseek-new");
         assert.equal(config.ai.gpt.model, "gpt-6-sol", "removed .env keys do not survive in a stale process.env snapshot");
+    });
+});
+
+test("ConfigStore saves upstream-declared image parameters and keeps them after restart", async () => {
+    await withTempEnv("AI_PROVIDER=gpt\nCODEX_MODEL=gpt-chat-model\n", async (envPath) => {
+        const upstreamCapabilities = getImageModelCapabilities("custom-image-endpoint", {
+            quality: ["medium"],
+            sizes: ["1024x1024"],
+            outputFormats: ["jpeg"],
+        });
+        const store = createConfigStore({
+            envPath,
+            environment: {},
+            validateImageConfig: (config) => validateImageGenerationConfig(config, upstreamCapabilities),
+        });
+        const patch = {
+            field: "image",
+            value: {
+                enabled: true,
+                provider: "gpt",
+                model: "custom-image-endpoint",
+                quality: "medium",
+                size: "1024x1024",
+                outputFormat: "jpeg",
+            },
+        } as const;
+
+        assert.equal((await store.updatePublicConfig(patch)).ok, true);
+        const saved = await readFile(envPath, "utf8");
+        assert.match(saved, /IMAGE_GENERATION_MODEL=custom-image-endpoint/);
+        assert.match(saved, /IMAGE_GENERATION_QUALITY=medium/);
+        assert.match(saved, /IMAGE_GENERATION_OUTPUT_FORMAT=jpeg/);
+
+        const restarted = createConfigStore({ envPath, environment: {} });
+        assert.deepEqual(restarted.getPublicConfig().image, patch.value);
+        assert.equal(restarted.getPublicConfig().gpt.model, "gpt-chat-model");
     });
 });
 

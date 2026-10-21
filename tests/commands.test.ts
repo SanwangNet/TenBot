@@ -44,7 +44,7 @@ function fakeBot() {
 
 test("registry is the only source of help entries", async () => {
     const names = listCommands().map((command) => command.name);
-    assert.deepEqual(names, ["help", "mc", "members", "添加表情", "at"]);
+    assert.deepEqual(names, ["help", "mc", "绘图", "members", "添加表情", "at"]);
     const { bot, sent } = fakeBot();
     assert.equal(await routeCommand(bot, message("/help")), true);
     assert.equal(sent.length, 1);
@@ -56,6 +56,7 @@ test("registry is the only source of help entries", async () => {
 test("parse slash commands and optional bot mentions", () => {
     assert.deepEqual(parseCommand(message("/mc")), { name: "mc", args: "" });
     assert.deepEqual(parseCommand(message("/at 张三 李四")), { name: "at", args: "张三 李四" });
+    assert.deepEqual(parseCommand(message("@小尘 /绘图 一只猫", true)), { name: "绘图", args: "一只猫" });
     assert.deepEqual(parseCommand(message("@小尘 /mc", true)), { name: "mc", args: "" });
     assert.deepEqual(parseCommand(message("<@BOT_ID> /mc", true)), { name: "mc", args: "" });
     assert.deepEqual(parseCommand({ ...message("<@BOT_ID> /mc", true), displayContent: "@未知成员 /mc" } as NormalizedQqMessage), { name: "mc", args: "" });

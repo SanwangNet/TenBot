@@ -6,6 +6,8 @@ import { LogBuffer } from "../src/control/log-buffer.js";
 import { MAX_LOG_BUFFER_ENTRIES } from "../src/control/tenbot-control.js";
 import { logger, setConsoleLogOutputEnabled, subscribeLogs } from "../src/shared/logger.js";
 import type { PublicConfig } from "../src/config/config-types.js";
+import { getConservativeImageModelCapabilities } from "../src/ai/image-capabilities.js";
+import { classifyGptModel } from "../src/ai/model-classification.js";
 import { ConversationTimelineStore, createIncomingConversationEvent } from "../src/control/conversation-timeline.js";
 import { toConversationIdentity } from "../src/control/conversation-identity.js";
 import { getConversationKey } from "../src/qq/conversation/recent-context.js";
@@ -24,6 +26,7 @@ const status: RuntimeStatus = {
 };
 const config: PublicConfig = {
     aiProvider: "deepseek",
+    image: { enabled: false, provider: "gpt", model: "", quality: "low", size: "1024x1024", outputFormat: "png" },
     memeSendMaxEdge: 160,
     replyJudge: { model: "judge-test", timeoutMs: 5_000, fallbackToMainOnInvalidOutput: true, turnWaitMs: 20_000 },
     gpt: { model: "gpt-6-sol", reasoningEffort: "high", verbosity: "high", configured: false },
@@ -37,7 +40,7 @@ test("Control exposes only serializable Runtime status and supports subscription
     const control = createTenBotControl({
         getStatus: () => current,
         getConfig: () => config,
-        async getGptModels() { return ["gpt-6-sol", "gpt-6-astra"]; },
+        async getGptModels() { return { models: ["gpt-6-sol", "gpt-6-astra"], entries: ["gpt-6-sol", "gpt-6-astra"].map((id) => classifyGptModel(id)), imageCandidates: [], defaultImageCapabilities: getConservativeImageModelCapabilities() }; },
         async updateConfig() { return { ok: true, requiresRestart: true, changedFields: ["aiProvider"], message: "saved" }; },
         async getGroups() { return [{ groupOpenid: "group-secret", repliesEnabled: true, firstSeenAt: 1, lastSeenAt: 2, updatedAt: 2, memberCount: 1 }]; },
         async setGroupRepliesEnabledForGroup() { return { ok: true, changed: false }; },
@@ -80,7 +83,7 @@ test("Control exposes only serializable Runtime status and supports subscription
     assert.deepEqual(events, ["deepseek"]);
     const groups = await control.getGroups();
     assert.equal(groups[0]?.repliesEnabled, true);
-    assert.deepEqual(await control.getGptModels(), ["gpt-6-sol", "gpt-6-astra"]);
+    assert.deepEqual((await control.getGptModels()).models, ["gpt-6-sol", "gpt-6-astra"]);
     const markedBots = await control.getMarkedBots();
     assert.equal(markedBots[0]?.memberOpenid, "member-secret", "authenticated member administration receives the full ID");
     await control.shutdown();

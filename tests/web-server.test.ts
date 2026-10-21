@@ -14,6 +14,8 @@ import type { GroupSettings, MemberBotState } from "../src/members/repository.js
 import { loadAppConfig } from "../src/config/config-validation.js";
 import type { ConfigUpdateResult, PublicConfigPatch } from "../src/config/config-types.js";
 import type { EditorResourceId } from "../src/control/editor-resources.js";
+import { getConservativeImageModelCapabilities, getImageModelCapabilities } from "../src/ai/image-capabilities.js";
+import { classifyGptModel } from "../src/ai/model-classification.js";
 import { MemeLibraryService } from "../src/skills/meme/library-service.js";
 import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
@@ -95,7 +97,7 @@ function createFakeControl() {
     let logReplay: LogEntry[] = [];
     const patchCalls: PublicConfigPatch[] = [];
     const resourceCalls: string[] = [];
-    let gptModels = ["gpt-test", "gpt-new"];
+    let gptModels = ["gpt-test", "gpt-new", "gpt-image-2"];
     let gptModelsFailure = false;
     let updateResult: ConfigUpdateResult = { ok: true, requiresRestart: false, changedFields: [], message: "saved" };
 
@@ -104,7 +106,12 @@ function createFakeControl() {
         getConfig: () => structuredClone(publicConfig),
         async getGptModels() {
             if (gptModelsFailure) throw new Error("upstream error contained private-main-model-key");
-            return [...gptModels];
+            return {
+                models: [...gptModels],
+                entries: gptModels.map((id) => classifyGptModel(id)),
+                imageCandidates: gptModels.includes("gpt-image-2") ? [{ id: "gpt-image-2", evidence: "name" as const, capabilities: getImageModelCapabilities("gpt-image-2") }] : [],
+                defaultImageCapabilities: getConservativeImageModelCapabilities(),
+            };
         },
         async updateConfig(patch: PublicConfigPatch) {
             patchCalls.push(patch);
@@ -377,19 +384,26 @@ test("HTTP API reads through TenBotControl and keeps config secrets out of respo
     }
 });
 
-test("GET /api/models/gpt returns only model IDs and sanitizes upstream failures", async () => {
+test("GET /api/models/gpt returns classified public model entries and sanitizes upstream failures", async () => {
     const fake = createFakeControl();
     const { server, baseUrl } = await startServer(fake.control);
     try {
         const response = await fetch(`${baseUrl}/api/models/gpt`);
         assert.equal(response.status, 200);
-        assert.deepEqual(await response.json(), { models: ["gpt-test", "gpt-new"] });
+        assert.deepEqual(await response.json(), {
+            models: ["gpt-test", "gpt-new", "gpt-image-2"],
+            entries: ["gpt-test", "gpt-new", "gpt-image-2"].map((id) => classifyGptModel(id)),
+            imageCandidates: [{ id: "gpt-image-2", evidence: "name", capabilities: getImageModelCapabilities("gpt-image-2") }],
+            defaultImageCapabilities: getConservativeImageModelCapabilities(),
+        });
+        const configBeforeFailure = await (await fetch(`${baseUrl}/api/config`)).json();
         fake.setGptModelsFailure(true);
         const failed = await fetch(`${baseUrl}/api/models/gpt`);
         assert.equal(failed.status, 502);
         const body = await failed.text();
         assert.match(body, /无法读取 GPT 上游模型列表/);
         assert.doesNotMatch(body, /private-main-model-key|upstream error/);
+        assert.deepEqual(await (await fetch(`${baseUrl}/api/config`)).json(), configBeforeFailure);
     } finally {
         await server.close();
     }
@@ -418,6 +432,27 @@ test("PATCH /api/config validates allowlisted patches and delegates updates thro
         });
         assert.equal(fallback.status, 200);
         assert.deepEqual(fake.patchCalls[1], { field: "replyJudge.fallbackToMainOnInvalidOutput", value: false });
+
+        const imagePatch = {
+            field: "image",
+            value: { enabled: true, provider: "gpt", model: "custom-image-endpoint", quality: "medium", size: "1024x1024", outputFormat: "jpeg" },
+        };
+        const imageResponse = await fetch(`${baseUrl}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(imagePatch),
+        });
+        assert.equal(imageResponse.status, 200, "image parameter compatibility is validated against the server's current upstream catalog");
+        assert.deepEqual(fake.patchCalls[2], imagePatch);
+
+        fake.setUpdateResult({ ok: false, requiresRestart: false, changedFields: [], message: "配置无效", details: "upstream capability profile mismatch" });
+        const invalidImage = await fetch(`${baseUrl}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...imagePatch, value: { ...imagePatch.value, outputFormat: "webp" } }),
+        });
+        assert.equal(invalidImage.status, 400);
+        assert.match(JSON.stringify(await invalidImage.json()), /capability profile mismatch/);
     } finally {
         await server.close();
     }
@@ -718,6 +753,11 @@ test("anonymous requests are locked out before API work or SSE subscription whil
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/status`)).status, 401);
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/config`)).status, 401);
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/models/gpt`)).status, 401);
+        assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ field: "image", value: { enabled: true } }),
+        })).status, 401);
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/groups`)).status, 401);
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/members/marked-bots`)).status, 401);
         assert.equal((await globalThis.fetch(`${fixture.baseUrl}/api/groups/group-openid-a/replies`, {

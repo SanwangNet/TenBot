@@ -1,4 +1,8 @@
-import type { GroupMember, GroupSettings, KnownMember, MemberBotState, MemberRepository } from "./repository.js";
+import type {
+    GroupMember, GroupSettings, ImageGenerationArtifact, ImageGenerationRequestRecord, ImageGenerationRequestStatus, ImageGenerationSendStatus, ImageGenerationUsage,
+    ImageGenerationUsageQuery, KnownMember, MemberBotState, MemberRepository, ReserveImageGenerationRequest,
+    ReserveImageGenerationResult,
+} from "./repository.js";
 import {
     MEMBER_BOT_DETECTION_EVIDENCE_TTL_MS,
     type AddMemberBotDetectionEvidence,
@@ -13,6 +17,7 @@ export class MemoryMemberRepository implements MemberRepository {
     private readonly botStates = new Map<string, MemberBotState>();
     private readonly detectionEvidence = new Map<string, MemberBotDetectionEvidence[]>();
     private readonly detectionObservations = new Map<string, Map<string, MemberBotDetectionObservation>>();
+    private readonly imageGenerationRequests = new Map<string, ImageGenerationRequestRecord>();
     private nextDetectionEvidenceId = 1;
     private legacyImportCompleted = false;
 
@@ -50,6 +55,85 @@ export class MemoryMemberRepository implements MemberRepository {
     async listAll(): Promise<KnownMember[]> {
         return [...this.members.values()].flatMap((group) => [...group.values()].map((member) => ({ ...member })))
             .sort((a, b) => b.lastSeenAt - a.lastSeenAt || a.memberOpenid.localeCompare(b.memberOpenid) || a.groupOpenid.localeCompare(b.groupOpenid));
+    }
+
+    async reserveImageGenerationRequest(request: ReserveImageGenerationRequest): Promise<ReserveImageGenerationResult> {
+        if (this.imageGenerationRequests.has(request.requestKey)) return { kind: "duplicate" };
+        const rows = [...this.imageGenerationRequests.values()];
+        if (rows.some((row) => row.groupOpenid === request.groupOpenid && row.memberOpenid === request.memberOpenid &&
+            ["reserved", "submitted", "generated"].includes(row.status))) return { kind: "member_busy" };
+        if (rows.filter((row) => row.status === "reserved" || row.status === "submitted").length >= request.globalConcurrency) {
+            return { kind: "global_busy" };
+        }
+        const chargedToday = rows.filter((row) => row.groupOpenid === request.groupOpenid && row.memberOpenid === request.memberOpenid &&
+            row.dayKey === request.dayKey && row.submittedAt !== undefined).length;
+        if (chargedToday >= request.dailyLimit) return { kind: "daily_limit" };
+        this.imageGenerationRequests.set(request.requestKey, {
+            requestKey: request.requestKey, groupOpenid: request.groupOpenid, memberOpenid: request.memberOpenid,
+            messageId: request.messageId, dayKey: request.dayKey, status: "reserved", model: request.model,
+            size: request.size, quality: request.quality, outputFormat: request.outputFormat, requestedAt: request.requestedAt,
+        });
+        return { kind: "reserved" };
+    }
+
+    async markImageGenerationSubmitted(requestKey: string, at: number): Promise<boolean> {
+        const row = this.imageGenerationRequests.get(requestKey);
+        if (!row || row.status !== "reserved") return false;
+        row.status = "submitted";
+        row.submittedAt = at;
+        return true;
+    }
+
+    async recordImageGenerationResult(requestKey: string, status: "generated" | "failed" | "unknown", usage: ImageGenerationUsage | undefined, at: number, artifact?: ImageGenerationArtifact): Promise<void> {
+        const row = this.imageGenerationRequests.get(requestKey);
+        if (!row || (row.status !== "reserved" && row.status !== "submitted")) return;
+        row.status = status;
+        row.completedAt = at;
+        if (usage) Object.assign(row, usage);
+        if (artifact) {
+            row.requestId = artifact.requestId;
+            row.prompt = artifact.prompt;
+            row.actualSize = artifact.actualSize;
+            row.actualFormat = artifact.actualFormat;
+            row.imagePath = artifact.imagePath;
+            row.generationStatus = artifact.generationStatus;
+            row.sendStatus = artifact.sendStatus;
+            row.artifactUpdatedAt = artifact.updatedAt;
+        }
+    }
+
+    async finishImageGenerationRequest(requestKey: string, status: "succeeded" | "send_failed", at: number, sendStatus?: ImageGenerationSendStatus): Promise<void> {
+        const row = this.imageGenerationRequests.get(requestKey);
+        if (!row || row.status !== "generated") return;
+        row.status = status;
+        row.completedAt = at;
+        if (sendStatus) {
+            row.sendStatus = sendStatus;
+            row.artifactUpdatedAt = at;
+        }
+    }
+
+    async recoverPendingImageGenerationRequests(at: number): Promise<void> {
+        for (const row of this.imageGenerationRequests.values()) {
+            if (row.status === "reserved") row.status = "failed";
+            else if (row.status === "submitted") row.status = "unknown";
+            else if (row.status === "generated") {
+                row.status = "send_failed";
+                if (row.sendStatus === "pending") row.sendStatus = "unknown";
+            }
+            else continue;
+            row.completedAt = at;
+        }
+    }
+
+    async listImageGenerationUsage(query: ImageGenerationUsageQuery = {}): Promise<ImageGenerationRequestRecord[]> {
+        return [...this.imageGenerationRequests.values()]
+            .filter((row) => (!query.groupOpenid || row.groupOpenid === query.groupOpenid) &&
+                (!query.memberOpenid || row.memberOpenid === query.memberOpenid) &&
+                (query.since === undefined || row.requestedAt >= query.since))
+            .sort((a, b) => b.requestedAt - a.requestedAt)
+            .slice(0, Math.max(1, Math.min(500, Math.trunc(query.limit ?? 100))))
+            .map((row) => ({ ...row }));
     }
 
     async getMemberBotState(groupOpenid: string, memberOpenid: string): Promise<MemberBotState> {

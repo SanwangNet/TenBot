@@ -3,7 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TenBotControl } from "./tenbot-control.js";
 import { logger } from "../shared/logger.js";
-import { parsePublicConfigPatch, validatePublicConfigPatch } from "../config/config-validation.js";
+import { parsePublicConfigPatch, validateImageGenerationConfigShape, validatePublicConfigPatch } from "../config/config-validation.js";
 import { isEditorResourceId } from "./editor-resources.js";
 import { MAX_MEME_FILE_BYTES, MemeLibraryError, memeLibrary, type MemeLibraryService } from "../skills/meme/library-service.js";
 import { OAUTH_STATE_COOKIE, WEB_SESSION_COOKIE, WebAuthService } from "../auth/web-auth-service.js";
@@ -548,7 +548,7 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
         }
         if (pathname === "/api/models/gpt") {
             try {
-                json(response, 200, { models: await control.getGptModels() });
+                json(response, 200, await control.getGptModels());
             } catch {
                 error(response, 502, "无法读取 GPT 上游模型列表；请检查 GPT 配置或稍后重试");
             }
@@ -655,7 +655,10 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
             error(response, 400, "Unsupported configuration patch");
             return;
         }
-        try { validatePublicConfigPatch(patch); }
+        try {
+            if (patch.field === "image") validateImageGenerationConfigShape(patch.value);
+            else validatePublicConfigPatch(patch);
+        }
         catch (cause) {
             error(response, 400, cause instanceof Error ? cause.message : "Invalid configuration value");
             return;
@@ -664,7 +667,7 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
         try {
             const result = await control.updateConfig(patch);
             if (!result.ok) {
-                error(response, 500, "Unable to save configuration");
+                error(response, result.message === "配置无效" ? 400 : 500, result.message === "配置无效" ? result.details ?? result.message : "Unable to save configuration");
                 return;
             }
             json(response, 200, { result, config: control.getConfig() });

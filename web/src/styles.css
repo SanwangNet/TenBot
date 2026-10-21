@@ -176,6 +176,11 @@ button:focus-visible {
 .settings-grid { display: grid; gap: 14px; }
 .settings-grid-main { grid-template-columns: minmax(150px, .65fr) repeat(2, minmax(0, 1fr)); align-items: start; }
 .settings-grid-lower { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.image-settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; margin-top: 14px; }
+.image-generation-toggle { margin-top: 15px; }
+.image-capability-note { margin: 12px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.image-size-custom { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.image-size-custom input { min-width: 0; width: 100%; }
 .model-config-card { display: grid; min-width: 0; gap: 13px; padding: 14px; border: 1px solid var(--line-soft); border-radius: 6px; background: #141a20; }
 .model-config-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #dfe4eb; font-size: 12px; }
 .configured-text, .unconfigured-text { font-size: 10px; font-weight: 500; }
@@ -185,6 +190,8 @@ button:focus-visible {
 .model-picker-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
 .model-picker-actions .field-hint { min-width: 0; }
 .model-picker-actions .button { flex: 0 0 auto; }
+.model-picker-toggle { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 11px; }
+.model-picker-toggle input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
 .setting-field label, .log-filter-field > span, .log-search-field > span { color: #aab3bf; font-size: 11px; }
 .setting-field input, .setting-field select, .logs-toolbar input, .logs-toolbar select {
     width: 100%; min-width: 0; height: 35px; padding: 0 10px; border: 1px solid #343e4a; border-radius: 5px;
@@ -241,6 +248,7 @@ button:focus-visible {
     .runtime-panel, .model-panel, .overview-grid > .panel:not(.runtime-panel):not(.model-panel) { grid-column: span 1; }
     .topbar { padding-right: 25px; }
     .settings-grid-main { grid-template-columns: minmax(145px, .5fr) repeat(2, minmax(0, 1fr)); }
+    .image-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 700px) {
@@ -262,7 +270,7 @@ button:focus-visible {
     .overview-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
     .runtime-panel, .model-panel, .overview-grid > .panel:not(.runtime-panel):not(.model-panel) { grid-column: span 1; }
     .panel { padding: 16px; }
-    .settings-grid-main, .settings-grid-lower { grid-template-columns: minmax(0, 1fr); }
+    .settings-grid-main, .settings-grid-lower, .image-settings-grid { grid-template-columns: minmax(0, 1fr); }
     .settings-grid-main { gap: 10px; }
     .settings-panel { padding: 15px; }
     .logs-toolbar { flex-wrap: wrap; }

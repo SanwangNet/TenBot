@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useWindowSize } from "ink";
 import type { ConfigUpdateResult, ModelProviderId, PublicConfig, PublicConfigPatch } from "../config/config-types.js";
 import { cycleModelProvider, MODEL_PROVIDERS } from "../ai/model-registry.js";
+import { filterGptModelsForPurpose } from "../ai/model-classification.js";
 import { validatePublicConfigPatch } from "../config/config-validation.js";
 import type { RuntimeStatus } from "../control/runtime-status.js";
 import type { ReloadResult, TenBotControl } from "../control/tenbot-control.js";
@@ -169,8 +170,8 @@ export function TenBotTui({ control, onQuit, mouseSession, registerQuitRequest }
         }
         const requestId = ++gptModelRequestId.current;
         setUi((current) => ({ ...current, settingsIndex, modal: { type: "config-loading", requestId, title: "读取 GPT 模型列表" } }));
-        void control.getGptModels().then((models) => {
-            const choices = [...new Set(models)].filter((model) => typeof model === "string" && model.length > 0);
+        void control.getGptModels().then((catalog) => {
+            const choices = filterGptModelsForPurpose(catalog.entries, "chat").map((model) => model.id);
             setUi((current) => current.modal.type === "config-loading" && current.modal.requestId === requestId
                 ? { ...current, modal: openConfigModal("gpt.model", config, choices) }
                 : current);
