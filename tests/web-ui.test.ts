@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createViteServer } from "vite";
 import { ApiError, apiClient, parseJsonResponse, setUnauthorizedHandler } from "../web/src/api/client.js";
@@ -17,6 +18,7 @@ import {
     settingsFormReducer,
     settingsFieldError,
     settingsPatches,
+    saveSettingsChanges,
 } from "../web/src/settings/settings-state.js";
 import { filterLogs, initialLogViewState, isLogLevelFilter, loadLogLevelFilter, logViewReducer, LOG_LEVEL_FILTER_STORAGE_KEY, MAX_WEB_LOG_ENTRIES, saveLogLevelFilter } from "../web/src/components/log-state.js";
 import { LogRows } from "../web/src/components/logs-page.js";
@@ -26,6 +28,13 @@ import { conversationReducer, initialConversationViewState } from "../web/src/co
 import { addNotice, isProminentProviderError } from "../web/src/ui/feedback-state.js";
 import { createEditorDraft, editDraft, isEditorDirty } from "../web/src/editor/editor-state.js";
 import { nextPage } from "../web/src/navigation.js";
+import { appRouteHash, parseAppRoute } from "../web/src/navigation.js";
+import { SettingsNavigation, SETTINGS_PAGES } from "../web/src/settings/settings-navigation.js";
+import { dirtySettingsFieldsForSection, SETTINGS_SECTION_FIELDS } from "../web/src/settings/settings-state.js";
+import { ModelSettings } from "../web/src/settings/pages/model-settings.js";
+import { JudgeSettings } from "../web/src/settings/pages/judge-settings.js";
+import { RuntimeSettings } from "../web/src/settings/pages/runtime-settings.js";
+import { ImageSettings } from "../web/src/settings/pages/image-settings.js";
 import { AuthGateView, authGateReducer, initialAuthGateState, type AuthGateState } from "../web/src/auth/auth-view.js";
 import { classifyGptModel, getGptModelPickerEntries } from "../src/ai/model-classification.js";
 
@@ -303,6 +312,124 @@ test("AI image settings edit independently and save all parameters as one valida
     form = settingsFormReducer(form, { type: "saved", config: savedConfig, field: "image" })!;
     assert.equal(form.values["image.model"], "gpt-image-2");
     assert.deepEqual(dirtySettingsFields(form), []);
+});
+
+test("settings center exposes four secondary pages with responsive desktop and mobile navigation", () => {
+    assert.deepEqual(SETTINGS_PAGES.map((page) => page.id), ["model", "judge", "runtime", "image"]);
+    const markup = renderToStaticMarkup(createElement(SettingsNavigation, {
+        section: "judge", dirtySections: new Set(["image"]), onChange() {},
+    }));
+    assert.match(markup, /aria-label="设置分类"/);
+    assert.equal((markup.match(/class="settings-nav-item/g) ?? []).length, 4);
+    assert.match(markup, /settings-nav-item active" aria-current="page" aria-pressed="true"><span>回复判断/);
+    assert.match(markup, /AI 绘图<\/span><span class="settings-nav-dirty" aria-label="有未保存更改"/);
+    const css = readFileSync("web/src/styles.css", "utf8");
+    assert.match(css, /\.settings-center \{ display: grid; grid-template-columns: 205px minmax\(0, 1fr\)/);
+    assert.match(css, /@media \(max-width: 700px\)[\s\S]*?\.settings-center \{ grid-template-columns: minmax\(0, 1fr\)/);
+    assert.match(css, /\.settings-navigation \{ position: sticky/);
+    assert.match(css, /\.settings-navigation \{ position: static; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+});
+
+test("settings categories cover each editable field exactly once", () => {
+    const grouped = Object.values(SETTINGS_SECTION_FIELDS).flat();
+    assert.equal(new Set(grouped).size, grouped.length);
+    assert.deepEqual([...grouped].sort(), Object.keys(createSettingsForm(config).values).sort());
+});
+
+test("each settings page renders controls for its complete field category without secret values", () => {
+    const edit = () => {};
+    const common = { form: createSettingsForm(config), saving: false, fieldError: () => undefined, edit };
+    const catalog = { catalog: null, loading: false, error: null, refresh() {} };
+    const model = renderToStaticMarkup(createElement(ModelSettings, {
+        ...common, ...catalog, showOtherModels: false, onShowOtherModelsChange() {}, customModel: false, onCustomModelChange() {},
+    }));
+    const deepseekForm = settingsFormReducer(createSettingsForm(config), { type: "edit", field: "aiProvider", value: "deepseek" })!;
+    const deepseek = renderToStaticMarkup(createElement(ModelSettings, {
+        ...common, form: deepseekForm, ...catalog, showOtherModels: false, onShowOtherModelsChange() {}, customModel: false, onCustomModelChange() {},
+    }));
+    const judge = renderToStaticMarkup(createElement(JudgeSettings, common));
+    const runtime = renderToStaticMarkup(createElement(RuntimeSettings, common));
+    const image = renderToStaticMarkup(createElement(ImageSettings, {
+        ...common, ...catalog, customModel: false, onCustomModelChange() {}, customSizeSelected: false,
+        onCustomSizeSelectedChange() {}, customWidth: "", onCustomWidthChange() {}, customHeight: "", onCustomHeightChange() {},
+    }));
+
+    for (const id of ["setting-gpt-model", "setting-gpt-reasoning", "setting-gpt-verbosity"]) assert.match(model, new RegExp(`id="${id}"`));
+    assert.match(deepseek, /id="setting-deepseek-model"/);
+    assert.match(deepseek, /id="setting-deepseek-reasoning"/);
+    for (const id of ["setting-judge-model", "setting-judge-timeout", "setting-judge-ipo-fallback", "setting-judge-turn-wait"]) assert.match(judge, new RegExp(`id="${id}"`));
+    for (const id of ["setting-meme-send-size", "setting-max-cycles"]) assert.match(runtime, new RegExp(`id="${id}"`));
+    for (const id of ["setting-image-enabled", "setting-image-provider", "setting-image-model", "setting-image-quality", "setting-image-size", "setting-image-format"]) assert.match(image, new RegExp(`id="${id}"`));
+    assert.doesNotMatch([model, deepseek, judge, runtime, image].join(""), /CODEX_API_KEY|SECRET_VALUE|PRIVATE_KEY/);
+});
+
+test("settings section routes survive refresh and browser back/forward URL changes", () => {
+    const route = parseAppRoute("#/settings/image");
+    assert.deepEqual(route, { page: "settings", settingsSection: "image" });
+    assert.equal(appRouteHash(route), "#/settings/image");
+    assert.deepEqual(parseAppRoute("#/settings/unknown"), { page: "settings", settingsSection: "model" });
+    assert.deepEqual(parseAppRoute("#/members"), { page: "members", settingsSection: "model" });
+});
+
+test("settings page patches exclude drafts from other pages and saved fields leave other drafts intact", () => {
+    let form = createSettingsForm(config);
+    form = settingsFormReducer(form, { type: "edit", field: "gpt.model", value: "gpt-draft" })!;
+    form = settingsFormReducer(form, { type: "edit", field: "replyJudge.model", value: "judge-draft" })!;
+    form = settingsFormReducer(form, { type: "edit", field: "botLoopGuard.maxCycles", value: "8" })!;
+    form = settingsFormReducer(form, { type: "edit", field: "image.model", value: "image-draft" })!;
+
+    assert.deepEqual(dirtySettingsFieldsForSection(form, "model"), ["gpt.model"]);
+    assert.deepEqual(settingsPatches(form, "judge"), [{ field: "replyJudge.model", value: "judge-draft" }]);
+    assert.deepEqual(settingsPatches(form, "runtime"), [{ field: "botLoopGuard.maxCycles", value: 8 }]);
+    assert.deepEqual(settingsPatches(form, "image"), [{
+        field: "image",
+        value: { enabled: false, provider: "gpt", model: "image-draft", quality: "low", size: "1024x1024", outputFormat: "png" },
+    }]);
+
+    const savedJudgeConfig: PublicConfig = { ...config, replyJudge: { ...config.replyJudge, model: "judge-draft" } };
+    form = settingsFormReducer(form, { type: "saved", config: savedJudgeConfig, field: "replyJudge.model" })!;
+    assert.equal(form.values["replyJudge.model"], "judge-draft");
+    assert.equal(form.values["gpt.model"], "gpt-draft");
+    assert.equal(form.values["image.model"], "image-draft");
+    assert.deepEqual(settingsPatches(form, "model"), [{ field: "gpt.model", value: "gpt-draft" }]);
+    assert.deepEqual(settingsPatches(form, "image").map((patch) => patch.field), ["image"]);
+});
+
+test("saving a field does not clear another draft that happens to match an external config update", () => {
+    let form = createSettingsForm(config);
+    form = settingsFormReducer(form, { type: "edit", field: "gpt.model", value: "gpt-draft" })!;
+    form = settingsFormReducer(form, { type: "edit", field: "replyJudge.model", value: "external-judge" })!;
+    const externalConfig: PublicConfig = { ...config, replyJudge: { ...config.replyJudge, model: "external-judge" } };
+    form = settingsFormReducer(form, { type: "server-refresh", config: externalConfig })!;
+    const savedConfig: PublicConfig = { ...externalConfig, gpt: { ...config.gpt, model: "gpt-draft" } };
+    form = settingsFormReducer(form, { type: "saved", config: savedConfig, field: "gpt.model" })!;
+    assert.equal(form.externalConflict, true);
+    assert.deepEqual(dirtySettingsFieldsForSection(form, "judge"), ["replyJudge.model"]);
+    assert.deepEqual(settingsPatches(form, "judge"), [{ field: "replyJudge.model", value: "external-judge" }]);
+});
+
+test("failed page save preserves unsaved fields and clears only patches already accepted by the server", async () => {
+    let form = createSettingsForm(config);
+    form = settingsFormReducer(form, { type: "edit", field: "replyJudge.model", value: "judge-draft" })!;
+    form = settingsFormReducer(form, { type: "edit", field: "replyJudge.timeoutMs", value: "12000" })!;
+    let writes = 0;
+    const result = await saveSettingsChanges(form, "judge", async (patch) => {
+        writes++;
+        if (patch.field === "replyJudge.timeoutMs") throw new Error("disk unavailable");
+        return {
+            result: { ok: true, requiresRestart: false, changedFields: [patch.field], message: "saved" },
+            config: { ...config, replyJudge: { ...config.replyJudge, model: "judge-draft" } },
+        };
+    }, (response, field) => { form = settingsFormReducer(form, { type: "saved", config: response.config, field })!; });
+
+    assert.equal(writes, 2);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.saved, 1);
+    assert.match(String(result.error), /disk unavailable/);
+    assert.equal(form.values["replyJudge.model"], "judge-draft");
+    assert.equal(form.values["replyJudge.timeoutMs"], "12000");
+    assert.deepEqual(dirtySettingsFieldsForSection(form, "judge"), ["replyJudge.timeoutMs"]);
 });
 
 test("editor dirty state and navigation guard preserve unsaved content", () => {

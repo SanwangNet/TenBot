@@ -1,4 +1,5 @@
-import type { ImageGenerationConfig, ImageModelCapabilities, PublicConfig, PublicConfigPatch } from "../api/types.js";
+import type { ConfigPatchResponse, ImageGenerationConfig, ImageModelCapabilities, PublicConfig, PublicConfigPatch } from "../api/types.js";
+import type { SettingsSection } from "../navigation.js";
 import { imageSizeSupportedByCapabilities, parseImageDimensions, validateGptImage2CustomSize } from "../../../src/ai/image-capabilities.js";
 
 export type ImageSettingsField =
@@ -58,6 +59,13 @@ const SETTINGS_FIELDS: readonly SettingsField[] = [
     "image.size",
     "image.outputFormat",
 ];
+
+export const SETTINGS_SECTION_FIELDS: Readonly<Record<SettingsSection, readonly SettingsField[]>> = {
+    model: ["aiProvider", "gpt.model", "gpt.reasoningEffort", "gpt.verbosity", "deepseek.model", "deepseek.reasoningEffort"],
+    judge: ["replyJudge.model", "replyJudge.timeoutMs", "replyJudge.fallbackToMainOnInvalidOutput", "replyJudge.turnWaitMs"],
+    runtime: ["memeSendMaxEdge", "botLoopGuard.maxCycles"],
+    image: ["image.enabled", "image.provider", "image.model", "image.quality", "image.size", "image.outputFormat"],
+};
 
 export function createSettingsForm(config: PublicConfig): SettingsFormState {
     return {
@@ -119,6 +127,17 @@ export function visibleDirtySettingsFields(form: SettingsFormState): SettingsFie
         field === "aiProvider" || (!field.startsWith("gpt.") && !field.startsWith("deepseek.")) || field.startsWith(`${form.values.aiProvider}.`));
 }
 
+/** The page indicator includes hidden provider drafts; those drafts remain unsaved until that preset is selected. */
+export function dirtySettingsFieldsForSection(form: SettingsFormState, section: SettingsSection): SettingsField[] {
+    const fields = SETTINGS_SECTION_FIELDS[section];
+    return dirtySettingsFields(form).filter((field) => fields.includes(field));
+}
+
+/** Editable fields on the current page, excluding the inactive provider preset. */
+export function visibleDirtySettingsFieldsForSection(form: SettingsFormState, section: SettingsSection): SettingsField[] {
+    return visibleDirtySettingsFields(form).filter((field) => SETTINGS_SECTION_FIELDS[section].includes(field));
+}
+
 export function parseTimeoutInput(value: string): number | null {
     if (!/^\d+$/.test(value.trim())) return null;
     const parsed = Number(value.trim());
@@ -156,8 +175,8 @@ export function settingsFieldError(
     return undefined;
 }
 
-export function settingsPatches(form: SettingsFormState): PublicConfigPatch[] {
-    const fields = visibleDirtySettingsFields(form);
+export function settingsPatches(form: SettingsFormState, section?: SettingsSection): PublicConfigPatch[] {
+    const fields = visibleDirtySettingsFields(form).filter((field) => !section || SETTINGS_SECTION_FIELDS[section].includes(field));
     const imageChanged = fields.some((field) => field.startsWith("image."));
     const patches = fields.filter((field) => !field.startsWith("image.")).flatMap((field): PublicConfigPatch[] => {
         const value = form.values[field];
@@ -194,6 +213,33 @@ export function settingsPatches(form: SettingsFormState): PublicConfigPatch[] {
     });
     if (imageChanged) patches.push({ field: "image", value: imageConfigFromValues(form.values) });
     return patches;
+}
+
+export type SettingsSaveResult =
+    | { ok: true; saved: number; requiresRestart: boolean; message: string }
+    | { ok: false; saved: number; requiresRestart: boolean; message: string; error: unknown };
+
+export async function saveSettingsChanges(
+    form: SettingsFormState,
+    section: SettingsSection,
+    updateConfig: (patch: PublicConfigPatch) => Promise<ConfigPatchResponse>,
+    onPatchSaved: (response: ConfigPatchResponse, field: SavedSettingsField) => void,
+): Promise<SettingsSaveResult> {
+    let saved = 0;
+    let requiresRestart = false;
+    let message = "配置已保存并立即生效。";
+    try {
+        for (const patch of settingsPatches(form, section)) {
+            const response = await updateConfig(patch);
+            saved++;
+            requiresRestart ||= response.result.requiresRestart;
+            message = response.result.message;
+            onPatchSaved(response, patch.field);
+        }
+        return { ok: true, saved, requiresRestart, message };
+    } catch (error) {
+        return { ok: false, saved, requiresRestart, message, error };
+    }
 }
 
 type SettingsEditAction = {
@@ -246,12 +292,15 @@ export function settingsFormReducer(state: SettingsFormState | null, action: Set
     }
     if (action.type === "saved") {
         if (!state) return createSettingsForm(action.config);
-        if (action.field === "image") return createSettingsFormAfterSave(state, action.config);
+        const baseline = mergeSavedFieldIntoConfig(state.baseline, action.config, action.field);
+        const values = action.field === "image"
+            ? { ...state.values, ...imageValuesFromConfig(action.config) }
+            : { ...state.values, [action.field]: valueFromConfig(action.config, action.field) } as SettingsValues;
         return {
             ...state,
-            baseline: action.config,
-            values: { ...state.values, [action.field]: valueFromConfig(action.config, action.field) } as SettingsValues,
-            externalConflict: false,
+            baseline,
+            values,
+            externalConflict: JSON.stringify(baseline) !== JSON.stringify(action.config),
         };
     }
     return state;
@@ -298,15 +347,34 @@ function imageFieldError(field: ImageSettingsField, values: SettingsValues, capa
     return undefined;
 }
 
-function createSettingsFormAfterSave(state: SettingsFormState, config: PublicConfig): SettingsFormState {
-    const refreshed = createSettingsForm(config);
+function imageValuesFromConfig(config: PublicConfig): Pick<SettingsValues,
+    "image.enabled" | "image.provider" | "image.model" | "image.quality" | "image.size" | "image.outputFormat"> {
     return {
-        ...refreshed,
-        values: {
-            ...refreshed.values,
-            ...Object.fromEntries(Object.keys(state.values)
-                .filter((key) => !key.startsWith("image."))
-                .map((key) => [key, state.values[key as keyof SettingsValues]])),
-        } as SettingsValues,
+        "image.enabled": config.image.enabled,
+        "image.provider": config.image.provider,
+        "image.model": config.image.model,
+        "image.quality": config.image.quality,
+        "image.size": config.image.size,
+        "image.outputFormat": config.image.outputFormat,
     };
+}
+
+function mergeSavedFieldIntoConfig(baseline: PublicConfig, config: PublicConfig, field: SavedSettingsField): PublicConfig {
+    if (field === "image") return { ...baseline, image: config.image };
+    if (field === "aiProvider") return { ...baseline, aiProvider: config.aiProvider };
+    if (field === "memeSendMaxEdge") return { ...baseline, memeSendMaxEdge: config.memeSendMaxEdge };
+    if (field === "botLoopGuard.maxCycles") return { ...baseline, botLoopGuard: { ...baseline.botLoopGuard, maxCycles: config.botLoopGuard.maxCycles } };
+    if (field.startsWith("gpt.")) {
+        const key = field.slice("gpt.".length) as keyof PublicConfig["gpt"];
+        return { ...baseline, gpt: { ...baseline.gpt, [key]: config.gpt[key] } };
+    }
+    if (field.startsWith("deepseek.")) {
+        const key = field.slice("deepseek.".length) as keyof PublicConfig["deepseek"];
+        return { ...baseline, deepseek: { ...baseline.deepseek, [key]: config.deepseek[key] } };
+    }
+    if (field.startsWith("replyJudge.")) {
+        const key = field.slice("replyJudge.".length) as keyof PublicConfig["replyJudge"];
+        return { ...baseline, replyJudge: { ...baseline.replyJudge, [key]: config.replyJudge[key] } };
+    }
+    return baseline;
 }

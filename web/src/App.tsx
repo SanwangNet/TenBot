@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { OverviewPage } from "./components/overview-page.js";
 import { SettingsPage } from "./settings/settings-page.js";
 import { LogsPage } from "./components/logs-page.js";
@@ -7,7 +7,7 @@ import { ModelPage } from "./components/model-page.js";
 import { ConversationsPage } from "./conversations/conversations-page.js";
 import { MembersPage } from "./components/members-page.js";
 import { useFeedback } from "./ui/feedback.js";
-import { nextPage, type PageId } from "./navigation.js";
+import { appRouteHash, nextPage, parseAppRoute, type AppRoute, type PageId, type SettingsSection } from "./navigation.js";
 import type { AuthMeResponse } from "./api/types.js";
 import { apiClient } from "./api/client.js";
 
@@ -41,17 +41,28 @@ const qqLabels = {
 } as const;
 
 export function App({ user, onLogout }: { user: AuthMeResponse["user"]; onLogout(): void }) {
-    const [page, setPage] = useState<PageId>("overview");
+    const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(typeof window === "undefined" ? "" : window.location.hash));
+    const { page, settingsSection } = route;
     const [editorDirty, setEditorDirty] = useState(false);
+    const [settingsDirty, setSettingsDirty] = useState(false);
     const [leaving, setLeaving] = useState(false);
     const transitionRef = useRef(false);
+    const routeRef = useRef(route);
+    routeRef.current = route;
     const onEditorDirtyChange = useCallback((dirty: boolean) => setEditorDirty(dirty), []);
+    const onSettingsDirtyChange = useCallback((dirty: boolean) => setSettingsDirty(dirty), []);
     const { confirm, notify } = useFeedback();
     const { status, connection, error } = useRuntime();
     async function selectPage(requested: PageId) {
         if (page === requested || transitionRef.current) return;
-        const confirmed = !editorDirty || await confirm({ title: "放弃未保存更改？", message: "离开编辑器会丢弃当前文件的未保存内容。", confirmLabel: "放弃更改", danger: true });
-        const next = nextPage(page, requested, editorDirty, confirmed);
+        const hasUnsaved = editorDirty || (page === "settings" && settingsDirty);
+        const confirmed = !hasUnsaved || await confirm({
+            title: "放弃未保存更改？",
+            message: editorDirty ? "离开编辑器会丢弃当前文件的未保存内容。" : "离开设置中心会丢弃尚未保存的设置草稿。",
+            confirmLabel: "放弃更改",
+            danger: true,
+        });
+        const next = nextPage(page, requested, hasUnsaved, confirmed);
         if (next === page) return;
         transitionRef.current = true;
         setLeaving(true);
@@ -59,10 +70,71 @@ export function App({ user, onLogout }: { user: AuthMeResponse["user"]; onLogout
             await new Promise((resolve) => window.setTimeout(resolve, 120));
         }
         setEditorDirty(false);
-        setPage(next);
+        setSettingsDirty(false);
+        const nextRoute = { page: next, settingsSection };
+        routeRef.current = nextRoute;
+        window.history.pushState({ tenbotRoute: true }, "", appRouteHash(nextRoute));
+        setRoute(nextRoute);
         setLeaving(false);
         transitionRef.current = false;
     }
+
+    const selectSettingsSection = useCallback((section: SettingsSection) => {
+        const current = routeRef.current;
+        if (current.page !== "settings" || current.settingsSection === section) return;
+        const nextRoute = { page: "settings" as const, settingsSection: section };
+        routeRef.current = nextRoute;
+        window.history.pushState({ tenbotRoute: true }, "", appRouteHash(nextRoute));
+        setRoute(nextRoute);
+    }, []);
+
+    useEffect(() => {
+        const handlePopState = () => {
+            const requested = parseAppRoute(window.location.hash);
+            const current = routeRef.current;
+            if (requested.page === current.page && requested.settingsSection === current.settingsSection) return;
+            if (transitionRef.current) {
+                window.history.pushState({ tenbotRoute: true }, "", appRouteHash(current));
+                return;
+            }
+            const needsConfirmation = editorDirty || (current.page === "settings" && requested.page !== "settings" && settingsDirty);
+            if (!needsConfirmation) {
+                routeRef.current = requested;
+                setRoute(requested);
+                setEditorDirty(false);
+                if (current.page === "settings" && requested.page !== "settings") setSettingsDirty(false);
+                return;
+            }
+            transitionRef.current = true;
+            void confirm({
+                title: "放弃未保存更改？",
+                message: editorDirty ? "离开编辑器会丢弃当前文件的未保存内容。" : "离开设置中心会丢弃尚未保存的设置草稿。",
+                confirmLabel: "放弃更改",
+                danger: true,
+            }).then((confirmed) => {
+                if (confirmed) {
+                    routeRef.current = requested;
+                    setRoute(requested);
+                    setEditorDirty(false);
+                    if (current.page === "settings" && requested.page !== "settings") setSettingsDirty(false);
+                } else {
+                    window.history.pushState({ tenbotRoute: true }, "", appRouteHash(current));
+                }
+            }).finally(() => { transitionRef.current = false; });
+        };
+        window.addEventListener("popstate", handlePopState);
+        return () => window.removeEventListener("popstate", handlePopState);
+    }, [confirm, editorDirty, settingsDirty]);
+
+    useEffect(() => {
+        const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+            if (!editorDirty && !settingsDirty) return;
+            event.preventDefault();
+            event.returnValue = "";
+        };
+        window.addEventListener("beforeunload", handleBeforeUnload);
+        return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+    }, [editorDirty, settingsDirty]);
 
     async function logout() {
         try { await apiClient.logout(); onLogout(); }
@@ -131,7 +203,7 @@ export function App({ user, onLogout }: { user: AuthMeResponse["user"]; onLogout
                             : page === "conversations" ? <ConversationsPage />
                             : page === "members" ? <MembersPage />
                             : page === "logs" ? <LogsPage />
-                            : <SettingsPage />}
+                            : <SettingsPage section={settingsSection} onSectionChange={selectSettingsSection} onDirtyChange={onSettingsDirtyChange} />}
                     </div>
                 </main>
             </div>

@@ -171,6 +171,17 @@ button:focus-visible {
 .placeholder-panel p { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
 
 .settings-page, .logs-page { min-width: 0; }
+.settings-center { display: grid; grid-template-columns: 205px minmax(0, 1fr); align-items: start; gap: 20px; min-width: 0; }
+.settings-navigation { position: sticky; top: 82px; display: grid; gap: 5px; min-width: 0; padding: 8px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel); }
+.settings-nav-item { display: flex; min-width: 0; min-height: 42px; align-items: center; gap: 10px; padding: 0 12px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; font: inherit; font-size: 12px; text-align: left; transition: background .16s ease, border-color .16s ease, color .16s ease; }
+.settings-nav-item:hover { background: #202a35; color: var(--text); }
+.settings-nav-item.active { border-color: #3d6886; background: #203648; color: #d2edff; box-shadow: inset 3px 0 var(--accent); }
+.settings-nav-dirty { width: 7px; height: 7px; flex: 0 0 7px; margin-left: auto; border-radius: 50%; background: var(--warning); }
+.settings-content { min-width: 0; }
+.settings-subheading { display: flex; justify-content: space-between; gap: 12px; margin: 0 0 13px; }
+.settings-subheading h2 { margin: 0; color: var(--text); font-size: 18px; }
+.settings-subheading p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.settings-category-panel { display: grid; align-content: start; gap: 13px; }
 .settings-form { display: grid; gap: 14px; }
 .settings-panel { min-width: 0; padding: 19px; }
 .settings-grid { display: grid; gap: 14px; }
@@ -271,6 +282,13 @@ button:focus-visible {
     .runtime-panel, .model-panel, .overview-grid > .panel:not(.runtime-panel):not(.model-panel) { grid-column: span 1; }
     .panel { padding: 16px; }
     .settings-grid-main, .settings-grid-lower, .image-settings-grid { grid-template-columns: minmax(0, 1fr); }
+    .settings-center { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+    .settings-navigation { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; padding: 6px; }
+    .settings-nav-item { min-height: 44px; justify-content: flex-start; padding: 0 10px; font-size: 12px; }
+    .settings-content { width: 100%; }
+    .settings-actions { flex-wrap: wrap; justify-content: flex-end; }
+    .settings-actions .dirty-summary { flex: 1 1 100%; }
+    .settings-actions .button { min-height: 42px; }
     .settings-grid-main { gap: 10px; }
     .settings-panel { padding: 15px; }
     .logs-toolbar { flex-wrap: wrap; }
