@@ -128,10 +128,7 @@ export function gptModelClassificationLabel(source: GptModelClassificationSource
 }
 
 export function gptModelOptionLabel(model: GptModelSummary): string {
-    const evidence = model.classificationSource === "known" || model.classificationSource === "inferred"
-        ? `，${gptModelClassificationLabel(model.classificationSource)}`
-        : "";
-    return `${model.displayName}（${gptModelCategoryLabel(model.category)}${evidence}）`;
+    return model.displayName;
 }
 
 function summary(

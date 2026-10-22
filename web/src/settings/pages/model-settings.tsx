@@ -1,5 +1,5 @@
 import React from "react";
-import { getGptModelPickerEntries, gptModelCategoryLabel, gptModelOptionLabel } from "../../../../src/ai/model-classification.js";
+import { getGptModelPickerEntries, gptModelOptionLabel } from "../../../../src/ai/model-classification.js";
 import { PanelHeading, SettingField } from "../settings-fields.js";
 import type { ModelCatalogProps, SettingsPageProps } from "../settings-page-types.js";
 import type { SettingsValues } from "../settings-state.js";
@@ -22,11 +22,6 @@ export function ModelSettings({
     const entries = catalog?.entries ?? [];
     const picker = getGptModelPickerEntries(entries, "chat", selectedModel, showOtherModels);
     const hidden = Boolean(selectedModel && !picker.recommended.some((entry) => entry.id === selectedModel));
-    const selectedEntry = entries.find((entry) => entry.id === selectedModel);
-    const currentModelLabel = loading ? "（当前值，列表读取中）"
-        : error ? "（当前值，列表不可用）"
-            : selectedEntry ? `（当前值，${gptModelCategoryLabel(selectedEntry.category)}，不在推荐聊天列表中）`
-                : "（当前值不在上游列表中）";
 
     return <React.Fragment><section className="panel settings-panel">
         <PanelHeading index="01" title="主模型预设" hint="选择预设后，只编辑对应模型参数" />
@@ -44,7 +39,7 @@ export function ModelSettings({
                         else { onCustomModelChange(false); edit("gpt.model", value); }
                     }}>
                         {!selectedModel && <option value="">请选择聊天模型</option>}
-                        {hidden && <option value={selectedModel}>{selectedModel}{currentModelLabel}</option>}
+                        {hidden && <option value={selectedModel}>{selectedModel}</option>}
                         {showOtherModels ? <>
                             <optgroup label="聊天 / 推理 / 编程模型">{picker.recommended.filter((model) => model.category === "chat").map((model) => <option key={model.id} value={model.id}>{gptModelOptionLabel(model)}</option>)}</optgroup>
                             {picker.recommended.some((model) => model.category !== "chat" && model.category !== "unknown") && <optgroup label="其他类型模型（选择前请确认用途）">{picker.recommended.filter((model) => model.category !== "chat" && model.category !== "unknown").map((model) => <option key={model.id} value={model.id}>{gptModelOptionLabel(model)}</option>)}</optgroup>}
