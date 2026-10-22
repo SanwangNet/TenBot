@@ -211,6 +211,20 @@ button:focus-visible {
 .setting-field input:focus-visible, .setting-field select:focus-visible, .logs-toolbar input:focus-visible, .logs-toolbar select:focus-visible {
     outline: 2px solid #94b5ff; outline-offset: 1px;
 }
+.setting-field select.model-picker-select {
+    height: 42px; padding: 0 42px 0 12px; appearance: none; color-scheme: dark; cursor: pointer;
+    border-color: #354252; border-radius: 7px; background-color: #121922; color: #e8eef6;
+    font-size: 13px; font-weight: 500; letter-spacing: .01em;
+    background-image: linear-gradient(45deg, transparent 50%, #a9bacb 50%), linear-gradient(135deg, #a9bacb 50%, transparent 50%), linear-gradient(to right, #354252, #354252);
+    background-position: calc(100% - 17px) 18px, calc(100% - 12px) 18px, calc(100% - 34px) 50%;
+    background-size: 5px 5px, 5px 5px, 1px 20px; background-repeat: no-repeat;
+    transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease;
+}
+.setting-field select.model-picker-select:hover:not(:disabled) { border-color: #526477; background-color: #17212c; }
+.setting-field select.model-picker-select:focus-visible { outline: none; border-color: #7198ca; box-shadow: 0 0 0 3px rgb(113 152 202 / 16%); }
+.setting-field select.model-picker-select:disabled { cursor: not-allowed; }
+.setting-field select.model-picker-select option { background: #151c25; color: #e8eef6; }
+.setting-field select.model-picker-select optgroup { background: #1c2631; color: #9eafc0; font-weight: 600; }
 .setting-field input[aria-invalid="true"] { border-color: #a94f56; }
 .setting-field input:disabled, .setting-field select:disabled { opacity: .65; }
 .field-hint, .field-error { min-height: 14px; font-size: 10px; line-height: 1.4; }

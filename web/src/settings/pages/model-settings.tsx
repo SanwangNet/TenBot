@@ -33,7 +33,7 @@ export function ModelSettings({
         <div className="preset-fields" key={form.values.aiProvider}>
             {form.values.aiProvider === "gpt" ? <div className="settings-grid settings-grid-preset">
                 <SettingField label="模型" id="setting-gpt-model">
-                    <select id="setting-gpt-model" value={customModel ? CUSTOM_GPT_MODEL : selectedModel} disabled={saving || loading} onChange={(event) => {
+                    <select className="model-picker-select" id="setting-gpt-model" value={customModel ? CUSTOM_GPT_MODEL : selectedModel} disabled={saving || loading} onChange={(event) => {
                         const value = event.currentTarget.value;
                         if (value === CUSTOM_GPT_MODEL) onCustomModelChange(true);
                         else { onCustomModelChange(false); edit("gpt.model", value); }
