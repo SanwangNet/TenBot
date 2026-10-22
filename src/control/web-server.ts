@@ -447,6 +447,74 @@ export function createTenBotWebServer(control: TenBotControl, options: WebServer
                 } catch { error(response, 500, "Unable to read member"); }
                 return;
             }
+            if (suffix.length === 4 && suffix[1] === "members" && suffix[3] === "image-quota" && request.method === "GET") {
+                let memberOpenid: string;
+                try { memberOpenid = decodeURIComponent(suffix[2]!); }
+                catch { error(response, 400, "Invalid member ID"); return; }
+                if (suffix[2]!.includes("/") || !isValidMemberOpenid(memberOpenid)) { error(response, 400, "Invalid member ID"); return; }
+                try {
+                    if (!await control.getGroupMember(groupOpenid, memberOpenid)) { error(response, 404, "Member not found"); return; }
+                    json(response, 200, await control.getMemberImageQuota(groupOpenid, memberOpenid));
+                } catch { error(response, 500, "Unable to read member image quota"); }
+                return;
+            }
+            if (suffix.length === 4 && suffix[1] === "members" && suffix[3] === "image-quota" && request.method === "PATCH") {
+                let memberOpenid: string;
+                try { memberOpenid = decodeURIComponent(suffix[2]!); }
+                catch { error(response, 400, "Invalid member ID"); return; }
+                if (suffix[2]!.includes("/") || !isValidMemberOpenid(memberOpenid)) { error(response, 400, "Invalid member ID"); return; }
+                let body: unknown;
+                try { body = await readJsonBody(request, MAX_CONFIG_PATCH_BODY_BYTES); }
+                catch (cause) {
+                    error(response, cause instanceof HttpInputError ? cause.statusCode : 400,
+                        cause instanceof HttpInputError ? cause.message : "Invalid request body");
+                    return;
+                }
+                const limit = body && typeof body === "object" && !Array.isArray(body)
+                    ? (body as Record<string, unknown>).dailyLimitOverride : undefined;
+                if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 ||
+                    !Object.hasOwn(body, "dailyLimitOverride") || !(limit === null || (typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0))) {
+                    error(response, 400, "每日绘图上限必须是非负整数或 null"); return;
+                }
+                try {
+                    const quota = await control.setMemberDailyImageLimitOverride(groupOpenid, memberOpenid, limit as number | null);
+                    if (!quota) { error(response, 404, "Member not found"); return; }
+                    json(response, 200, quota);
+                } catch { error(response, 500, "Unable to update member image quota"); }
+                return;
+            }
+            if (suffix.length === 5 && suffix[1] === "members" && suffix[3] === "image-quota" && suffix[4] === "grants" && request.method === "POST") {
+                let memberOpenid: string;
+                try { memberOpenid = decodeURIComponent(suffix[2]!); }
+                catch { error(response, 400, "Invalid member ID"); return; }
+                if (suffix[2]!.includes("/") || !isValidMemberOpenid(memberOpenid)) { error(response, 400, "Invalid member ID"); return; }
+                let body: unknown;
+                try { body = await readJsonBody(request, MAX_CONFIG_PATCH_BODY_BYTES); }
+                catch (cause) {
+                    error(response, cause instanceof HttpInputError ? cause.statusCode : 400,
+                        cause instanceof HttpInputError ? cause.message : "Invalid request body");
+                    return;
+                }
+                const operationId = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).operationId : undefined;
+                const delta = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).delta : undefined;
+                if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 2 ||
+                    typeof operationId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operationId) ||
+                    typeof delta !== "number" || !Number.isSafeInteger(delta) || delta < 1 || delta > 10_000) {
+                    error(response, 400, "额度追加请求无效（次数须为 1 到 10000 的整数）"); return;
+                }
+                const session = auth.getSession(requestCookie(request, WEB_SESSION_COOKIE));
+                if (!session) { error(response, 401, "Authentication required"); return; }
+                try {
+                    const result = await control.grantMemberImageCredits({ operationId, delta, groupOpenid, memberOpenid,
+                        operator: `${session.id}:${session.login}` });
+                    if (!result) { error(response, 404, "Member not found"); return; }
+                    json(response, 200, result);
+                } catch (cause) {
+                    error(response, 409, cause instanceof Error && cause.message.includes("operationId")
+                        ? "此追加操作编号已用于其他请求，请刷新额度后再试" : "Unable to grant member image credits");
+                }
+                return;
+            }
             if (suffix.length === 4 && suffix[1] === "members" && suffix[3] === "manual-bot" && request.method === "PATCH") {
                 let memberOpenid: string;
                 try { memberOpenid = decodeURIComponent(suffix[2]!); }

@@ -97,6 +97,7 @@ test("AI image settings default safely, save atomically, survive reload, and sta
         const store = createConfigStore({ envPath, environment: {} });
         const savedImage = {
             enabled: true,
+            dailyLimit: 3,
             provider: "gpt" as const,
             model: "gpt-image-2.5-flare",
             quality: "low" as const,
@@ -113,6 +114,7 @@ test("AI image settings default safely, save atomically, survive reload, and sta
         const savedEnv = await readFile(envPath, "utf8");
         for (const [key, value] of Object.entries({
             IMAGE_GENERATION_ENABLED: "true",
+            IMAGE_GENERATION_DAILY_LIMIT: "3",
             IMAGE_GENERATION_PROVIDER: "gpt",
             IMAGE_GENERATION_MODEL: "gpt-image-2.5-flare",
             IMAGE_GENERATION_QUALITY: "low",
@@ -137,6 +139,15 @@ test("AI image config validates model-specific quality, size, and format combina
     assert.equal(parsePublicConfigPatch({ field: "image", value: config })?.field, "image");
     assert.equal(parsePublicConfigPatch({ field: "image", value: { ...config, secret: "never-accept" } }), undefined);
     assert.throws(() => validatePublicConfigPatch({ field: "image", value: { ...config, quality: "turbo" } as never }), /质量配置无效/);
+    for (const value of ["-1", "1.5", "NaN", "Infinity", "9007199254740992"]) {
+        assert.throws(() => loadAppConfig({ IMAGE_GENERATION_DAILY_LIMIT: value }), /IMAGE_GENERATION_DAILY_LIMIT/);
+    }
+    assert.equal(loadAppConfig({ IMAGE_GENERATION_DAILY_LIMIT: "0" }).image.dailyLimit, 0);
+    assert.equal(loadAppConfig({}).image.dailyLimit, 3, "old configurations inherit the default of three");
+    const legacyImagePatch = parsePublicConfigPatch({ field: "image", value: {
+        enabled: false, provider: "gpt", model: "", quality: "low", size: "1024x1024", outputFormat: "png",
+    } });
+    assert.equal(legacyImagePatch?.field === "image" ? legacyImagePatch.value.dailyLimit : undefined, 3, "legacy WebUI image patches remain compatible");
 });
 
 test("BOT_LOG_LEVEL parsing is console-only and never enters AppConfig or PublicConfig", () => {
@@ -323,6 +334,7 @@ test("ConfigStore saves upstream-declared image parameters and keeps them after 
             field: "image",
             value: {
                 enabled: true,
+                dailyLimit: 3,
                 provider: "gpt",
                 model: "custom-image-endpoint",
                 quality: "medium",

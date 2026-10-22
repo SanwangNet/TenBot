@@ -5,6 +5,8 @@ import type {
     ConversationSummary,
     GroupMemberSummary,
     GroupSummary,
+    ImageCreditGrantResponse,
+    MemberImageQuotaSnapshot,
     GptModelsResponse,
     MemberBotState,
     EditorResource,
@@ -100,6 +102,12 @@ export const apiClient = {
         getJson<GroupMemberSummary[]>(`/api/groups/${encodeURIComponent(groupOpenid)}/members`, signal),
     getGroupMember: (groupOpenid: string, memberOpenid: string, signal?: AbortSignal) =>
         getJson<GroupMemberSummary>(`/api/groups/${encodeURIComponent(groupOpenid)}/members/${encodeURIComponent(memberOpenid)}`, signal),
+    getMemberImageQuota: (groupOpenid: string, memberOpenid: string, signal?: AbortSignal) =>
+        getJson<MemberImageQuotaSnapshot>(`/api/groups/${encodeURIComponent(groupOpenid)}/members/${encodeURIComponent(memberOpenid)}/image-quota`, signal),
+    setMemberDailyImageLimit: (groupOpenid: string, memberOpenid: string, dailyLimitOverride: number | null, signal?: AbortSignal) =>
+        sendJson<MemberImageQuotaSnapshot>(`/api/groups/${encodeURIComponent(groupOpenid)}/members/${encodeURIComponent(memberOpenid)}/image-quota`, "PATCH", { dailyLimitOverride }, signal),
+    grantMemberImageCredits: (groupOpenid: string, memberOpenid: string, operationId: string, delta: number, signal?: AbortSignal) =>
+        sendJson<ImageCreditGrantResponse>(`/api/groups/${encodeURIComponent(groupOpenid)}/members/${encodeURIComponent(memberOpenid)}/image-quota/grants`, "POST", { operationId, delta }, signal),
     setGroupRepliesEnabled: (groupOpenid: string, enabled: boolean, signal?: AbortSignal) =>
         sendJson<{ group: GroupSummary; changed: boolean }>(`/api/groups/${encodeURIComponent(groupOpenid)}/replies`, "PATCH", { enabled }, signal),
     setMemberManualBot: (groupOpenid: string, memberOpenid: string, enabled: boolean, signal?: AbortSignal) =>

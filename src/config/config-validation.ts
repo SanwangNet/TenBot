@@ -27,6 +27,7 @@ export const DEFAULT_REPLY_JUDGE_TURN_WAIT_MS = 20_000;
 export const DEFAULT_MEME_SEND_MAX_EDGE = 160;
 export const DEFAULT_IMAGE_GENERATION_CONFIG: ImageGenerationConfig = {
     enabled: false,
+    dailyLimit: 3,
     provider: "gpt",
     model: "",
     quality: "low",
@@ -220,6 +221,7 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         },
         image: {
             enabled: parseImageGenerationEnabled(env.IMAGE_GENERATION_ENABLED),
+            dailyLimit: parseImageGenerationDailyLimit(env.IMAGE_GENERATION_DAILY_LIMIT),
             provider: parseImageGenerationProvider(env.IMAGE_GENERATION_PROVIDER),
             model: parseModelName(env.IMAGE_GENERATION_MODEL, DEFAULT_IMAGE_GENERATION_CONFIG.model),
             quality: parseImageGenerationQuality(env.IMAGE_GENERATION_QUALITY),
@@ -384,6 +386,7 @@ export function publicConfigPatchEnvValues(
         validateImageConfig(patch.value);
         return {
             IMAGE_GENERATION_ENABLED: String(patch.value.enabled),
+            IMAGE_GENERATION_DAILY_LIMIT: String(patch.value.dailyLimit),
             IMAGE_GENERATION_PROVIDER: patch.value.provider,
             IMAGE_GENERATION_MODEL: patch.value.model,
             IMAGE_GENERATION_QUALITY: patch.value.quality,
@@ -398,6 +401,7 @@ export function publicConfigPatchEnvValues(
 export function validateImageGenerationConfigShape(config: ImageGenerationConfig): void {
     if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("AI 绘图配置无效");
     if (typeof config.enabled !== "boolean") throw new Error("AI 绘图开关必须是布尔值");
+    if (!Number.isSafeInteger(config.dailyLimit) || config.dailyLimit < 0) throw new Error("每人每日默认生图次数必须是非负整数");
     if (config.provider !== "gpt") throw new Error("AI 绘图目前只支持复用 GPT 上游");
     if (typeof config.model !== "string" || config.model.length > 128 || /[\u0000-\u001f\u007f]/.test(config.model)) {
         throw new Error("绘图模型 ID 不能包含控制字符且长度不能超过 128 个字符");
@@ -438,6 +442,15 @@ function parseImageGenerationEnabled(value: string | undefined): boolean {
     throw new Error("IMAGE_GENERATION_ENABLED must be true or false");
 }
 
+export function parseImageGenerationDailyLimit(value: string | undefined): number {
+    if (value === undefined || value.trim() === "") return DEFAULT_IMAGE_GENERATION_CONFIG.dailyLimit;
+    const normalized = value.trim();
+    if (!/^\d+$/.test(normalized)) throw new Error("IMAGE_GENERATION_DAILY_LIMIT 必须是非负整数");
+    const parsed = Number(normalized);
+    if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error("IMAGE_GENERATION_DAILY_LIMIT 必须是非负安全整数");
+    return parsed;
+}
+
 function parseImageGenerationProvider(value: string | undefined): "gpt" {
     const normalized = value?.trim().toLowerCase();
     if (!normalized || normalized === "gpt") return "gpt";
@@ -468,10 +481,14 @@ function parseImageOutputFormat(value: string | undefined): ImageOutputFormat {
 function parseImageGenerationConfigPatch(value: unknown): PublicConfigPatch | undefined {
     if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
     const record = value as Record<string, unknown>;
-    const fields = ["enabled", "provider", "model", "quality", "size", "outputFormat"];
-    if (Object.keys(record).length !== fields.length || fields.some((field) => !Object.hasOwn(record, field))) return undefined;
-    if (typeof record.enabled !== "boolean" || typeof record.provider !== "string" ||
+    const legacyFields = ["enabled", "provider", "model", "quality", "size", "outputFormat"];
+    const fields = ["enabled", "dailyLimit", "provider", "model", "quality", "size", "outputFormat"];
+    const isLegacyShape = Object.keys(record).length === legacyFields.length && legacyFields.every((field) => Object.hasOwn(record, field));
+    const hasCurrentShape = Object.keys(record).length === fields.length && fields.every((field) => Object.hasOwn(record, field));
+    if (!isLegacyShape && !hasCurrentShape) return undefined;
+    const dailyLimit = isLegacyShape ? DEFAULT_IMAGE_GENERATION_CONFIG.dailyLimit : record.dailyLimit;
+    if (typeof record.enabled !== "boolean" || typeof dailyLimit !== "number" || typeof record.provider !== "string" ||
         typeof record.model !== "string" || typeof record.quality !== "string" ||
         typeof record.size !== "string" || typeof record.outputFormat !== "string") return undefined;
-    return { field: "image", value: record as unknown as ImageGenerationConfig };
+    return { field: "image", value: { ...record, dailyLimit } as unknown as ImageGenerationConfig };
 }

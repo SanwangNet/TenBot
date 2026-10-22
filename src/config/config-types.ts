@@ -10,6 +10,7 @@ export type ImageOutputFormat = "png" | "jpeg" | "webp";
 /** Public, independently configurable image generation settings; credentials reuse ai.gpt. */
 export interface ImageGenerationConfig {
     enabled: boolean;
+    dailyLimit: number;
     provider: ImageGenerationProvider;
     model: string;
     quality: ImageGenerationQuality;

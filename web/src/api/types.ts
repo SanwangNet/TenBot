@@ -48,6 +48,7 @@ export type ImageOutputFormat = "png" | "jpeg" | "webp";
 
 export interface ImageGenerationConfig {
     enabled: boolean;
+    dailyLimit: number;
     provider: "gpt";
     model: string;
     quality: ImageGenerationQuality;
@@ -146,6 +147,24 @@ export interface GroupMemberSummary {
     detectionMarks: number;
     lastDetectionAt: number | null;
     activeDetectionEvidence?: MemberBotDetectionEvidence[];
+}
+
+export interface MemberImageQuotaSnapshot {
+    groupOpenid: string;
+    memberOpenid: string;
+    globalDailyLimit: number;
+    dailyLimitOverride: number | null;
+    effectiveDailyLimit: number;
+    todayBaseUsed: number;
+    todayBonusUsed: number;
+    todayUsed: number;
+    remainingBase: number;
+    bonusCredits: number;
+}
+
+export interface ImageCreditGrantResponse {
+    grant: { operationId: string; balanceAfter: number; duplicate: boolean };
+    quota: MemberImageQuotaSnapshot;
 }
 
 export interface MemberBotDetectionEvidence {
